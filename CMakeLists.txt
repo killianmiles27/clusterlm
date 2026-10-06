@@ -17,6 +17,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(CLUSTERLM_BUILD_TESTS "Build unit and integration tests" ON)
+option(CLUSTERLM_RUN_SLOW_TESTS "Run tests labelled slow (multi-process / integration); ctest -LE slow also skips them" ON)
 option(CLUSTERLM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(CLUSTERLM_ENABLE_STRATA "Build the Strata backend adapter against the pinned Strata source (requires CUDA)" OFF)
 

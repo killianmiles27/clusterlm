@@ -22,11 +22,19 @@ function(clusterlm_module target)
   clusterlm_set_warnings(${target})
 endfunction()
 
-# clusterlm_test(<name> SOURCES ... DEPS ...) — a doctest executable registered with CTest.
+# clusterlm_test(<name> [SLOW] SOURCES ... DEPS ...) — a doctest executable registered with CTest.
+# SLOW tests carry the ctest label "slow": `ctest -LE slow` skips them, `ctest -L slow` selects them. They are
+# registered as DISABLED when CLUSTERLM_RUN_SLOW_TESTS=OFF.
 function(clusterlm_test name)
-  cmake_parse_arguments(ARG "" "" "SOURCES;DEPS" ${ARGN})
+  cmake_parse_arguments(ARG "SLOW" "" "SOURCES;DEPS" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
   target_link_libraries(${name} PRIVATE ${ARG_DEPS} clusterlm_third_party clusterlm_test_main)
   clusterlm_set_warnings(${name})
   add_test(NAME ${name} COMMAND ${name})
+  if(ARG_SLOW)
+    set_tests_properties(${name} PROPERTIES LABELS slow)
+    if(NOT CLUSTERLM_RUN_SLOW_TESTS)
+      set_tests_properties(${name} PROPERTIES DISABLED TRUE)
+    endif()
+  endif()
 endfunction()

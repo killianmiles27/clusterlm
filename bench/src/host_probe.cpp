@@ -9,6 +9,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <immintrin.h>  // _xgetbv
 #include <intrin.h>
 #else
 #include <sys/utsname.h>

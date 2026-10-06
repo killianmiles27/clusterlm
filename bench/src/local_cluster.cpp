@@ -20,7 +20,13 @@ std::string field(const std::string& line, const std::string& key) {
 Result<std::unique_ptr<LocalCluster>> LocalCluster::start(LocalClusterOptions options) {
   auto c = std::unique_ptr<LocalCluster>(new LocalCluster());
   c->options_ = std::move(options);
-  if (c->options_.node_binary.empty()) c->options_.node_binary = platform::executable_dir() / "clusterlm-node";
+  if (c->options_.node_binary.empty()) {
+#ifdef _WIN32
+    c->options_.node_binary = platform::executable_dir() / "clusterlm-node.exe";
+#else
+    c->options_.node_binary = platform::executable_dir() / "clusterlm-node";
+#endif
+  }
   std::error_code ec;
   std::filesystem::create_directories(c->options_.work_dir, ec);
   if (c->options_.tls) {
