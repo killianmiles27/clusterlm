@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ClusterLM Father (per-machine MSI), WiX v5. See docs/packaging.md.
+
+  Build inputs (wix build, one define per name):
+    StageDir   cmake install, component father prefix (bin\ catalog\ licenses\)
+    Version    x.y.z[.w]
+    Signed     "yes" | "no" (recorded in the package summary only)
+    HasUi      "1" when bin\clusterlm-father-ui.exe is in the stage (adds the Start menu shortcut), else "0"
+
+  Programs go to Program Files. Everything the Father creates at run time (identity, models, logs) lives under
+  %LOCALAPPDATA%\ClusterLM of the user who runs it and is deliberately NOT touched by uninstall: the model store is
+  the user's multi-gigabyte data, the MSI cannot enumerate other users' profiles, and a per-user directory is not
+  something a machine-wide installer owns (ADR 0291).
+
+  Autostart: a machine Run value (HKLM\...\Run) starts the per-user agent at each user's logon (ADR 0290). It is its
+  own optional feature, so it can be left out: msiexec /i ClusterLM-Father.msi ADDLOCAL=FatherCore
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="ClusterLM Father" Manufacturer="ClusterLM" Version="$(Version)"
+           UpgradeCode="d472fed9-323f-4541-a1b0-7a218851a237" Scope="perMachine" InstallerVersion="500">
+    <SummaryInformation Description="ClusterLM Father: coordinates distributed local LLM inference across your PCs. Signed: $(Signed)." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ClusterLM Father is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ClusterLM Father" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="FatherMenuFolder" Name="ClusterLM" />
+    </StandardDirectory>
+
+    <Feature Id="FatherCore" Title="ClusterLM Father" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="FatherFiles" />
+      <ComponentRef Id="FatherCliPath" />
+      <?if $(HasUi) = 1?>
+      <ComponentRef Id="FatherUiShortcut" />
+      <?endif?>
+      <Feature Id="FatherAutostart" Title="Start the Father agent when I sign in" Level="1" AllowAbsent="yes">
+        <ComponentRef Id="FatherAgentAutostart" />
+      </Feature>
+    </Feature>
+
+    <!-- Running agent / UI / CLI processes hold their exe open: close them before files are replaced or removed. -->
+    <util:CloseApplication Id="CloseFatherAgent" Target="clusterlm-father-agent.exe" CloseMessage="no"
+                           EndSessionMessage="no" RebootPrompt="no" TerminateProcess="0" />
+    <?if $(HasUi) = 1?>
+    <util:CloseApplication Id="CloseFatherUi" Target="clusterlm-father-ui.exe" CloseMessage="yes"
+                           EndSessionMessage="no" RebootPrompt="no" TerminateProcess="0" />
+    <?endif?>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="FatherFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(StageDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- clusterlm-father / clusterlm-bench / clusterlm-model-inspect on PATH (new shells). -->
+      <Component Id="FatherCliPath" Guid="*">
+        <Environment Id="FatherPath" Name="PATH" Value="[INSTALLFOLDER]bin" Part="last" Action="set" System="yes" />
+        <RegistryValue Root="HKLM" Key="Software\ClusterLM\Father" Name="InstallDir" Type="string"
+                       Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+
+      <!-- Per-user background agent, started by Windows at every logon of every user (the agent itself is per-user:
+           pipe name, identity and models directory derive from the logged-on user). -->
+      <Component Id="FatherAgentAutostart" Guid="*">
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="ClusterLMFatherAgent"
+                       Type="string" Value="&quot;[INSTALLFOLDER]bin\clusterlm-father-agent.exe&quot;" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <?if $(HasUi) = 1?>
+  <Fragment>
+    <DirectoryRef Id="FatherMenuFolder">
+      <Component Id="FatherUiShortcut" Guid="*">
+        <Shortcut Id="FatherUiLink" Name="ClusterLM Father" Description="ClusterLM Father"
+                  Target="[INSTALLFOLDER]bin\clusterlm-father-ui.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveFatherMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\ClusterLM\Father" Name="UiShortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+  <?endif?>
+</Wix>

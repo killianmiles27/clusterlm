@@ -60,6 +60,7 @@ Windows pinned-memory behaviour.
 | [HQ-GPU-05](#hq-gpu-05) | Strata abort_window restores the committed state on the GPU | Father, Node G14, Node 3060 | pending |
 | [HQ-MTP-02](#hq-mtp-02) | Strata MTP drafter on the Father tail | Father | pending |
 | [HQ-P0D-01](#hq-p0d-01) | Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail | Father, Node G14, Node 3060 | pending |
+| [HQ-INSTALL-01](#hq-install-01) | Install both MSI packages on the real machines: service, firewall, ACLs, uninstall cleanliness | Father, Node G14, Node 3060 | pending |
 
 ## Experiments
 
@@ -745,3 +746,27 @@ Windows pinned-memory behaviour.
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0D-01"`; metrics `cluster.decode_tok_s`, `cluster.token_agreement`, `node.staged_bytes_after_release`
 - **Decision affected:** Ultra tier viability on the Strata stage design (P0-D).
 - **Acceptance:** Prerequisite: `--backend strata` in clusterlm-father / clusterlm-node (coordinator and Node integration of make_strata_backend; outside WP6). Then: identical greedy tokens to the single-machine reference and zero staged bytes after release.
+
+### HQ-INSTALL-01
+
+**Install both MSI packages on the real machines: service, firewall, ACLs, uninstall cleanliness** — status: `pending`
+
+- **Purpose:** Verify on the real Father and both Nodes that the MSI packages install without any prerequisite, configure the service, firewall rule, helper and agent autostart as specified, keep the Node data owner-only, and uninstall without leaving a service, rule, Run value or model fragment behind.
+- **Command:** `manual: docs/packaging.md#hq-install-01 (elevated PowerShell: `msiexec /i ClusterLM-Node-<v>-x64.msi /qn /l*v node-install.log`, `packaging\smoke-test.ps1 -Package Node -Msi <msi>` from a repository checkout, `msiexec /x`)`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** none (installers only)
+- **Measurements:**
+  - Clean machine: no Python, Git, compiler, CUDA toolkit or Visual C++ Redistributable installed (record `Get-Package` / `winver`); install ClusterLM-Node on both Nodes and ClusterLM-Father on the Father with `msiexec /i <msi> /qn /l*v <log>`; exit code 0 or 3010, no prompt, no network access needed (disconnect the adapter during the install)
+  - Node: `sc qc ClusterLMNode` shows AUTO_START (DELAYED) and NT AUTHORITY\LocalService; `sc qfailure ClusterLMNode` shows RESTART at 5000/30000/60000 ms, reset 86400 s; `sc qsidtype` UNRESTRICTED; `sc qpreshutdowninfo` 15000 ms; the service is Running after the install and again after a reboot with nobody logged in
+  - Node: `Get-NetFirewallRule -DisplayName 'ClusterLM Node data (TCP-In)' | Get-NetFirewallApplicationFilter` is the installed `...\ClusterLM Node\bin\clusterlm-node.exe`; port filter TCP 47600; profile Domain+Private only; no Windows Security Alert prompt on first connection from Father
+  - Node: `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` has ClusterLMNodeHelper; after logon `Get-Process clusterlm-node-helper` shows one helper per interactive session and the Node reports activity (HQ-WIN-02 behaviour)
+  - Node ACLs: `icacls "%ProgramData%\ClusterLM\Node\staging"` (run as SYSTEM, for example from `schtasks /create /ru SYSTEM`; an Administrator is denied by design) lists only NT AUTHORITY\LOCAL SERVICE and SYSTEM, no inherited entries; `icacls "%ProgramFiles%\ClusterLM Node"` grants users read/execute only (no write)
+  - Father: `bin\` is on the machine PATH in a new shell; `clusterlm-father --help` and `clusterlm-bench --help` run; the agent starts at the next logon (Run value ClusterLMFatherAgent) and `Get-Process clusterlm-father-agent` shows it under the logged-on user; `%LOCALAPPDATA%\ClusterLM` is created owner-only on first agent start
+  - Signing state recorded: `Get-AuthenticodeSignature` of every installed exe and the MSI (expected NotSigned with the -UNSIGNED packages; Valid with a release certificate), and the SmartScreen behaviour on first run
+  - Upgrade: install the next build over the previous one with the Node leased/busy; the service is stopped, the new service runs, the pairing identity is unchanged, the firewall rule count stays 1
+  - Uninstall: `msiexec /x <msi> /qn /l*v <log>` on each machine; then `sc query ClusterLMNode` reports 1060, `Get-NetFirewallRule -DisplayName 'ClusterLM *'` returns nothing, the Run values are gone, `Get-Process clusterlm-*` is empty, the install directories are gone, and as SYSTEM `Test-Path "$env:ProgramData\ClusterLM\Node\staging"` is False even after planting a file under `staging\leases\9` before the uninstall
+  - Uninstall with `CLUSTERLM_PURGE=1` (Node): `%ProgramData%\ClusterLM\Node` is gone; without it the identity directory remains and a reinstall comes up already paired
+  - Run `packaging\smoke-test.ps1` for both packages on the real machines: all checks PASS
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-INSTALL-01"`; metrics `install.exit_code`, `install.prerequisites_needed`, `service.configured_as_specified`, `firewall.rule_scope_matches_spec`, `acl.staging_principals`, `uninstall.residual_service_rules_files`, `uninstall.staging_present_after`, `signing.state`
+- **Decision affected:** Whether the MSI sequencing (service control, custom actions, Run-key autostart) is correct on real Windows 11, the default uninstall data policy (ADR 0291), and what a release needs to be signed (ADR 0292).
+- **Acceptance:** both packages install with no prerequisite and no network; the service, rule, Run values and ACLs match the spec exactly; the uninstall leaves no service, firewall rule, Run value, process or staging data (pairing identity only without CLUSTERLM_PURGE); an upgrade keeps exactly one rule and the identity

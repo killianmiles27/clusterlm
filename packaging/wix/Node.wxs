@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ClusterLM Node (per-machine MSI), WiX v5. See docs/packaging.md.
+
+  Build inputs (wix build, one define per name):
+    StageDir   cmake install, component node prefix (bin\ licenses\)
+    Version    x.y.z[.w]
+    Signed     "yes" | "no" (recorded in the package summary only)
+
+  What the MSI does beyond copying files:
+    - registers the service by running the service executable's install command (install + port N). The service executable owns its
+      SCM configuration and its firewall rules (platform::node_service_install_spec / firewall_rule_specs), so the
+      installer cannot drift from what HQ-WIN-01/03 verify (ADR 0290);
+    - writes the machine Run value that starts the session helper at logon (ADR 0132);
+    - on uninstall: stop, its uninstall command (service + firewall rules), then its cleanup command (lease recovery, staging deleted);
+      with CLUSTERLM_PURGE=1 also the pairing identity and logs (ADR 0291).
+  The Node data directories under %ProgramData%\ClusterLM\Node are created by the service on first start with an
+  owner+SYSTEM-only ACL (ADR 0133). The MSI never creates them, so their owner can only be the service account.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="ClusterLM Node" Manufacturer="ClusterLM" Version="$(Version)"
+           UpgradeCode="41effb80-5096-4732-866d-598e6b72da95" Scope="perMachine" InstallerVersion="500">
+    <SummaryInformation Description="ClusterLM Node: offers this PC's idle compute to a paired ClusterLM Father. Signed: $(Signed)." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ClusterLM Node is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- msiexec /i ClusterLM-Node.msi NODE_PORT=47601 NODE_REMOTE=192.168.1.10 ; msiexec /x ... CLUSTERLM_PURGE=1 -->
+    <Property Id="NODE_PORT" Value="47600" Secure="yes" />
+    <Property Id="NODE_REMOTE" Secure="yes" />
+    <Property Id="CLUSTERLM_PURGE" Secure="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ClusterLM Node" />
+    </StandardDirectory>
+
+    <Feature Id="NodeFeature" Title="ClusterLM Node" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="NodeFiles" />
+      <ComponentRef Id="NodeServiceIntegration" />
+    </Feature>
+
+    <!-- The helper holds its exe open from every user session: close it before files are replaced or removed. -->
+    <util:CloseApplication Id="CloseNodeHelper" Target="clusterlm-node-helper.exe" CloseMessage="no"
+                           EndSessionMessage="no" RebootPrompt="no" TerminateProcess="0" />
+
+    <!-- ===== Install: the service registers itself (LocalService, delayed auto start, recovery 5/30/60 s,
+         preshutdown 15 s, service SID) and creates the program-scoped Private+Domain firewall rule. ===== -->
+    <CustomAction Id="NodeInstallService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="&quot;[INSTALLFOLDER]bin\clusterlm-node-service.exe&quot; --install --port [NODE_PORT]" />
+    <CustomAction Id="NodeInstallServiceRemote" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  Return="check"
+                  ExeCommand="&quot;[INSTALLFOLDER]bin\clusterlm-node-service.exe&quot; --install --port [NODE_PORT] --remote [NODE_REMOTE]" />
+    <!-- Rollback of a failed install: remove whatever the install command managed to create. -->
+    <CustomAction Id="NodeInstallServiceRollback" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no"
+                  Return="ignore"
+                  ExeCommand="&quot;[INSTALLFOLDER]bin\clusterlm-node-service.exe&quot; --uninstall" />
+    <!-- Start now (delayed auto start would otherwise wait for the next boot). A failed start is not an install
+         failure: SCM recovery retries and the verbose log says why. -->
+    <CustomAction Id="NodeStartService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="&quot;[System64Folder]sc.exe&quot; start ClusterLMNode" />
+
+    <!-- ===== Uninstall (also runs for the old product during a major upgrade) ===== -->
+    <CustomAction Id="NodeUninstallService" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no"
+                  Return="ignore"
+                  ExeCommand="&quot;[INSTALLFOLDER]bin\clusterlm-node-service.exe&quot; --uninstall" />
+    <CustomAction Id="NodeCleanup" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="&quot;[INSTALLFOLDER]bin\clusterlm-node-service.exe&quot; --cleanup" />
+    <CustomAction Id="NodeCleanupPurge" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="&quot;[INSTALLFOLDER]bin\clusterlm-node-service.exe&quot; --cleanup --purge" />
+
+    <InstallExecuteSequence>
+      <Custom Action="NodeInstallServiceRollback" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="NodeInstallService" After="NodeInstallServiceRollback"
+              Condition="NOT REMOVE~=&quot;ALL&quot; AND NOT NODE_REMOTE" />
+      <Custom Action="NodeInstallServiceRemote" After="NodeInstallService"
+              Condition="NOT REMOVE~=&quot;ALL&quot; AND NODE_REMOTE" />
+      <Custom Action="NodeStartService" After="NodeInstallServiceRemote" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <!-- StopServices (ServiceControl below) precedes these: the worker is gone before its files are touched. -->
+      <Custom Action="NodeUninstallService" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="NodeCleanup" After="NodeUninstallService"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT CLUSTERLM_PURGE" />
+      <Custom Action="NodeCleanupPurge" After="NodeCleanup"
+              Condition="REMOVE~=&quot;ALL&quot; AND CLUSTERLM_PURGE" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="NodeFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(StageDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="NodeServiceIntegration" Guid="*">
+        <!-- Machine-wide Run value: the per-session helper starts at every logon (ADR 0132). Removed with the
+             component on uninstall. -->
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="ClusterLMNodeHelper"
+                       Type="string" Value="&quot;[INSTALLFOLDER]bin\clusterlm-node-helper.exe&quot;" KeyPath="yes" />
+        <!-- Stop the service before its files change (upgrade of a running service) or go (uninstall). The SCM
+             entry itself is created and deleted by the service executable (install and uninstall commands). -->
+        <ServiceControl Id="StopNodeService" Name="ClusterLMNode" Stop="both" Remove="never" Wait="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

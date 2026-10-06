@@ -7,7 +7,9 @@
 // with `--simulate-activity` (stdin lines: activity | idle | lock | unlock | suspend | resume | quit).
 //
 //   clusterlm-node-service --console --worker PATH --idle-seconds 300 --simulate-activity -- <clusterlm-node args>
-//   clusterlm-node-service --install | --uninstall            (Windows, elevated)
+//   clusterlm-node-service --install | --uninstall            (Windows, elevated; --uninstall also removes the firewall rules)
+//   clusterlm-node-service --cleanup [--purge] [--staging DIR] (any OS: lease-store recovery, then delete the staging root;
+//                                                              --purge also deletes the Node identity, logs and root)
 //   clusterlm-node-service --print-firewall-specs --port N    (any OS: declarative rule data for the installer)
 //
 // Without "-- <worker args>" the worker gets the default Node layout (platform::default_paths()).
@@ -18,6 +20,7 @@
 
 #include "cli.hpp"
 #include "clusterlm/common/log.hpp"
+#include "clusterlm/lease/lease_store.hpp"
 #include "clusterlm/node/service_core.hpp"
 #include "clusterlm/platform/firewall.hpp"
 #include "clusterlm/platform/mock_adapters.hpp"
@@ -38,6 +41,46 @@ constexpr std::uint64_t kDefaultNodePort = 47600;  // arbitrary default, not a r
 int fail(const Status& s) {
   std::fprintf(stderr, "error: %s\n", s.to_string().c_str());
   return 1;
+}
+
+// Installer/uninstaller entry (--cleanup). Runs LeaseStore recovery first, so a crashed lease is journal-accounted and
+// its files are deleted by the same code that deletes them at service start, then removes the staging root itself.
+// Fails (non-zero) if anything of the lease store survives: the uninstaller must never leave model fragments behind.
+// With the default layout, --purge additionally removes the identity and log directories and the Node root (only if they are then empty).
+int cleanup_node_data(const cli::Args& args, const platform::DefaultPaths& paths) {
+  namespace fs = std::filesystem;
+  const fs::path staging = args.get("staging", paths.node_staging.string());
+  std::error_code ec;
+  if (fs::exists(staging, ec)) {
+    {
+      auto store = lease::LeaseStore::open(staging);
+      if (!store.is_ok()) return fail(store.status());
+      const auto& r = (*store)->recovery_report();
+      std::printf("CLUSTERLM_NODE_CLEANUP leases_found=%llu files_removed=%llu bytes_reclaimed=%llu clean=%d\n",
+                  static_cast<unsigned long long>(r.leases_found), static_cast<unsigned long long>(r.files_removed),
+                  static_cast<unsigned long long>(r.bytes_reclaimed), r.clean() ? 1 : 0);
+      if (!r.clean()) {
+        std::fprintf(stderr, "error: lease recovery could not delete everything under the staging root\n");
+        return 1;
+      }
+    }  // store closed before the directory is removed
+    fs::remove_all(staging, ec);
+    if (ec || fs::exists(staging)) {
+      std::fprintf(stderr, "error: cannot remove the staging root: %s\n", ec.message().c_str());
+      return 1;
+    }
+  }
+  if (args.has("staging")) {
+    // An explicit staging root (tests, non-default layouts): nothing else is touched.
+  } else if (args.has("purge")) {
+    for (const auto& dir : {paths.node_identity, paths.node_logs}) fs::remove_all(dir, ec);
+    fs::remove(paths.node_root, ec);  // only succeeds when empty: unknown files are never deleted
+  } else {
+    fs::remove(paths.node_identity, ec);  // empty directory only: a paired identity is kept
+    fs::remove(paths.node_root, ec);
+  }
+  std::printf("CLUSTERLM_NODE_CLEANUP staging_removed=1\n");
+  return 0;
 }
 
 class NodeServiceApp final : public platform::ServiceApp {
@@ -126,13 +169,25 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (args.has("cleanup")) {
+    auto p = platform::default_paths();
+    if (!p.is_ok()) return fail(p.status());
+    return cleanup_node_data(args, *p);
+  }
+
 #ifdef _WIN32
   if (args.has("install") || args.has("uninstall")) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     auto spec = platform::node_service_install_spec();
     if (args.has("uninstall")) {
       auto st = platform::uninstall_service(spec.name);
-      return st.is_ok() ? 0 : fail(st);
+      if (!st.is_ok()) return fail(st);
+      // The rules this installation created; a missing rule is success.
+      auto fw = platform::make_windows_firewall_rules();
+      for (const char* rule : {platform::kNodeRuleName, platform::kFatherRuleName}) {
+        if (auto rs = fw->remove(rule); !rs.is_ok()) return fail(rs);
+      }
+      return 0;
     }
     wchar_t exe[MAX_PATH];
     const DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);

@@ -50,7 +50,7 @@ text, logits or prompts.
   `clusterlm-node-service.exe --install --port N [--remote ADDR]`, `--uninstall`).
 - Helper: started per ADR 0132. Default for the LocalService service is the machine Run key `ClusterLMNodeHelper`; if the
   service holds `SeTcbPrivilege` it launches the helper into each active session instead. A missing helper leaves the Node Busy.
-- Father agent: ordinary per-user process (Run key or Startup shortcut; installer workstream).
+- Father agent: ordinary per-user process started by a machine Run value (`docs/packaging.md`, ADR 0290).
 
 ## Power and sessions
 

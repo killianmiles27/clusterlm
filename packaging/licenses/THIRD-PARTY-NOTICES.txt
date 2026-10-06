@@ -1,0 +1,25 @@
+ClusterLM third-party notices
+=============================
+
+This package contains software from the projects below. Their license texts are in this directory.
+
+nlohmann/json (MIT)                       nlohmann-json-LICENSE.MIT
+  Compiled into the ClusterLM executables (JSON parsing).
+
+OpenSSL 3.x (Apache License 2.0)          OpenSSL-LICENSE.txt
+  Linked statically into the ClusterLM executables (SHA-256, TLS, X.509). No OpenSSL DLL is installed.
+  The text is copied from the vcpkg port at package build time; a package without that file was not built by the
+  release pipeline.
+
+Pinned upstream projects (MIT)            upstream-<name>-LICENSE*
+  Strata (https://github.com/Niko1221/Strata) and llama.cpp (https://github.com/ggml-org/llama.cpp) are pinned in
+  third_party/upstream.json. Their license files appear here only when the corresponding sources were part of the
+  build tree. The current packages do not enable the Strata backend and contain no code from either project unless
+  such a file is listed above.
+
+Microsoft Visual C++ runtime
+  The executables are built with the static runtime (/MT); no Visual C++ Redistributable is installed or required.
+
+NVIDIA CUDA runtime / cuBLAS
+  Not included. A future build with the Strata backend enabled may redistribute the CUDA runtime libraries under the
+  NVIDIA CUDA Toolkit EULA (Attachment A); their notices will be added here at that time.
