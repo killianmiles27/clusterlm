@@ -1285,6 +1285,44 @@
       "decision_affected": "Whether the typed-address pairing UX and the 3-failure lockout are adequate on a real LAN; whether the pairing port needs discovery or a different firewall scope; whether unpair needs a Father->Node notification; how the Node UI triggers pairing mode on Windows.",
       "acceptance": "fingerprints agree on both screens; lockout after exactly 3 failures; relay never pairs; unpair revokes in under 5 s with zero residual staging",
       "status": "pending"
+    },
+    {
+      "id": "HQ-UI-01",
+      "title": "Father and Node UI manual walkthrough on Windows 11",
+      "purpose": "Verify on real Windows 11 what Linux cannot: the Win32 + Direct3D 11 Dear ImGui windows (clusterlm-father-ui, clusterlm-node-ui) start and render, the Node tray icon and menu work, DPI scaling is correct on mixed-DPI monitors, and the prepare / chat / cancel / fallback / diagnostics flows read correctly against the real Father agent.",
+      "command": "manual: docs/ui.md#hq-ui-01 (clusterlm-father-ui --demo for the scripted flows; clusterlm-father-ui against clusterlm-father-agent for the real ones; clusterlm-node-ui --tray)",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none for --demo (Synthetic scripted events); the agent's models for the real flows",
+      "measurements": [
+        "Both executables start without a console window; a second launch of the same executable does nothing (single instance per session)",
+        "Father window: tier cards show Unavailable/Available/Preparing x%/Ready from the real agent; Ready never appears before the agent says so; headline and notes are readable",
+        "Father window: preparation shows a progress bar and an ETA labelled estimate; chat streams live; Cancel stops the answer and keeps the partial text; Enter sends, Ctrl+Enter adds a line",
+        "Father window: lock or use the G14 mid-answer: a fallback message naming both models appears inline, the answer continues under the new model and its attribution says so, and the conversation is kept",
+        "Advanced diagnostics: rows carry provenance labels (Synthetic for the dev fixture, Measured otherwise, never Qualified); export writes a file under %LOCALAPPDATA%\\ClusterLM\\diagnostics and the file contains no prompt or answer text unless the include box was ticked",
+        "Node tray: icon appears; left click toggles the window; right click menu Show/Hide, Pause/Resume, Quit work; closing the window hides it to the tray; the tooltip shows the state; the icon returns after restarting explorer.exe",
+        "Node window: state label follows the service (Available/Busy/Paused...) within a few seconds; Pause and Resume reach the service; settings validation messages appear; the 'cannot save Node settings yet' note is shown until the config store lands",
+        "DPI: at 100%, 150% and 200% scaling and when dragging the window between monitors of different DPI (PerMonitorV2) text and spacing scale together and nothing is clipped; record whether the FontGlobalScale blur is acceptable",
+        "Windows without a usable GPU (RDP session, VM): the window falls back to the WARP software rasteriser or reports the failure in a message box",
+        "Pairing form in the Father window pairs a Node with the code from its console and shows the short fingerprint to compare"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-UI-01",
+        "metrics": [
+          "ui.father_starts",
+          "ui.node_tray_menu_works",
+          "ui.dpi_scaling_ok",
+          "ui.fallback_message_shown",
+          "ui.diagnostics_redacted_by_default"
+        ]
+      },
+      "decision_affected": "Whether Dear ImGui over D3D11 is acceptable as the product UI toolkit on the target machines (DPI sharpness, accessibility, remote-session behaviour), or whether a native toolkit is needed.",
+      "acceptance": "every listed behaviour observed and recorded; any blocker (blur, missing tray icon, clipped text) filed against the UI before release",
+      "status": "pending"
     }
   ]
 }
