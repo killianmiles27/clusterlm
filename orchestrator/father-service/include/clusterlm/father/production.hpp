@@ -46,6 +46,36 @@ class DetailsBoard {
 // part of one is reported in the matching state instead of being probed.
 enum class SessionPhase : std::uint8_t { kNone, kPreparing, kReadyIdle, kInferencing };
 
+// The latest preparation progress per tier. It is the production wiring between the service (which receives the
+// Coordinator's progress while a tier is being prepared) and LiveReadinessSource (which reports a tier Preparing with
+// a percentage and an ETA while bytes are still going out):
+//
+//   auto board = std::make_shared<ProvisioningBoard>();
+//   ProductionOptions po;  po.provisioning = board->provider();
+//   ServiceDeps deps;      deps.prepare_observer = board->observer();
+//
+// The rate is measured on this run (bytes sent over elapsed time once at least half a second of data exists); before
+// that no rate is reported and the UI shows no ETA. An entry is removed when the prepare ends, whatever the outcome,
+// so a failed prepare can never leave a tier stuck in Preparing. Thread-safe.
+class ProvisioningBoard {
+ public:
+  void update(const std::string& tier_id, const coordinator::PrepareProgress& progress);
+  void clear(const std::string& tier_id);
+  std::optional<catalog::ProvisioningProgress> get(const std::string& tier_id) const;
+  PrepareObserver observer();
+  std::function<std::optional<catalog::ProvisioningProgress>(const std::string&)> provider();
+
+ private:
+  struct Entry {
+    catalog::ProvisioningProgress progress;
+    std::chrono::steady_clock::time_point started{};
+    std::uint64_t bytes_at_start = 0;
+    bool started_set = false;
+  };
+  mutable std::mutex mu_;
+  std::map<std::string, Entry> entries_;
+};
+
 struct ProductionOptions {
   std::shared_ptr<config::FatherSettingsStore> settings;
   std::shared_ptr<const transport::DeviceIdentity> identity;

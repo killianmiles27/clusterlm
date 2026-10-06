@@ -23,6 +23,12 @@
 
 namespace clusterlm::father {
 
+// Where the shipped tier catalog is when --catalog is not given. Installed layout (cmake/ClusterLMInstall.cmake):
+// <prefix>/bin/clusterlm-father-agent.exe next to <prefix>/catalog/clusterlm-catalog.json, so
+// `<exe dir>/../catalog/clusterlm-catalog.json` comes first; the development layout (the catalog copied next to the
+// executables) is the fallback, and is also what is returned, for the error message, when neither file exists.
+std::filesystem::path default_catalog_path(const std::filesystem::path& exe_dir);
+
 class FatherApiHandler {
  public:
   virtual ~FatherApiHandler() = default;

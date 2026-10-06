@@ -103,6 +103,7 @@ struct NodeWorker::Impl {
   std::optional<protocol::AuthorizePeer> downstream;  // we forward to this peer
   std::shared_ptr<MessageStream> downstream_stream;
   std::vector<protocol::AuthorizePeer> inbound_allowed;  // peers allowed to forward to us
+  std::vector<std::string> paired_fathers;  // the pinned identities this Node was started trusting (guarded by mu)
   // One thread per accepted connection. Finished threads are joined as new connections arrive (an unjoined
   // finished thread keeps its stack until joined), and the number of live handlers is bounded.
   struct Handler {
@@ -146,7 +147,8 @@ struct NodeWorker::Impl {
     offer.safe_ram_bytes = cfg.ram_allowance;
     offer.safe_vram_bytes = cfg.vram_allowance;
     offer.staging_disk_bytes = cfg.disk_allowance;
-    offer.cpu_summary = "reported-by-clusterlm-bench";
+    offer.cpu_summary = cfg.cpu_threads > 0 ? "reported-by-clusterlm-bench threads<=" + std::to_string(cfg.cpu_threads)
+                                            : "reported-by-clusterlm-bench";
     offer.gpu_summary = backend->info().supports_gpu ? "gpu" : "none";
     return offer;
   }
@@ -267,7 +269,7 @@ struct NodeWorker::Impl {
         if (received.status().code() == ErrorCode::kDeadlineExceeded) continue;
         break;
       }
-      handle_control(*stream, received->message, received->correlation);
+      if (!handle_control(*stream, received->message, received->correlation)) break;
     }
     drop_control(stream);
   }
@@ -287,7 +289,8 @@ struct NodeWorker::Impl {
     }
   }
 
-  void handle_control(MessageStream& s, const Message& m, std::uint64_t corr) {
+  // Returns false when the connection must be closed after this message (an accepted UnpairNotice).
+  bool handle_control(MessageStream& s, const Message& m, std::uint64_t corr) {
     if (auto* p = std::get_if<protocol::PreparePlan>(&m)) {
       auto r = prepare_plan(*p);
       (void)s.send(r.is_ok() ? Message(r.value()) : error_reply(r.status(), protocol::MessageType::kPreparePlan), corr);
@@ -325,18 +328,66 @@ struct NodeWorker::Impl {
         (void)s.send(error_reply(make_error(ErrorCode::kStaleEpoch, "release names a stale lease"),
                                  protocol::MessageType::kReleaseLease),
                      corr);
-        return;
+        return true;
       }
       auto report = release(rl->reason, /*notify=*/false);
       (void)s.send(report, corr);
       std::lock_guard lock(mu);
       if (state == NodeState::kAvailable) (void)s.send(offer_locked());
+    } else if (auto* un = std::get_if<protocol::UnpairNotice>(&m)) {
+      return !handle_unpair_notice(s, *un, corr);
     } else if (auto* ping = std::get_if<protocol::Ping>(&m)) {
       (void)s.send(protocol::Pong{ping->nonce}, corr);
     } else {
       (void)s.send(error_reply(make_error(ErrorCode::kProtocolError, "unexpected control message"), protocol::type_of(m)),
                    corr);
     }
+    return true;
+  }
+
+  // The paired Father says it is unpairing this Node. Only a pinned (paired) Father can be on this channel at all:
+  // mutual TLS admits no other identity, and the check below repeats the pin explicitly. The sequence is: release
+  // the lease (storage gone), stop trusting that identity at once, acknowledge, then tell the supervising service
+  // (which clears its paired-Father setting and restarts this worker without the trust entry).
+  // Returns true when the notice was accepted (the caller then closes the channel).
+  static std::string lower_copy(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return v;
+  }
+  bool is_paired_father(const std::string& device_id) const {
+    std::lock_guard lock(mu);
+    return std::any_of(paired_fathers.begin(), paired_fathers.end(),
+                       [&](const std::string& f) { return lower_copy(f) == lower_copy(device_id); });
+  }
+  bool handle_unpair_notice(MessageStream& s, const protocol::UnpairNotice& n, std::uint64_t corr) {
+    const std::string peer = s.peer().device_id;
+    if (cfg.security.mode == transport::SecurityConfig::Mode::kMutualTls) {
+      if (!s.peer().authenticated || !is_paired_father(peer)) {
+        log::warn("unpair_notice_rejected");
+        (void)s.send(error_reply(make_error(ErrorCode::kPermissionDenied, "only the paired Father may unpair this Node"),
+                                 protocol::MessageType::kUnpairNotice),
+                     corr);
+        return false;
+      }
+    }
+    bool had_lease;
+    {
+      std::lock_guard lock(mu);
+      had_lease = plan.has_value() || state == NodeState::kPreparing || state == NodeState::kReady ||
+                  state == NodeState::kInferencing;
+    }
+    if (had_lease) (void)release(protocol::ReleaseReason::kFatherRequest, /*notify=*/false);
+    if (cfg.security.mode == transport::SecurityConfig::Mode::kMutualTls) {
+      cfg.security.revoke(peer);
+      std::lock_guard lock(mu);
+      paired_fathers.erase(std::remove_if(paired_fathers.begin(), paired_fathers.end(),
+                                          [&](const std::string& f) { return lower_copy(f) == lower_copy(peer); }),
+                           paired_fathers.end());
+    }
+    log::info("unpair_notice_accepted");
+    (void)s.send(protocol::Pong{n.nonce}, corr);
+    if (cfg.on_unpair_notice) cfg.on_unpair_notice(peer);
+    return true;
   }
 
   Result<protocol::PlanAccepted> prepare_plan(const protocol::PreparePlan& p) {
@@ -389,6 +440,7 @@ struct NodeWorker::Impl {
         spec.max_context = sa.max_context;
         spec.max_window = sa.max_window;
         spec.max_local_batch = sa.max_local_batch;
+        spec.cpu_threads = cfg.cpu_threads;
         CLM_ASSIGN_OR_RETURN(auto probe, backend->create_domain(p.manifest, spec));
         CLM_ASSIGN_OR_RETURN(domain::DomainRequirements req, probe->describe_requirements());
         add(working, req.state_bytes);
@@ -626,6 +678,7 @@ struct NodeWorker::Impl {
       spec.max_context = sa.max_context;
       spec.max_window = sa.max_window;
       spec.max_local_batch = sa.max_local_batch;
+      spec.cpu_threads = cfg.cpu_threads;
       if (sa.role != domain::StageRole::kMiddle)
         return make_error(ErrorCode::kPermissionDenied, "Nodes host token-free middle stages only");
       CLM_ASSIGN_OR_RETURN(auto d, backend->create_domain(plan->manifest, spec));
@@ -884,6 +937,13 @@ NodeWorker::NodeWorker(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Result<std::unique_ptr<NodeWorker>> NodeWorker::start(NodeConfig config) {
   auto impl = std::make_unique<Impl>();
   impl->cfg = std::move(config);
+  // Everything trusted at start is a paired Father (peer Nodes are only ever added later, per lease, and are
+  // refused the Father role). Only these may send an UnpairNotice.
+  impl->paired_fathers = impl->cfg.security.trusted_peers;
+  if (impl->cfg.security.dynamic_trust) {
+    const auto dyn = impl->cfg.security.dynamic_trust->snapshot();
+    impl->paired_fathers.insert(impl->paired_fathers.end(), dyn.begin(), dyn.end());
+  }
   log::info("node_starting", {{"name", impl->cfg.name}});
   if (impl->cfg.backend != "reference")
     return make_error(ErrorCode::kUnimplemented, "backend '" + impl->cfg.backend + "' is not available in this build");
@@ -918,6 +978,8 @@ NodeStatus NodeWorker::status() const {
   std::lock_guard lock(impl_->mu);
   NodeStatus s = impl_->counters;
   s.state = impl_->state;
+  s.sealed_objects = static_cast<std::uint32_t>(impl_->sealed_count);
+  s.planned_objects = impl_->plan ? static_cast<std::uint32_t>(impl_->plan->assignments.size()) : 0;
   // Application-owned staged bytes: everything under the staging root except the content-free journal.
   auto census = platform::allocated_bytes_under(impl_->store->root());
   std::error_code ec;

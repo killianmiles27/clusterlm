@@ -93,6 +93,40 @@ struct NodeProvisionReport {
   std::uint64_t node_prepare_ns = 0;
 };
 
+// ---- preparation progress ---------------------------------------------------------------------------------
+// Observation of prepare(): what is being sent where and how far it is. Counts, bytes and Node names only: never an
+// object name, tensor data, token or activation. Optional; the Coordinator behaves identically without a sink.
+enum class PreparePhase : std::uint8_t {
+  kFatherDomains,  // Father loads its own prefix/tail objects
+  kProvisioning,   // objects are streamed to the Node
+  kNodePreparing,  // every object of this Node is sealed; it maps and verifies them
+  kNodeReady,      // the Node reported PlanReady
+  kAuthorizing,    // direct Node-to-Node links are being authorized
+  kDone,
+};
+std::string_view to_string(PreparePhase p);
+
+struct NodePrepareProgress {
+  std::string node;
+  PreparePhase phase = PreparePhase::kProvisioning;
+  std::uint64_t bytes_sent = 0;   // object bytes already sent (objects sealed on a resumed channel count as sent)
+  std::uint64_t bytes_total = 0;  // object bytes this Node is assigned
+  std::uint32_t objects_sealed = 0;
+  std::uint32_t objects_total = 0;
+};
+
+struct PrepareProgress {
+  PreparePhase phase = PreparePhase::kFatherDomains;  // the earliest phase any part of the plan is still in
+  std::vector<NodePrepareProgress> nodes;             // every remote stage's Node, in plan order
+  std::uint64_t bytes_sent = 0, bytes_total = 0;      // sums over `nodes`
+  std::uint32_t objects_sealed = 0, objects_total = 0;
+};
+
+// Called whenever something changes: always on a phase change or a sealed object, at most every 50 ms for byte
+// counts. Invocations are serialized (never concurrent) but may come from different threads, and always before
+// prepare() returns. The sink must be quick and must not call back into the Coordinator.
+using PrepareProgressSink = std::function<void(const PrepareProgress&)>;
+
 struct PrepareReport {
   Digest256 plan_hash;
   std::vector<NodeProvisionReport> nodes;
@@ -232,7 +266,7 @@ class Coordinator {
   // Open control channels to every configured Node and collect their resource offers.
   Status connect();
   // Provision and prepare a plan. Nodes become Ready; Father's local prefix/tail domains are prepared.
-  Result<PrepareReport> prepare(const ClusterPlan& plan);
+  Result<PrepareReport> prepare(const ClusterPlan& plan, PrepareProgressSink progress = {});
   // Open a conversation (a distributed session on every domain of the prepared plan).
   Result<std::shared_ptr<Conversation>> open_conversation();
   // Free a conversation's sequence state everywhere (the lease and weights stay Ready).

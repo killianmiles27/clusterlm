@@ -43,7 +43,14 @@ struct NodeConfig {
   std::uint64_t vram_allowance = 0;
   std::uint64_t disk_allowance = 0;     // 0 = disk staging not permitted
   std::string backend = "reference";
+  // Upper bound on compute threads any domain of this Node may use (0 = automatic). Set from the user's
+  // resource cap (config::ResourceCaps::threads); reported in the offer, passed to every DomainSpec.
+  std::uint32_t cpu_threads = 0;
   bool start_busy = false;
+  // Called once, from the control-channel thread and after the reply was sent, when the paired Father sent an
+  // UnpairNotice: the lease is already released and `peer_device_id` is no longer trusted. The supervising service
+  // clears its paired-Father setting. Must not call back into the worker.
+  std::function<void(const std::string& peer_device_id)> on_unpair_notice;
   // Network emulation applied to every connection this Node opens or accepts (simulation only).
   std::optional<transport::NetworkConditions> impairment;
   std::shared_ptr<transport::FaultInjector> faults;
@@ -63,6 +70,9 @@ struct NodeStatus {
   std::uint64_t last_release_ns = 0;
   bool last_storage_cleaned = true;
   std::uint64_t staging_census_bytes = 0;
+  // Lease progress, counts only: objects of the current plan that are sealed, and objects the plan assigns.
+  std::uint32_t sealed_objects = 0;
+  std::uint32_t planned_objects = 0;
 };
 
 class NodeWorker {

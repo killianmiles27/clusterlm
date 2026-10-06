@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "clusterlm/config/store.hpp"
 #include "clusterlm/node/supervisor.hpp"
 #include "clusterlm/platform/helper_activity.hpp"
 #include "clusterlm/platform/helper_startup.hpp"
@@ -45,6 +46,12 @@ struct ServiceCoreConfig {
   // Optional: session enumeration and helper launch (Windows: WindowsHelperHost). Null = no helper management.
   std::shared_ptr<platform::HelperHost> helper_host;
   platform::HelperStartupConfig helper_startup;
+  // The Node settings document. Optional: without it the settings messages answer kUnimplemented and an
+  // UnpairNotice only revokes trust (nothing to clear). Shared with the app, which also writes it when pairing.
+  std::shared_ptr<config::NodeSettingsStore> settings;
+  // Minimum spacing of accepted settings updates (each may restart the worker) and of pairing-mode requests.
+  std::chrono::milliseconds settings_min_interval{500};
+  std::chrono::milliseconds pairing_min_interval{5000};
 };
 
 class ServiceCore {
@@ -74,6 +81,20 @@ class ServiceCore {
   // replies show ("" = unpaired).
   Status set_trusted_fathers(std::vector<std::string> fingerprints, std::string paired_father_short);
 
+  // Called by the helper-pipe handler to enter pairing mode (the app owns the responder). Returns the line to show.
+  using PairingModeStarter = std::function<Result<ipc::PairingModeReply>()>;
+  void set_pairing_starter(PairingModeStarter starter);
+
+  // Settings (helper-pipe messages and tests). Only the fields of ipc::NodeSettingsView: the user-safe subset.
+  // apply_settings validates (config::validate), persists atomically, then applies: policy immediately, resource caps
+  // by restarting the worker (cooperative release first). kFailedPrecondition without a settings store;
+  // kResourceExhausted when called again within settings_min_interval.
+  Result<ipc::NodeSettingsView> settings_view() const;
+  Status apply_settings(const ipc::NodeSettingsView& view);
+  // Forget the paired Father: clears the settings entry and restarts the worker trusting nobody (any lease is
+  // revoked first). Used by `--unpair`, the console `unpair` command and an accepted UnpairNotice.
+  Status unpair_father();
+
   void handle_power_event(const platform::PowerEvent& event);
   void handle_session_event(const platform::SessionEvent& event);
 
@@ -82,10 +103,14 @@ class ServiceCore {
   ipc::StatusReply status() const;
   std::string worker_endpoint() const;
   std::string worker_device_id() const;
+  // The worker's current launch arguments and the idle policy in force (tests and diagnostics).
+  std::vector<std::string> worker_args() const;
+  IdlePolicy policy() const;
 
  private:
   void serve(const std::shared_ptr<ipc::Connection>& conn, const std::atomic<bool>& stop);
   ipc::Envelope handle_message(const ipc::Envelope& request, const ipc::PeerCredentials& peer);
+  void on_unpair_notice(const std::string& peer_device_id);
   void refresh_sessions_locked();
   void emit(const std::vector<SupervisorEvent>& events);
 
@@ -102,6 +127,11 @@ class ServiceCore {
   std::atomic<bool> stopping_{false};
   std::mutex wake_mu_;
   std::condition_variable wake_;
+  std::chrono::steady_clock::time_point last_settings_apply_{};  // guarded by mu_
+  std::mutex pairing_mu_;                                         // guards the three below
+  PairingModeStarter pairing_starter_;
+  std::chrono::steady_clock::time_point last_pairing_request_{};
+  bool pairing_requested_ = false;
 };
 
 }  // namespace clusterlm::node

@@ -1,6 +1,8 @@
 // IpcNodeClient (helper pipe messages). IpcFatherClient lives in ipc_father_client.cpp.
 #include "clusterlm/ui/clients.hpp"
 
+#include <thread>
+
 namespace clusterlm::ui {
 
 // ---- Node ----------------------------------------------------------------------------------------------------
@@ -8,11 +10,6 @@ namespace clusterlm::ui {
 IpcNodeClient::~IpcNodeClient() {
   std::lock_guard lk(mu_);
   if (conn_) conn_->close();
-}
-
-std::string_view IpcNodeClient::settings_unavailable_message() {
-  return "This build cannot save Node settings yet (the Node configuration store is not available). Changes apply "
-         "to this window only.";
 }
 
 Result<ipc::Envelope> IpcNodeClient::call(const ipc::Envelope& request) {
@@ -60,7 +57,10 @@ Result<NodeStatus> IpcNodeClient::status() {
     out.detail = "The Node service sent an answer this window does not understand.";
     return out;
   }
-  out.state = from_ipc(sr->state);
+  out.state = from_ipc(sr->state, sr->lease_state);
+  out.lease = sr->lease_state;
+  out.lease_parts_done = sr->lease_objects_sealed;
+  out.lease_parts_total = sr->lease_objects_total;
   out.paired_father = sr->paired_father;
   out.storage_bytes = sr->storage_bytes;
   out.fresh = sr->helper_reports_fresh;
@@ -79,11 +79,41 @@ Status IpcNodeClient::resume() {
   return expect_ack(r.value());
 }
 
-Result<NodeSettings> IpcNodeClient::get_settings() { return NodeSettings{}; }
+Result<ipc::NodeSettingsView> IpcNodeClient::read_view() {
+  auto reply = call(ipc::encode(ipc::SettingsRequest{}));
+  if (!reply.is_ok()) return reply.status();
+  if (auto sr = ipc::decode_settings_reply(reply.value()); sr.is_ok()) return sr->settings;
+  // Not a SettingsReply: the service answered with an Ack carrying the reason.
+  if (Status st = expect_ack(reply.value()); !st.is_ok()) return st;
+  return make_error(ErrorCode::kProtocolError, "the Node service sent an answer this window does not understand");
+}
+
+Result<NodeSettings> IpcNodeClient::get_settings() {
+  CLM_ASSIGN_OR_RETURN(auto view, read_view());
+  return from_view(view, std::thread::hardware_concurrency());
+}
 
 Status IpcNodeClient::set_settings(const NodeSettings& s) {
   if (auto st = validate(s); !st.is_ok()) return st;
-  return make_error(ErrorCode::kUnimplemented, std::string(settings_unavailable_message()));
+  CLM_ASSIGN_OR_RETURN(auto base, read_view());
+  auto r = call(ipc::encode(ipc::SettingsUpdate{to_view(s, base, std::thread::hardware_concurrency())}));
+  if (!r.is_ok()) return r.status();
+  return expect_ack(r.value());
+}
+
+Result<NodePairingInfo> IpcNodeClient::enter_pairing_mode() {
+  auto reply = call(ipc::encode(ipc::PairingModeRequest{}));
+  if (!reply.is_ok()) return reply.status();
+  if (auto pr = ipc::decode_pairing_mode_reply(reply.value()); pr.is_ok()) {
+    NodePairingInfo info;
+    info.code = pr->code;
+    info.endpoint = pr->endpoint;
+    info.fingerprint = pr->fingerprint;
+    info.window_seconds = pr->window_seconds;
+    return info;
+  }
+  if (Status st = expect_ack(reply.value()); !st.is_ok()) return st;
+  return make_error(ErrorCode::kProtocolError, "the Node service sent an answer this window does not understand");
 }
 
 }  // namespace clusterlm::ui

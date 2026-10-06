@@ -14,6 +14,51 @@ namespace clusterlm::father {
 
 namespace fs = std::filesystem;
 
+// ---------------------------------------------------------------------------------------------- progress
+
+void ProvisioningBoard::update(const std::string& tier_id, const coordinator::PrepareProgress& p) {
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard lk(mu_);
+  Entry& e = entries_[tier_id];
+  if (!e.started_set && p.bytes_sent > 0) {
+    e.started_set = true;
+    e.started = now;
+    e.bytes_at_start = p.bytes_sent;
+  }
+  e.progress.bytes_done = p.bytes_sent;
+  e.progress.bytes_total = p.bytes_total;
+  if (e.started_set && p.bytes_sent > e.bytes_at_start) {
+    const double secs = std::chrono::duration<double>(now - e.started).count();
+    if (secs >= 0.5) {
+      e.progress.rate_bytes_per_s = static_cast<double>(p.bytes_sent - e.bytes_at_start) / secs;
+      e.progress.rate_is_measured = true;
+    }
+  }
+}
+
+void ProvisioningBoard::clear(const std::string& tier_id) {
+  std::lock_guard lk(mu_);
+  entries_.erase(tier_id);
+}
+
+std::optional<catalog::ProvisioningProgress> ProvisioningBoard::get(const std::string& tier_id) const {
+  std::lock_guard lk(mu_);
+  auto it = entries_.find(tier_id);
+  if (it == entries_.end()) return std::nullopt;
+  return it->second.progress;
+}
+
+PrepareObserver ProvisioningBoard::observer() {
+  PrepareObserver o;
+  o.on_progress = [this](const std::string& tier, const coordinator::PrepareProgress& p) { update(tier, p); };
+  o.on_finished = [this](const std::string& tier) { clear(tier); };
+  return o;
+}
+
+std::function<std::optional<catalog::ProvisioningProgress>(const std::string&)> ProvisioningBoard::provider() {
+  return [this](const std::string& tier) { return get(tier); };
+}
+
 // ---------------------------------------------------------------------------------------------- details
 
 void DetailsBoard::set(const std::string& tier_id, std::string key, std::string text) {

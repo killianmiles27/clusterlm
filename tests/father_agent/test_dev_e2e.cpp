@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -269,6 +270,30 @@ TEST_CASE("dev end to end: pair two nodes, assign tiers, prepare Ultra on the fi
     for (const auto& e : ui.events) ready = ready || e["event"] == "tier_ready";
     REQUIRE_MESSAGE(ready, "tier did not become ready");
 
+    // Preparation progress from the Coordinator reached the UI as pushed events: per machine bytes and parts.
+    json last_detail;
+    for (const auto& e : ui.events)
+      if (e["event"] == "prepare_progress" && e.contains("detail") && e["detail"]["nodes"].size() == 2) last_detail = e["detail"];
+    REQUIRE_MESSAGE(!last_detail.is_null(), "no prepare_progress event carried per-machine detail");
+    {
+      std::set<std::string> names;  // plan order is the deployment's business; both machines must be there
+      for (const auto& n : last_detail["nodes"]) names.insert(n["name"].get<std::string>());
+      CHECK(names == std::set<std::string>{"g14", "n3060"});
+    }
+    for (const auto& n : last_detail["nodes"]) {
+      CHECK(n["bytes_total"].get<std::uint64_t>() > 0);
+      CHECK(n["bytes_sent"].get<std::uint64_t>() <= n["bytes_total"].get<std::uint64_t>());
+      CHECK(n["objects_sealed"].get<std::uint32_t>() <= n["objects_total"].get<std::uint32_t>());
+    }
+    for (const auto& e : ui.events) {
+      if (e["event"] != "prepare_progress" || !e.contains("detail")) continue;
+      // Counts and machine names only: nothing else is in the detail.
+      for (const auto& n : e["detail"]["nodes"])
+        for (auto it = n.begin(); it != n.end(); ++it)
+          CHECK((it.key() == "name" || it.key() == "phase" || it.key() == "bytes_sent" || it.key() == "bytes_total" ||
+                 it.key() == "objects_sealed" || it.key() == "objects_total"));
+    }
+
     auto chat = ui.call({{"op", "chat.send"}, {"message", "hello"}, {"max_new_tokens", 12}, {"context_tokens", 4096}});
     REQUIRE_MESSAGE(chat["ok"] == true, chat.dump());
     const auto rid = chat["result"]["request_id"].get<std::uint64_t>();
@@ -297,6 +322,34 @@ TEST_CASE("dev end to end: pair two nodes, assign tiers, prepare Ultra on the fi
     REQUIRE(ui.call({{"op", "session.release"}})["ok"] == true);
     auto un = ui.call({{"op", "pairing.unpair"}, {"fingerprint", fp_g14}});
     REQUIRE_MESSAGE(un["ok"] == true, un.dump());
+    // The reachable Node was told over the pinned channel: it drops trust in this Father and clears its setting.
+    CHECK(un["result"]["node_notified"] == true);
+    {
+      ipc::ClientOptions co;
+      std::string paired = "unknown";
+      for (int i = 0; i < 60 && !paired.empty(); ++i) {
+        auto c = ipc::connect({ipc::kNodeHelperPipeName, g14.dir / "ipc"}, co, 2s);
+        if (c.is_ok() && c.value()->send(ipc::encode(ipc::StatusRequest{}), 2s).is_ok()) {
+          auto r = c.value()->receive(2s);
+          if (r.is_ok())
+            if (auto sr = ipc::decode_status_reply(r.value()); sr.is_ok()) paired = sr->paired_father;
+        }
+        if (!paired.empty()) std::this_thread::sleep_for(250ms);
+      }
+      CHECK_MESSAGE(paired.empty(), "the Node still shows a paired Father after the unpair notice");
+    }
+    // The other Node, which was not unpaired, still has its Father.
+    {
+      ipc::ClientOptions co;
+      auto c = ipc::connect({ipc::kNodeHelperPipeName, n3060.dir / "ipc"}, co, 2s);
+      REQUIRE(c.is_ok());
+      REQUIRE(c.value()->send(ipc::encode(ipc::StatusRequest{}), 2s).is_ok());
+      auto r = c.value()->receive(2s);
+      REQUIRE(r.is_ok());
+      auto sr = ipc::decode_status_reply(r.value());
+      REQUIRE(sr.is_ok());
+      CHECK_FALSE(sr->paired_father.empty());
+    }
     auto after = ui.call({{"op", "pairing.list"}});
     CHECK(after["result"]["devices"].size() == 1);
     CHECK(after["result"]["assignments"].contains("node:laptop-class") == false);

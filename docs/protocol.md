@@ -10,7 +10,7 @@ Every Father↔Node pair uses three authenticated connections. Each starts with 
 
 | Channel | Messages | Why separate |
 |---|---|---|
-| control | `OfferResources`, `PreparePlan`/`PlanAccepted`, `PlanReady`, `AuthorizePeer`, `OpenSession`/`SessionOpened`, `CommitWindow`/`CommitAck`, `AbortWindow`/`WindowAborted`, `AbortSession`, `ReleaseLease`/`ReleaseComplete`, `Ping`/`Pong`, `Error` | Latency-critical; must never queue behind bulk data |
+| control | `OfferResources`, `PreparePlan`/`PlanAccepted`, `PlanReady`, `AuthorizePeer`, `OpenSession`/`SessionOpened`, `CommitWindow`/`CommitAck`, `AbortWindow`/`WindowAborted`, `AbortSession`, `ReleaseLease`/`ReleaseComplete`, `UnpairNotice` (Father to Node, answered by `Pong`; docs/pairing.md), `Ping`/`Pong`, `Error` | Latency-critical; must never queue behind bulk data |
 | activation | `RunWindow` → `StageResult` | Bounded activation payloads |
 | provision | `ProvisionStatus`, `ProvisionChunk`, `SealObject` → `ObjectSealed` | Bulk, lowest priority; opened only while preparing |
 

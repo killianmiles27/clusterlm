@@ -125,6 +125,7 @@ busy Node) are listed in the registry entry.
   on directory names); real validation is the `windows-packaging` job. Expect the first CI runs to need small fixes.
 - `NODE_PORT`/`NODE_REMOTE` are applied at install; changing them later means reinstalling or running
   `clusterlm-node-service.exe --install --port N --remote ADDR` elevated.
-- The Father catalog is installed to `catalog\clusterlm-catalog.json`; no Father code locates it there by default yet
-  (nothing in the tree resolves a default catalog path), a follow-up for the Father service workstream.
+- The Father catalog is installed to `catalog\clusterlm-catalog.json`; `clusterlm-father-agent` resolves
+  `<exe dir>\..\catalog\clusterlm-catalog.json` when `--catalog` is not given (then `<exe dir>\clusterlm-catalog.json`,
+  the development layout).
 - A `--cleanup` failure does not fail the uninstall (ADR 0291); `HQ-INSTALL-01` checks the result.

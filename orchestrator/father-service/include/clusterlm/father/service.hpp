@@ -69,11 +69,26 @@ class ReadinessSource {
 using RequestId = std::uint64_t;
 
 struct TierSelectedEvent { std::string tier_id, model_name; };
+// Where preparation is, from the Coordinator: per Node bytes sent / total, objects sealed / total and a phase. Counts
+// and Node names only (no object names, no content). Present on events the Coordinator's progress produced.
+struct PrepareDetail {
+  struct Node {
+    std::string name;
+    std::string phase;  // coordinator::to_string(PreparePhase): provisioning | node-preparing | node-ready
+    std::uint64_t bytes_sent = 0, bytes_total = 0;
+    std::uint32_t objects_sealed = 0, objects_total = 0;
+  };
+  std::string phase;  // overall phase
+  std::vector<Node> nodes;
+  std::uint64_t bytes_sent = 0, bytes_total = 0;
+  std::uint32_t objects_sealed = 0, objects_total = 0;
+};
 struct PrepareProgressEvent {
   std::string tier_id, model_name;
   std::optional<double> percent;
   std::optional<double> eta_seconds;  // estimate
   std::string message;
+  std::optional<PrepareDetail> detail = std::nullopt;
 };
 struct TierReadyEvent { std::string tier_id, model_name; };
 // Father-local: carries the generated token IDs and their text for the UI/agent only.
@@ -169,6 +184,13 @@ class FatherService {
   virtual bool wait_idle(std::chrono::milliseconds timeout) = 0;
 };
 
+// Receives the Coordinator's prepare progress for a tier (called from Coordinator worker threads, serialized). The
+// production wiring is ProvisioningBoard (production.hpp), which also feeds readiness observation.
+struct PrepareObserver {
+  std::function<void(const std::string& tier_id, const coordinator::PrepareProgress&)> on_progress;
+  std::function<void(const std::string& tier_id)> on_finished;  // always called once when a prepare ends, ok or not
+};
+
 struct ServiceDeps {
   catalog::Catalog catalog;
   catalog::TierAssignment assignment;
@@ -176,6 +198,7 @@ struct ServiceDeps {
   std::shared_ptr<ReadinessSource> readiness;
   std::shared_ptr<DeploymentProvider> deployments;
   ServiceOptions options;
+  PrepareObserver prepare_observer;  // optional
 };
 
 Result<std::unique_ptr<FatherService>> make_father_service(ServiceDeps deps);

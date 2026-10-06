@@ -51,6 +51,10 @@ struct DomainSpec {
   // Largest batch this domain processes in one local step (0 = max_window). A transport chunk larger than this
   // is executed in local sub-batches, so a small GPU never forces a smaller chunk size on every other stage.
   std::uint32_t max_local_batch = 0;
+  // Upper bound on compute threads this domain may use (0 = the backend's automatic choice). Comes from the user's
+  // resource cap on a Node. The reference backend is single-threaded by construction (its determinism contract) and
+  // so is always within any cap; thread-pool backends map it onto their pool size when the domain is created.
+  std::uint32_t cpu_threads = 0;
 };
 
 // Memory a domain needs, reported before allocation so admission can happen against live budgets.

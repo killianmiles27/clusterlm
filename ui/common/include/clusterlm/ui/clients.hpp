@@ -202,14 +202,17 @@ class IpcNodeClient final : public NodeClient {
   Result<NodeStatus> status() override;
   Status pause() override;
   Status resume() override;
-  // The service has no config store yet (WP14): the defaults come back and set_settings is kUnimplemented.
+  // Settings are read and saved through the service (SettingsRequest / SettingsUpdate on the helper pipe): the
+  // service validates, persists and applies them; a save returns only after it did. set_settings keeps the service
+  // fields this window does not edit (idle time) by re-reading them first.
   Result<NodeSettings> get_settings() override;
   Status set_settings(const NodeSettings&) override;
-  static std::string_view settings_unavailable_message();
+  Result<NodePairingInfo> enter_pairing_mode() override;
 
  private:
   Result<ipc::Envelope> call(const ipc::Envelope& request);
   Status expect_ack(const ipc::Envelope& reply);
+  Result<ipc::NodeSettingsView> read_view();
 
   Options opts_;
   std::mutex mu_;

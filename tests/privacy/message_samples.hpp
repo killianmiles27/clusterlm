@@ -15,7 +15,7 @@
 namespace clusterlm::testing {
 
 inline constexpr std::size_t kMessageAlternatives = std::variant_size_v<protocol::Message>;
-static_assert(kMessageAlternatives == 25,
+static_assert(kMessageAlternatives == 26,
               "a protocol::Message alternative was added or removed: update sample_messages(), the privacy "
               "allowlist in tests/privacy/test_message_schema.cpp and docs/security/threat-model.md deliberately");
 
@@ -161,6 +161,7 @@ inline std::vector<protocol::Message> sample_messages(std::uint32_t positions = 
   out.emplace_back(ErrorMessage{ErrorCode::kStaleEpoch, "stale lease", MessageType::kRunWindow});
   out.emplace_back(Ping{42});
   out.emplace_back(Pong{42});
+  out.emplace_back(UnpairNotice{43});
   out.emplace_back(AbortWindow{Epoch{2}, SessionId{5}, WindowId{9}, StageId{1}});
   out.emplace_back(WindowAborted{StageId{1}, domain::WindowAbortAck{SessionId{5}, WindowId{9}, 12, StateVersion{4}}});
   out.emplace_back(ProvisionStatus{LeaseGeneration{7}, {1, 2, 3}});

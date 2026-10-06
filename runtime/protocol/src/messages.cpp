@@ -389,6 +389,9 @@ bool decode_body(ByteReader& r, ReleaseLease& m, const DecodeLimits&) {
   return get(r, m.lease) && get_enum(r, m.reason, 4);
 }
 
+void encode_body(ByteWriter& w, const UnpairNotice& m) { w.u64(m.nonce); }
+bool decode_body(ByteReader& r, UnpairNotice& m, const DecodeLimits&) { return r.u64(m.nonce); }
+
 void encode_body(ByteWriter& w, const ReleaseComplete& m) {
   put(w, m.lease);
   w.boolean(m.resources_released);
@@ -451,6 +454,7 @@ CLM_MESSAGE_TYPE(Pong, kPong)
 CLM_MESSAGE_TYPE(AbortWindow, kAbortWindow)
 CLM_MESSAGE_TYPE(WindowAborted, kWindowAborted)
 CLM_MESSAGE_TYPE(ProvisionStatus, kProvisionStatus)
+CLM_MESSAGE_TYPE(UnpairNotice, kUnpairNotice)
 #undef CLM_MESSAGE_TYPE
 
 template <typename T>
@@ -503,6 +507,7 @@ std::string_view to_string(MessageType t) {
     case MessageType::kAbortWindow: return "AbortWindow";
     case MessageType::kWindowAborted: return "WindowAborted";
     case MessageType::kProvisionStatus: return "ProvisionStatus";
+    case MessageType::kUnpairNotice: return "UnpairNotice";
   }
   return "Unknown";
 }
@@ -559,6 +564,7 @@ Result<Message> decode(MessageType type, ByteSpan payload, const DecodeLimits& l
     case MessageType::kAbortWindow: return decode_as<AbortWindow>(payload, limits);
     case MessageType::kWindowAborted: return decode_as<WindowAborted>(payload, limits);
     case MessageType::kProvisionStatus: return decode_as<ProvisionStatus>(payload, limits);
+    case MessageType::kUnpairNotice: return decode_as<UnpairNotice>(payload, limits);
   }
   return make_error(ErrorCode::kProtocolError, "unknown message type " + std::to_string(static_cast<int>(type)));
 }

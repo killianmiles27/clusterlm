@@ -14,6 +14,10 @@ namespace {
 constexpr std::size_t kMaxHelperConnections = 8;
 
 ipc::Envelope ack(ErrorCode code, std::string message = {}) { return ipc::encode(ipc::Ack{code, std::move(message)}); }
+
+// Settings and pairing are for the person at the machine: a peer the OS says is in the services session (0) is not.
+// POSIX peers carry no session id; the socket's uid check already restricted them to the service's own user.
+bool interactive_peer(const ipc::PeerCredentials& peer) { return !(peer.session_known && peer.session_id == 0); }
 }  // namespace
 
 ServiceCore::ServiceCore(ServiceCoreConfig config, platform::PowerMonitor& power, std::unique_ptr<platform::ProcessJob> job)
@@ -67,10 +71,122 @@ void ServiceCore::refresh_sessions_locked() {
 }
 
 Result<std::vector<SupervisorEvent>> ServiceCore::run_once() {
-  std::lock_guard lock(mu_);
-  auto r = supervisor_.tick();
-  if (r.is_ok()) emit(r.value());
+  std::optional<std::string> notice;
+  auto r = [&] {
+    std::lock_guard lock(mu_);
+    auto tick = supervisor_.tick();
+    if (tick.is_ok()) emit(tick.value());
+    notice = supervisor_.take_unpair_notice();
+    return tick;
+  }();
+  if (notice) on_unpair_notice(*notice);  // outside the lock: it restarts the worker through set_trusted_fathers
   return r;
+}
+
+namespace {
+std::string lower(std::string v) {
+  std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return v;
+}
+
+ipc::NodeSettingsView to_view(const config::NodeSettings& s) {
+  ipc::NodeSettingsView v;
+  v.allow_when_idle = s.allow_when_idle;
+  v.idle_seconds = s.idle_seconds;
+  v.ac_only = s.ac_only;
+  v.temp_storage_limit_gib = s.temp_storage_limit_gib;
+  v.start_with_system = s.start_with_system;
+  v.ram_gib = s.caps.ram_gib;
+  v.vram_gib = s.caps.vram_gib;
+  v.threads = s.caps.threads;
+  return v;
+}
+}  // namespace
+
+// The worker accepted an UnpairNotice from a pinned Father. Honour it only if that Father is the one this service
+// has recorded as paired; the worker already stopped trusting it in memory, so on a mismatch the trust list is
+// restored by restarting it unchanged.
+void ServiceCore::on_unpair_notice(const std::string& peer) {
+  std::optional<config::PairedDevice> paired;
+  if (cfg_.settings) paired = cfg_.settings->get().paired_father;
+  if (cfg_.settings && (!paired || (!peer.empty() && lower(peer) != lower(paired->fingerprint)))) {
+    log::warn("unpair_notice_ignored", {{"reason", paired ? "not the paired father" : "nothing paired"}});
+    std::vector<std::string> trusted;
+    std::string label;
+    {
+      std::lock_guard lock(mu_);
+      trusted = supervisor_.trusted_peers();
+      label = cfg_.paired_father;
+    }
+    if (auto st = set_trusted_fathers(std::move(trusted), std::move(label)); !st.is_ok())
+      log::warn("trust_restore_failed", {{"status", st.to_string()}});
+    return;
+  }
+  if (auto st = unpair_father(); !st.is_ok()) log::warn("unpair_notice_apply_failed", {{"status", st.to_string()}});
+  else log::info("unpaired_by_father");
+}
+
+Status ServiceCore::unpair_father() {
+  if (cfg_.settings) {
+    CLM_RETURN_IF_ERROR(cfg_.settings->update([](config::NodeSettings& s) {
+      s.paired_father.reset();
+      return Status::ok();
+    }));
+  }
+  return set_trusted_fathers({}, "");
+}
+
+void ServiceCore::set_pairing_starter(PairingModeStarter starter) {
+  std::lock_guard lock(pairing_mu_);
+  pairing_starter_ = std::move(starter);
+}
+
+Result<ipc::NodeSettingsView> ServiceCore::settings_view() const {
+  if (!cfg_.settings) return make_error(ErrorCode::kFailedPrecondition, "this Node has no settings store");
+  return to_view(cfg_.settings->get());
+}
+
+Status ServiceCore::apply_settings(const ipc::NodeSettingsView& v) {
+  if (!cfg_.settings) return make_error(ErrorCode::kFailedPrecondition, "this Node has no settings store");
+  std::lock_guard lock(mu_);
+  const auto now = std::chrono::steady_clock::now();
+  if (last_settings_apply_ != std::chrono::steady_clock::time_point{} &&
+      now - last_settings_apply_ < cfg_.settings_min_interval)
+    return make_error(ErrorCode::kResourceExhausted, "settings were just changed; try again in a moment");
+  const bool was_allowed = cfg_.settings->get().allow_when_idle;
+  // Only the user-safe fields are copied; the name, the paired Father and every other field keep their values.
+  CLM_RETURN_IF_ERROR(cfg_.settings->update([&](config::NodeSettings& s) {
+    s.allow_when_idle = v.allow_when_idle;
+    s.idle_seconds = v.idle_seconds;
+    s.ac_only = v.ac_only;
+    s.temp_storage_limit_gib = v.temp_storage_limit_gib;
+    s.start_with_system = v.start_with_system;
+    s.caps.ram_gib = v.ram_gib;
+    s.caps.vram_gib = v.vram_gib;
+    s.caps.threads = v.threads;
+    return Status::ok();
+  }));
+  last_settings_apply_ = now;
+  // Applied to the running Node. Policy is immediate; changed caps restart the worker after a cooperative release.
+  IdlePolicy policy = supervisor_.policy();
+  policy.idle_seconds_required = v.idle_seconds;
+  policy.require_ac_power = v.ac_only;
+  WorkerCaps caps;
+  caps.ram_gib = v.ram_gib;
+  caps.vram_gib = v.vram_gib;
+  caps.disk_gib = v.temp_storage_limit_gib;
+  caps.threads = v.threads;
+  if (!v.allow_when_idle) activity_.pause(std::nullopt);
+  else if (!was_allowed) activity_.resume();
+  auto r = supervisor_.reconfigure(with_worker_caps(supervisor_.worker_args(), caps), policy);
+  if (!r.is_ok()) {
+    log::warn("settings_apply_failed", {{"status", r.status().to_string()}});
+    return make_error(ErrorCode::kInternal, "saved, but the Node could not apply the new limits yet");
+  }
+  emit(r.value());
+  std::lock_guard w(wake_mu_);
+  wake_.notify_all();
+  return Status::ok();
 }
 
 void ServiceCore::run() {
@@ -171,6 +287,19 @@ ipc::StatusReply ServiceCore::status() const {
     s.paired_father = cfg_.paired_father;
   }
   s.helper_reports_fresh = activity_.reports_fresh();
+  {
+    std::lock_guard lock(mu_);
+    const auto lv = supervisor_.worker_lease();
+    if (lv.known) {
+      s.lease_objects_sealed = lv.sealed_objects;
+      s.lease_objects_total = lv.planned_objects;
+      if (lv.state == "Preparing") s.lease_state = ipc::LeaseState::kPreparing;
+      else if (lv.state == "Ready") s.lease_state = ipc::LeaseState::kReady;
+      else if (lv.state == "Inferencing") s.lease_state = ipc::LeaseState::kInferencing;
+      else if (lv.state == "Releasing") s.lease_state = ipc::LeaseState::kReleasing;
+      else if (lv.state == "CleanupPending") s.lease_state = ipc::LeaseState::kCleanupPending;
+    }
+  }
   if (!cfg_.staging_root.empty()) {
     auto census = platform::census_under(cfg_.staging_root);
     if (census.is_ok()) {
@@ -186,6 +315,14 @@ ipc::StatusReply ServiceCore::status() const {
 std::string ServiceCore::worker_endpoint() const {
   std::lock_guard lock(mu_);
   return supervisor_.worker_endpoint();
+}
+std::vector<std::string> ServiceCore::worker_args() const {
+  std::lock_guard lock(mu_);
+  return supervisor_.worker_args();
+}
+IdlePolicy ServiceCore::policy() const {
+  std::lock_guard lock(mu_);
+  return supervisor_.policy();
 }
 std::string ServiceCore::worker_device_id() const {
   std::lock_guard lock(mu_);
@@ -229,6 +366,37 @@ ipc::Envelope ServiceCore::handle_message(const ipc::Envelope& request, const ip
     case MessageKind::kStatusRequest: {
       if (auto st = ipc::decode_status_request(request); !st.is_ok()) return ack(st.code(), "bad StatusRequest");
       return ipc::encode(status());
+    }
+    case MessageKind::kSettingsRequest: {
+      if (auto st = ipc::decode_settings_request(request); !st.is_ok()) return ack(st.code(), "bad SettingsRequest");
+      auto v = settings_view();
+      if (!v.is_ok()) return ack(v.status().code(), "settings are not available");
+      return ipc::encode(ipc::SettingsReply{v.value()});
+    }
+    case MessageKind::kSettingsUpdate: {
+      auto r = ipc::decode_settings_update(request);
+      if (!r.is_ok()) return ack(r.status().code(), "bad SettingsUpdate");
+      if (!interactive_peer(peer)) return ack(ErrorCode::kPermissionDenied, "settings can only be changed by a signed-in user");
+      auto st = apply_settings(r->settings);
+      return ack(st.code(), st.is_ok() ? std::string{} : std::string(st.message()));
+    }
+    case MessageKind::kPairingModeRequest: {
+      if (auto st = ipc::decode_pairing_mode_request(request); !st.is_ok()) return ack(st.code(), "bad PairingModeRequest");
+      if (!interactive_peer(peer)) return ack(ErrorCode::kPermissionDenied, "pairing can only be started by a signed-in user");
+      PairingModeStarter starter;
+      {
+        std::lock_guard lock(pairing_mu_);
+        if (!pairing_starter_) return ack(ErrorCode::kUnimplemented, "pairing is not available");
+        const auto now = std::chrono::steady_clock::now();
+        if (pairing_requested_ && now - last_pairing_request_ < cfg_.pairing_min_interval)
+          return ack(ErrorCode::kResourceExhausted, "pairing mode was just started; wait a few seconds");
+        pairing_requested_ = true;
+        last_pairing_request_ = now;
+        starter = pairing_starter_;
+      }
+      auto offer = starter();  // not under any lock: it asks this core for the worker endpoint
+      if (!offer.is_ok()) return ack(offer.status().code(), "could not start pairing mode");
+      return ipc::encode(offer.value());
     }
     default: return ack(ErrorCode::kProtocolError, "unsupported message kind");
   }

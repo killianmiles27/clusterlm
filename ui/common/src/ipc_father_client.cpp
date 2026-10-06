@@ -51,6 +51,32 @@ std::vector<std::string> strings(const json& j, const char* key) {
   return out;
 }
 
+std::optional<father::PrepareDetail> parse_prepare_detail(const json& j) {
+  auto it = j.find("detail");
+  if (it == j.end() || !it->is_object()) return std::nullopt;
+  father::PrepareDetail d;
+  d.phase = get<std::string>(*it, "phase", "");
+  d.bytes_sent = get<std::uint64_t>(*it, "bytes_sent", 0);
+  d.bytes_total = get<std::uint64_t>(*it, "bytes_total", 0);
+  d.objects_sealed = get<std::uint32_t>(*it, "objects_sealed", 0);
+  d.objects_total = get<std::uint32_t>(*it, "objects_total", 0);
+  auto nodes = it->find("nodes");
+  if (nodes != it->end() && nodes->is_array()) {
+    for (const auto& n : *nodes) {
+      if (!n.is_object()) continue;
+      father::PrepareDetail::Node out;
+      out.name = get<std::string>(n, "name", "");
+      out.phase = get<std::string>(n, "phase", "");
+      out.bytes_sent = get<std::uint64_t>(n, "bytes_sent", 0);
+      out.bytes_total = get<std::uint64_t>(n, "bytes_total", 0);
+      out.objects_sealed = get<std::uint32_t>(n, "objects_sealed", 0);
+      out.objects_total = get<std::uint32_t>(n, "objects_total", 0);
+      d.nodes.push_back(std::move(out));
+    }
+  }
+  return d;
+}
+
 // agent event JSON -> service event. Returns nullopt for anything unknown or malformed (ignored, never fatal).
 std::optional<father::Event> parse_event(const json& j) {
   if (!j.is_object()) return std::nullopt;
@@ -58,7 +84,7 @@ std::optional<father::Event> parse_event(const json& j) {
   if (kind == "tier_selected") return father::TierSelectedEvent{get<std::string>(j, "tier_id", ""), get<std::string>(j, "model_name", "")};
   if (kind == "prepare_progress")
     return father::PrepareProgressEvent{get<std::string>(j, "tier_id", ""), get<std::string>(j, "model_name", ""), opt_num(j, "percent"),
-                                        opt_num(j, "eta_seconds"), get<std::string>(j, "message", "")};
+                                        opt_num(j, "eta_seconds"), get<std::string>(j, "message", ""), parse_prepare_detail(j)};
   if (kind == "tier_ready") return father::TierReadyEvent{get<std::string>(j, "tier_id", ""), get<std::string>(j, "model_name", "")};
   if (kind == "tokens") {
     father::TokensEvent t;

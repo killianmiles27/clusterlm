@@ -4,6 +4,15 @@ namespace clusterlm::father {
 
 using namespace std::chrono_literals;
 
+std::filesystem::path default_catalog_path(const std::filesystem::path& exe_dir) {
+  namespace fs = std::filesystem;
+  const fs::path installed = (exe_dir / ".." / "catalog" / "clusterlm-catalog.json").lexically_normal();
+  const fs::path dev = exe_dir / "clusterlm-catalog.json";
+  std::error_code ec;
+  if (fs::is_regular_file(installed, ec)) return installed;
+  return dev;
+}
+
 Result<std::unique_ptr<FatherAgent>> FatherAgent::create(FatherAgentConfig config, FatherApiHandler& handler) {
   ipc::Endpoint ep;
   ep.name = ipc::father_ui_pipe_name(config.user_tag);

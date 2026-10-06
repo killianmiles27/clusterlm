@@ -8,3 +8,7 @@ target_compile_definitions(test_dev_e2e PRIVATE
   CLUSTERLM_FATHER_AGENT_BINARY="$<TARGET_FILE:clusterlm-father-agent>")
 add_dependencies(test_dev_e2e clusterlm-node clusterlm-node-service clusterlm-father-agent)
 set_tests_properties(test_dev_e2e PROPERTIES LABELS "integration;slow" TIMEOUT 600)
+
+# Father agent glue (no processes): unpair notification, default catalog resolution.
+clusterlm_test(test_agent_glue SOURCES test_agent_glue.cpp DEPS clusterlm_father_agent)
+target_compile_definitions(test_agent_glue PRIVATE CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

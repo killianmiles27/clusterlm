@@ -7,8 +7,9 @@ Product-integration notes for WP14. The Father UI protocol itself is in [father-
 Nodes never trust an unpaired Father; Father only talks to Nodes whose fingerprints it pinned. Both are
 established once, by pairing, when neither side knows the other's fingerprint yet.
 
-1. **On the Node** start pairing mode locally: `clusterlm-node-service --pair` (console `pair` command with
-   `--simulate-activity`). It prints, and in a UI would show, one line:
+1. **On the Node** start pairing mode: the Node UI's **Pair with a Father...** button (helper-pipe
+   `PairingModeRequest`: interactive user only, one request per 5 s), or `clusterlm-node-service --pair` (console `pair`
+   command with `--simulate-activity`). Either way the service prints, and the UI shows, one line:
    `CLUSTERLM_NODE_PAIRING code=ABCD-EFGH endpoint=HOST:PORT fingerprint=ab12-cd34-ef56`.
    The listener (default port = data port + 1, `--pair-port`) stays open for 5 minutes (`--pair-window-seconds`).
 2. **On Father** the user enters the Node's address (`HOST:PAIR_PORT`) and the code (IPC op `pairing.start`).
@@ -47,15 +48,24 @@ adequate only because guessing is online and capped at 3.
 * Node: `clusterlm-node-service --unpair` (service stopped) or `unpair` on the console of a running service. The
   trusted list is replaced and the worker is revoked (cooperative release, then forced) and restarted, so the
   Father loses its connections and leases immediately.
-* Father: IPC op `pairing.unpair` removes the Node and its tier assignments and releases any session. The Node is
-  not notified; it keeps trusting that Father until unpaired locally.
+* Father: IPC op `pairing.unpair` removes the Node and its tier assignments, releases any session and then, if the
+  Node is reachable, sends it one `UnpairNotice` on an ordinary control channel (mutual TLS, pinned to the Node's
+  fingerprint). The Node accepts it only from a pinned (paired) Father: the worker releases its lease, stops trusting
+  that identity at once, acknowledges, and tells the service, which clears `paired_father` in `node-settings.json` and
+  restarts the worker trusting nobody (the same path as a local unpair). The service double-checks that the notifying
+  Father is the one recorded as paired; on a mismatch it ignores the notice and restores the trust list. The reply says
+  `node_notified` and, when false, why (`unreachable` / `refused`) with a note. **If the Node cannot be reached the
+  unpair still succeeds and the Node keeps trusting that Father until it is unpaired locally** (the behaviour before
+  the notice existed). The notice carries only a nonce; a stranger cannot send it (the TLS pin refuses the handshake),
+  and a notice does not need the Node to be idle: it also ends an active lease.
 
 A Node holds exactly one paired Father; pairing a new one replaces the old.
 
 ### Known gaps (Windows)
 
-* Pairing mode is started with the service's own CLI flag. A tray or helper-pipe command to start it while the
-  service runs as LocalService is not implemented (tracked in HQ-PAIR-01).
+* Pairing mode can be started from the Node UI through the helper pipe, but it is the service process (LocalService)
+  that opens the listener. Whether the firewall rule `--install` adds admits the Father without the CLI flag, and
+  how the pipe's session check behaves for the real interactive user, are `HQ-PAIR-01` / `HQ-WIN-02` questions.
 * `--install` adds the firewall rule `ClusterLM Node pairing (TCP-In)` for the service executable (Private and
   Domain profiles, LocalSubnet). This is type-checked only; real behaviour is pending HQ-PAIR-01.
 * Discovery is by typed address only.
@@ -69,7 +79,16 @@ A Node holds exactly one paired Father; pairing a new one replaces the old.
 
 Atomic owner-only writes, strict validation, corrupt file moved aside (`.corrupt-<stamp>`) with defaults used,
 newer-than-supported versions refused, older ones migrated through a hook with the original kept. Node caps map to
-worker flags (`--ram-gib`, `--vram-gib`, `--disk-gib`); `caps.threads` is stored but not enforced by the worker yet.
+worker flags (`--ram-gib`, `--vram-gib`, `--disk-gib`, `--threads`). `caps.threads` is passed to the worker as a thread
+cap (`NodeConfig::cpu_threads`): it is reported in the offer (`threads<=N`) and set on every `DomainSpec`
+(`cpu_threads`). The reference backend is single-threaded by construction, so any cap of at least 1 already holds;
+thread-pool backends map the field onto their pool when a domain is created (the Strata and llama options
+`cpu_threads` / `n_threads` exist and are set from backend construction, which backend selection owns).
+The Node UI changes these documents through the service (`SettingsUpdate` on the helper pipe, see `docs/ui.md`):
+only the user-safe fields (idle policy, AC only, storage limit, start with system, RAM/VRAM/thread caps) can be
+changed that way; the name, the paired Father, trust, paths and commands cannot, and are not on the wire. An update is
+validated, persisted atomically, then applied: policy immediately, caps by restarting the worker after a cooperative
+release (so no lease survives a cap change). Updates are limited to one per 0.5 s.
 CLI flags of `clusterlm-node-service` (`--idle-seconds`, `--allow-battery`, `--name`, `--ram-gib`, `--vram-gib`)
 override the document for that run. `paused` or `allow_when_idle=false` start the service paused.
 
@@ -84,11 +103,17 @@ override the document for that run. `paused` or `allow_when_idle=false` start th
   confirmation of the unpinned manifest root (`model.confirm`), Node state by probing the control channel (an
   offer means Available, silence means in use, no connection means offline; battery from the offer), Father power,
   placement feasibility. While a session is active nodes are reported from that session instead of being probed.
+* `ProvisioningBoard`: the latest preparation progress per tier, fed by the service from the Coordinator's progress
+  callback and read as `ProductionOptions::provisioning`. The rate is measured on this run (no rate, hence no ETA,
+  before about half a second of data) and the entry is removed when the prepare ends, whatever the outcome, so a
+  failed prepare cannot leave a tier stuck in Preparing.
 * No Strata/llama backend is built into this binary: every tier reports
   "backend not available in this build" and is never Ready. The only override is the explicit
   `--dev-fixture-model` flag (reference backend on the small fixture model): it is reported over IPC
-  (`dev_fixture_model`) and written in every tier's details. Provisioning progress from Coordinator events is not
-  wired (`ProductionOptions::provisioning` is an injection point; the Coordinator exposes no progress callback).
+  (`dev_fixture_model`) and written in every tier's details.
+* Provisioning progress: `Coordinator::prepare(plan, sink)` reports per Node bytes sent / total, objects sealed /
+  total and a phase (`PreparePhase`); the service turns that into `prepare_progress` events with a `detail`
+  (docs/father-ipc.md) and into the `ProvisioningBoard`.
 
 ## Dev end to end
 

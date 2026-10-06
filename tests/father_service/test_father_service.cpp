@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "clusterlm/catalog/catalog.hpp"
+#include "clusterlm/father/production.hpp"
 #include "clusterlm/father/service.hpp"
 #include "clusterlm/node/node_worker.hpp"
 #include "clusterlm/objects/fixture_model.hpp"
@@ -571,4 +572,120 @@ TEST_CASE("prepare progress is polled from the readiness source while the plan i
   CHECK(pe.front().message.find("Preparing Ultra") != std::string::npos);
   CHECK(coll->all<father::TierReadyEvent>().size() == 1);
   REQUIRE(s.value()->release().is_ok());
+}
+
+TEST_CASE("the Coordinator's progress reaches events, the observer and the readiness board") {
+  // Readiness that reports what the ProvisioningBoard knows, exactly like production (ProductionOptions::provisioning).
+  struct BoardSource final : father::ReadinessSource {
+    WorkerSource* inner;
+    std::shared_ptr<father::ProvisioningBoard> board;
+    std::mutex m;
+    std::vector<catalog::ProvisioningProgress> observed;
+    catalog::ReadinessInputs observe(const catalog::TierEntry& t, const catalog::TierAssignment& a, std::uint32_t c) override {
+      auto in = inner->observe(t, a, c);
+      in.provisioning = board->get(t.id);
+      if (in.provisioning) {
+        std::lock_guard lk(m);
+        observed.push_back(*in.provisioning);
+      }
+      return in;
+    }
+  };
+  Fixture f;
+  auto board = std::make_shared<father::ProvisioningBoard>();
+  auto src = std::make_shared<BoardSource>();
+  src->inner = f.source.get();
+  src->board = board;
+  std::atomic<int> finished{0};
+  std::atomic<int> progress_calls{0};
+  father::ServiceDeps deps;
+  deps.catalog = f.cat;
+  deps.assignment.bind("father", "Father");
+  deps.assignment.bind("node:laptop-class", "G14");
+  deps.assignment.bind("node:designated-3060", "3060");
+  deps.tokenizer = f.tokenizer;
+  deps.readiness = src;
+  deps.deployments = f.provider;
+  deps.options.progress_poll = 5ms;
+  deps.prepare_observer = board->observer();
+  auto inner_progress = deps.prepare_observer.on_progress;
+  deps.prepare_observer.on_progress = [&](const std::string& tier, const coordinator::PrepareProgress& p) {
+    ++progress_calls;
+    inner_progress(tier, p);
+  };
+  auto inner_finished = deps.prepare_observer.on_finished;
+  deps.prepare_observer.on_finished = [&](const std::string& tier) {
+    ++finished;
+    inner_finished(tier);
+  };
+  auto s = father::make_father_service(std::move(deps));
+  REQUIRE(s.is_ok());
+  auto coll = std::make_shared<Collector>();
+  s.value()->subscribe([coll](const father::Event& e) { (*coll)(e); });
+  REQUIRE(s.value()->prepare_tier("ultra", 4096).is_ok());
+  REQUIRE(s.value()->wait_idle(30s));
+
+  CHECK(progress_calls.load() >= 4);
+  CHECK(finished.load() == 1);
+  CHECK_FALSE(board->get("ultra").has_value());  // cleared when the prepare ended: nothing can be stuck "Preparing"
+
+  // Events: some carry per-Node detail; the last one has both Nodes, fully sent and sealed.
+  std::vector<father::PrepareDetail> details;
+  for (const auto& e : coll->all<father::PrepareProgressEvent>())
+    if (e.detail) details.push_back(*e.detail);
+  REQUIRE_FALSE(details.empty());
+  const auto& last = details.back();
+  REQUIRE(last.nodes.size() == 2);
+  CHECK(last.nodes[0].name == "g14");
+  CHECK(last.nodes[1].name == "n3060");
+  for (const auto& n : last.nodes) {
+    CHECK(n.bytes_total > 0);
+    CHECK(n.bytes_sent == n.bytes_total);
+    CHECK(n.objects_sealed == n.objects_total);
+  }
+  for (const auto& d : details)
+    for (const auto& n : d.nodes) CHECK(n.bytes_sent <= n.bytes_total);
+  CHECK(coll->all<father::TierReadyEvent>().size() == 1);
+
+  // The readiness source saw board progress while preparing (the percentage the UI draws comes from it).
+  {
+    std::lock_guard lk(src->m);
+    for (const auto& o : src->observed) CHECK(o.bytes_done <= o.bytes_total);
+  }
+  REQUIRE(s.value()->release().is_ok());
+}
+
+TEST_CASE("ProvisioningBoard tracks the latest progress, measures a rate only from real data, and forgets on clear") {
+  father::ProvisioningBoard board;
+  CHECK_FALSE(board.get("strong").has_value());
+  coordinator::PrepareProgress p;
+  p.bytes_total = 1000;
+  p.bytes_sent = 0;
+  board.update("strong", p);
+  auto g = board.get("strong");
+  REQUIRE(g.has_value());
+  CHECK(g->bytes_done == 0);
+  CHECK(g->bytes_total == 1000);
+  CHECK_FALSE(g->rate_bytes_per_s.has_value());  // no data yet: no rate, so no ETA
+  p.bytes_sent = 100;
+  board.update("strong", p);
+  CHECK_FALSE(board.get("strong")->rate_bytes_per_s.has_value());  // one sample is not a rate
+  std::this_thread::sleep_for(600ms);
+  p.bytes_sent = 400;
+  board.update("strong", p);
+  g = board.get("strong");
+  REQUIRE(g->rate_bytes_per_s.has_value());
+  CHECK(g->rate_is_measured);  // observed on this run
+  CHECK(*g->rate_bytes_per_s > 100.0);  // 300 bytes in about 0.6 s
+  CHECK(*g->rate_bytes_per_s < 3000.0);
+  CHECK(g->bytes_done == 400);
+  board.update("fast", p);
+  board.clear("strong");
+  CHECK_FALSE(board.get("strong").has_value());
+  CHECK(board.get("fast").has_value());
+  // The wiring helpers share the same state.
+  auto provider = board.provider();
+  CHECK(provider("fast").has_value());
+  board.observer().on_finished("fast");
+  CHECK_FALSE(provider("fast").has_value());
 }
