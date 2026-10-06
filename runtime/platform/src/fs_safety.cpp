@@ -164,11 +164,14 @@ Result<fs::path> resolve_under_root(const fs::path& root, const fs::path& relati
   if (relative.is_absolute() || relative.has_root_name() || relative.has_root_directory())
     return make_error(ErrorCode::kPermissionDenied, "absolute path rejected");
   // Inspect the raw spelling: path iteration collapses "a//b" and drops a trailing slash, and both indicate
-  // a malformed name. (On Windows a backslash is also a separator, so check it there too.)
+  // a malformed name.
   const std::string raw = relative.string();
-  if (raw.find("//") != std::string::npos || raw.back() == '/' ||
-      raw.find("\\\\") != std::string::npos || raw.back() == '\\')
+  if (raw.find("//") != std::string::npos || raw.back() == '/')
     return make_error(ErrorCode::kInvalidArgument, "empty path component");
+  // Store paths are always spelled with '/'. A backslash is a separator on Windows and a filename character on
+  // POSIX; rejecting it everywhere keeps one meaning on every platform.
+  if (raw.find('\\') != std::string::npos)
+    return make_error(ErrorCode::kInvalidArgument, "backslash in a store path");
   fs::path out = root;
   for (const auto& comp : relative) {
     CLM_RETURN_IF_ERROR(validate_component(comp.generic_string()));

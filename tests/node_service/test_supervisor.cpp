@@ -23,7 +23,10 @@ struct Fixture {
     fs::create_directories(dir);
     activity.current.idle_seconds = 0;
   }
-  ~Fixture() { fs::remove_all(dir); }
+  ~Fixture() {
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+  }
   node::SupervisorConfig config(std::vector<std::string> extra = {}) {
     node::SupervisorConfig c;
     c.worker_binary = CLUSTERLM_NODE_BINARY;

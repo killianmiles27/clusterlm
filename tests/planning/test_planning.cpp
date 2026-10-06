@@ -53,7 +53,8 @@ TEST_CASE("cost inputs from a manifest reflect its exact object sizes and stay S
   CHECK(dense == manifest_dense);
   CHECK(in->provenance == placement::Provenance::kSynthetic);
   CHECK(in->draft_ms.provenance == placement::Provenance::kSynthetic);
-  fs::remove_all(dir);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
 }
 
 TEST_CASE("a placement plan converts to a ClusterPlan that executes correctly on two Node workers") {
@@ -136,6 +137,9 @@ TEST_CASE("a placement plan converts to a ClusterPlan that executes correctly on
   REQUIRE(father_only.is_ok());
   const auto reference = run(father_only.value(), {});
   CHECK(distributed == reference);
-  for (auto& w : workers) w->stop();
-  fs::remove_all(dir);
+  // Destroy the workers before deleting their staging roots: on Windows open handles block deletion.
+  workers.clear();
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  CHECK_FALSE(ec);
 }
