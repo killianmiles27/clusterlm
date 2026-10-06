@@ -14,6 +14,7 @@
 #include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
 #include "clusterlm/objects/fixture_model.hpp"
+#include "clusterlm/platform/process.hpp"
 #include "clusterlm/protocol/messages.hpp"
 #include "bench_common.hpp"
 #include "commands.hpp"
@@ -584,7 +585,8 @@ int cmd_faults(const cli::Args& args) {
   // One scenario = a fresh two-Node cluster. Returns the setup for follow-up checks.
   auto run_scenario = [&](const std::string& name, std::vector<LocalNodeOptions> node_opts,
                           const std::function<void(LocalCluster&, coordinator::Coordinator&,
-                                                   const coordinator::ClusterPlan&)>& body) {
+                                                   const coordinator::ClusterPlan&)>& body,
+                          bool connect_father = true) {
     cli::Args sub = args;
     LocalClusterOptions opts;
     opts.work_dir = work / name;
@@ -614,9 +616,11 @@ int cmd_faults(const cli::Args& args) {
     }
     auto plan = coordinator::ClusterPlan::parse(plan_text, coord.value()->manifest().geometry.n_layers);
     if (!plan.is_ok()) return;
-    if (auto st = coord.value()->connect(); !st.is_ok()) {
-      r.check(name + "_connect", false, st.to_string());
-      return;
+    if (connect_father) {
+      if (auto st = coord.value()->connect(); !st.is_ok()) {
+        r.check(name + "_connect", false, st.to_string());
+        return;
+      }
     }
     body(*s.cluster, *coord.value(), plan.value());
   };
@@ -652,7 +656,8 @@ int cmd_faults(const cli::Args& args) {
   };
 
   // 1. Abrupt Node crash at each lifecycle phase, then restart with orphan recovery.
-  for (const char* phase : {"transfer", "hashing", "mapping", "allocation", "ready", "inference", "cleanup"}) {
+  for (const char* phase :
+       {"transfer", "hashing", "mapping", "allocation", "ready", "prefill", "inference", "commit", "cleanup"}) {
     const std::string name = std::string("crash_") + phase;
     LocalNodeOptions crashing;
     crashing.name = "node0";
@@ -673,6 +678,47 @@ int cmd_faults(const cli::Args& args) {
       recover_and_verify(name, cl, c, plan);
     });
   }
+
+  // 1b. Father disappears (process killed mid-generation): every Node releases its lease on control loss and
+  // deletes all staged objects without any instruction.
+  run_scenario("father_lost", {}, [&](LocalCluster& cl, coordinator::Coordinator&, const auto&) {
+    const auto eps = cl.endpoints();
+    std::vector<std::string> fargs = {"--model", model_dir.value().string(), "--plan", plan_text, "--max-new", "1500",
+                                      "--prefill-chunk", "8"};
+    const auto id_dir = (work / "father_lost" / "father-id").string();
+    if (!args.has("insecure")) fargs.insert(fargs.end(), {"--identity", id_dir});
+    for (std::size_t i = 0; i < eps.size(); ++i)
+      fargs.insert(fargs.end(), {"--node", eps[i].name + "=" + eps[i].endpoint.str() +
+                                               (eps[i].device_id.empty() ? "" : "@" + eps[i].device_id)});
+    auto father = platform::ChildProcess::spawn(platform::executable_dir() /
+#ifdef _WIN32
+                                                    "clusterlm-father.exe",
+#else
+                                                    "clusterlm-father",
+#endif
+                                                fargs);
+    if (!father.is_ok()) {
+      r.check("father_lost_spawn", false, father.status().to_string());
+      return;
+    }
+    auto prepared = father.value()->read_until("prepared plan", 30s);
+    r.check("father_lost_father_prepared", prepared.is_ok(), prepared.status().to_string());
+    std::this_thread::sleep_for(50ms);  // let generation start
+    Stopwatch sw;
+    father.value()->kill();
+    (void)father.value()->wait(5s);
+    bool clean = false;
+    while (!clean && sw.elapsed_ms() < 10000) {
+      clean = true;
+      for (std::size_t i = 0; i < cl.size(); ++i) {
+        auto st = cl.status(i);
+        clean = clean && st.is_ok() && st->census_bytes == 0 && st->state == "Available";
+      }
+      if (!clean) std::this_thread::sleep_for(20ms);
+    }
+    r.check("father_lost_nodes_released_and_clean", clean);
+    r.metric("father_lost.cleanup_observed_ms", sw.elapsed_ms());
+  }, /*connect_father=*/false);
 
   // 2. Local user activity while Ready: the Node revokes the lease without consulting Father.
   run_scenario("local_activity", {}, [&](LocalCluster& cl, coordinator::Coordinator& c, const auto& plan) {
