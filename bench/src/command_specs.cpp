@@ -47,7 +47,10 @@ std::vector<CommandSpec> build() {
                join({kCommon, {"backend", "model", "layers", "q", "threads", "isa", "minutes", "prefill-chunk", "plan", "nodes"}})});
   s.push_back({"baseline",
                {"llama-rpc", "strata", "fast"},
-               join({kCommon, {"pin", "model", "nodes", "partial-domains", "repeat"}})});
+               join({kCommon, {"pin", "model", "nodes", "partial-domains", "repeat",
+                                 // baseline llama-rpc: workload, local proof run and filesystem inspection
+                                 "n-predict", "prompt-tokens", "threads", "ngl", "spawn-local", "rpc-server", "server-threads",
+                                 "node-cache-dirs", "node-fs-report", "control-with-cache", "verify-local"}})});
   s.push_back({"numerics", {}, join({kCommon, {"backend", "model", "plan", "reference", "q"}})});
   return s;
 }

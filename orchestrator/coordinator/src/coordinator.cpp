@@ -291,7 +291,7 @@ struct Coordinator::Impl {
   Inbox results;  // StageResults from every Node's activation channel
   CoordinatorConfig cfg;
   std::unique_ptr<objects::CanonicalModelStore> store;
-  std::unique_ptr<domain::BackendAdapter> backend;
+  std::shared_ptr<domain::BackendAdapter> backend;
   std::shared_ptr<transport::SimulatedLink> egress_link;  // Father's single NIC, shared by all Node links
   std::vector<std::unique_ptr<RemoteNode>> nodes;
   std::optional<ClusterPlan> plan;
@@ -816,7 +816,7 @@ Result<std::unique_ptr<Coordinator>> Coordinator::create(CoordinatorConfig confi
   auto impl = std::make_unique<Impl>();
   impl->cfg = std::move(config);
   CLM_ASSIGN_OR_RETURN(impl->store, objects::CanonicalModelStore::open(impl->cfg.model_dir));
-  impl->backend = domain::make_reference_backend();
+  impl->backend = impl->cfg.backend ? impl->cfg.backend : std::shared_ptr<domain::BackendAdapter>(domain::make_reference_backend());
   if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(impl->cfg.impairment->bandwidth_bytes_per_s);
   for (const auto& ep : impl->cfg.nodes) {
     auto n = std::make_unique<RemoteNode>();
