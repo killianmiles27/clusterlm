@@ -1,0 +1,3 @@
+clusterlm_module(clusterlm_coordinator
+  SOURCES src/coordinator.cpp
+  DEPS clusterlm_common clusterlm_objects clusterlm_domain clusterlm_transport clusterlm_protocol)

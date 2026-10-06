@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clusterlm.local/schema/benchmark-result.schema.json",
+  "title": "ClusterLM Bench result",
+  "description": "Machine-readable output of every clusterlm-bench run. Provenance is mandatory: results produced on development hosts, localhost clusters or with simulated network conditions can never qualify a tier.",
+  "type": "object",
+  "required": ["schema_version", "tool", "experiment", "provenance", "environment", "started_at", "metrics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version", "build"],
+      "properties": {
+        "name": { "const": "clusterlm-bench" },
+        "version": { "type": "string" },
+        "build": { "type": "string", "description": "build type and compiler" },
+        "backend": { "type": "string" },
+        "backend_build": { "type": "string" }
+      }
+    },
+    "experiment": { "type": "string", "description": "HQ-* qualification ID, or a dev-* identifier for development runs" },
+    "provenance": {
+      "enum": ["Synthetic", "Measured", "Qualified"],
+      "description": "Synthetic: inputs or conditions are simulated. Measured: measured on the machine(s) named in environment. Qualified: Measured on the declared target hardware under the qualification protocol (set only by review, never by the tool)."
+    },
+    "simulated": {
+      "type": "object",
+      "description": "Present whenever any condition was simulated.",
+      "properties": {
+        "network_preset": { "type": "string" },
+        "localhost_cluster": { "type": "boolean" },
+        "synthetic_profiles": { "type": "array", "items": { "type": "string" } },
+        "fixture_model": { "type": "boolean" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["host_role", "os", "cpu"],
+      "properties": {
+        "host_role": { "enum": ["development-host", "father", "node"] },
+        "machine_id": { "type": "string" },
+        "os": { "type": "string" },
+        "cpu": { "type": "string" },
+        "cpu_features": { "type": "array", "items": { "type": "string" } },
+        "logical_cpus": { "type": "integer" },
+        "ram_bytes": { "type": "integer" },
+        "gpu": { "type": "string" },
+        "driver": { "type": "string" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "artifact_id": { "type": "string" },
+        "root_hash": { "type": "string" },
+        "fixture": { "type": "boolean" }
+      }
+    },
+    "configuration": { "type": "object", "description": "Exact parameters (plan, q, chunk sizes, presets, seeds)." },
+    "started_at": { "type": "string", "format": "date-time" },
+    "duration_s": { "type": "number" },
+    "metrics": {
+      "type": "object",
+      "description": "Flat metric name -> value (number, or object with distribution fields).",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "number" },
+          { "type": "boolean" },
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "n": { "type": "integer" }, "mean": { "type": "number" }, "min": { "type": "number" },
+              "p10": { "type": "number" }, "p50": { "type": "number" }, "p95": { "type": "number" },
+              "p99": { "type": "number" }, "max": { "type": "number" }, "unit": { "type": "string" }
+            }
+          }
+        ]
+      }
+    },
+    "checks": {
+      "type": "array",
+      "description": "Pass/fail assertions evaluated by the run.",
+      "items": {
+        "type": "object",
+        "required": ["name", "passed"],
+        "properties": { "name": { "type": "string" }, "passed": { "type": "boolean" }, "detail": { "type": "string" } }
+      }
+    },
+    "pending_qualification": {
+      "type": "array",
+      "description": "Qualification IDs whose questions this run could NOT answer.",
+      "items": { "type": "string" }
+    },
+    "trace": { "type": "array", "description": "Optional per-round or per-event records (sizes and timings only; never token IDs or activations)." }
+  }
+}

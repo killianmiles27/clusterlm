@@ -1,0 +1,663 @@
+{
+  "schema_version": 1,
+  "description": "ClusterLM hardware qualification registry. Every entry requires the physical machines; none may be satisfied by synthetic profiles or simulated network conditions.",
+  "experiments": [
+    {
+      "id": "HQ-PROF-01",
+      "title": "Per-machine hardware profile",
+      "purpose": "Replace synthetic profile fields with measured values for each execution domain.",
+      "command": "clusterlm-bench profile --out results/profile-<machine>.json --duration 120",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (synthetic kernels only)",
+      "measurements": [
+        "CPUID + OS-enabled vector features (AVX2/AVX-512)",
+        "usable cores/threads",
+        "physical RAM, commit limit, safe allowance under live policy",
+        "effective memory bandwidth (read)",
+        "GPU identity, driver version, DXGI budget / current usage",
+        "power source and power plan"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PROF-01",
+        "metrics": [
+          "cpu.features",
+          "cpu.usable_threads",
+          "memory.ram_total",
+          "memory.ram_safe_allowance",
+          "memory.ram_bandwidth",
+          "gpu.vram_budget"
+        ]
+      },
+      "decision_affected": "HardwareProfile provenance Synthetic -> Measured; admission budgets for every placement.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-CPU-01",
+      "title": "CPU routed-expert throughput by quant and verification width",
+      "purpose": "Measure effective CPU expert bytes/s including unpacking and GEMV for the exact tensor representations.",
+      "command": "clusterlm-bench domain cpu-experts --backend strata --model <ultra-dir> --layers 4,20,40 --q 1,2,4 --threads sweep --isa avx2,avx512 --out results/cpu-experts-<machine>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "ms per routed expert per q and quant type",
+        "effective bytes/s",
+        "thread-count sweep incl. reserve for service responsiveness",
+        "AVX2 vs AVX-512 where legal",
+        "miss-union multiplier on held-out routing traces"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-CPU-01",
+        "metrics": [
+          "cpu.expert_bytes_per_s.<quant>",
+          "cpu.q_scaling",
+          "cpu.best_threads",
+          "cpu.isa_selected"
+        ]
+      },
+      "decision_affected": "CPU/GPU miss crossover, per-domain expert residency, viability of the stage architecture vs grouped expert domains.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-CPU-02",
+      "title": "Laptop sustained CPU/GPU performance at thermal equilibrium",
+      "purpose": "Determine the G14's sustained derate on AC under a 30-minute mixed load.",
+      "command": "clusterlm-bench domain sustained --backend strata --model <ultra-dir> --minutes 30 --out results/sustained-g14.json",
+      "machines": [
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "expert throughput over time",
+        "GPU clocks/power",
+        "temperatures",
+        "AC/battery state"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-CPU-02",
+        "metrics": [
+          "cpu.sustained_factor",
+          "gpu.sustained_factor",
+          "thermal.time_to_equilibrium_s"
+        ]
+      },
+      "decision_affected": "Laptop share of layers/CPU work; whether laptop-light plans are preferred.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-GPU-01",
+      "title": "GPU dense, attention, hot-expert and prefill timings",
+      "purpose": "Measure per-layer-kind dense/QSA/GDN time, GPU expert throughput and prefill chunk throughput per GPU.",
+      "command": "clusterlm-bench domain gpu-layers --backend strata --model <ultra-dir> --q 1,2,3,4 --prefill-chunk 128,256,512,1024 --out results/gpu-layers-<machine>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "dense_layer_ms by kind and q",
+        "gpu_expert_bytes_per_s",
+        "prefill tokens/s per chunk size",
+        "CUDA graph capture success"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-GPU-01",
+        "metrics": [
+          "gpu.dense_layer_ms.recurrent",
+          "gpu.dense_layer_ms.attention",
+          "gpu.dense_q_scaling",
+          "gpu.gpu_expert_bytes_per_s",
+          "gpu.prefill_tokens_per_s"
+        ]
+      },
+      "decision_affected": "Stage cost model; prefill chunk size per stage (small-GPU global cap trap, Strata issue 448).",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-GPU-02",
+      "title": "Safe VRAM margins under WDDM",
+      "purpose": "Find the usable VRAM budget per GPU with the desktop/display active, including allocation peaks during preparation, prefill and q>1 verification.",
+      "command": "clusterlm-bench domain vram-ledger --backend strata --model <ultra-dir> --plan <plan.json> --out results/vram-<machine>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "DXGI budget and current usage over time",
+        "allocator ledger peaks per phase",
+        "eviction/paging events"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-GPU-02",
+        "metrics": [
+          "gpu.vram_budget",
+          "gpu.peak_prepare",
+          "gpu.peak_prefill",
+          "gpu.peak_verify"
+        ]
+      },
+      "decision_affected": "MEM-01 admission margins; maximum GPU expert residency per domain.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PCIE-01",
+      "title": "Local PCIe staging and Windows pinned-memory limits",
+      "purpose": "Measure H2D/D2H bandwidth with bounded pinned rings and the safe pinned-memory cap per machine.",
+      "command": "clusterlm-bench domain pcie --ring-bytes 64M,256M,1G --pinned-cap sweep --out results/pcie-<machine>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (synthetic kernels only)",
+      "measurements": [
+        "H2D/D2H GB/s per ring size",
+        "pinned allocation failures / WDDM pressure",
+        "effect on desktop responsiveness"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PCIE-01",
+        "metrics": [
+          "gpu.pcie_h2d_bytes_per_s",
+          "memory.pinned_limit"
+        ]
+      },
+      "decision_affected": "Whether large prefill unions stream experts to GPU instead of CPU GEMV; pinned caps.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-NET-01",
+      "title": "Pairwise application-payload bandwidth, RTT and jitter",
+      "purpose": "Replace the simulated 1GbE parameters with measured authenticated TLS payload throughput and latency.",
+      "command": "clusterlm-bench transport --tls --peer <host:port> --sizes 64,51216,204864,1048576 --duration 30 --out results/net-<a>-<b>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (synthetic kernels only)",
+      "measurements": [
+        "payload MB/s per direction",
+        "tiny-message RTT p50/p95/p99",
+        "50 KiB and 200 KiB message latency",
+        "jitter",
+        "two simultaneous links sharing Father's NIC"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-NET-01",
+        "metrics": [
+          "network.bandwidth_bytes_per_s",
+          "network.rtt_ms",
+          "network.jitter_ms",
+          "network.father_egress_bytes_per_s"
+        ]
+      },
+      "decision_affected": "Transport term of the cost model; direct-peer value; provisioning estimates.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-NET-02",
+      "title": "Direct Node-to-Node forwarding versus Father relay",
+      "purpose": "Measure per-round latency and Father NIC load of the direct peer path versus relay with real models.",
+      "command": "clusterlm-bench cluster --plan <plan> --direct-peer on,off --q 1,4 --out results/peer-vs-relay.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "round latency",
+        "boundary bytes per emitted token",
+        "Father NIC bytes"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-NET-02",
+        "metrics": [
+          "round.remote_ms",
+          "round.boundary_payload_bytes"
+        ]
+      },
+      "decision_affected": "Whether the direct peer path is required for qualification (SHOULD HAVE).",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PROV-01",
+      "title": "Provisioning speed of selected objects",
+      "purpose": "Measure cold preparation time per Node: Father disk reads, wire transfer, hashing, packing, GPU upload.",
+      "command": "clusterlm-bench cluster --plan <plan> --phase prepare --repeat 5 --out results/provision.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "bytes per Node",
+        "Father read MB/s",
+        "wire MB/s",
+        "Node hash/seal time",
+        "upload time",
+        "PlanReady latency"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PROV-01",
+        "metrics": [
+          "prepare.total_ms",
+          "prepare.node_ms",
+          "prepare.bytes"
+        ]
+      },
+      "decision_affected": "Lease amortization in placement; UI preparation estimates (PERF-03).",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-REL-01",
+      "title": "Release and cleanup latency under real drivers",
+      "purpose": "Verify activity-driven release targets: stop new work <=250 ms, cooperative release <1 s, 2 s worker deadline, storage reclaimed <=10 s after termination.",
+      "command": "clusterlm-bench faults --release-cycles 20 --trigger local-activity --phases prepare,ready,inference --out results/release-<machine>.json",
+      "machines": [
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "revocation->stop latency",
+        "cooperative release time",
+        "forced termination count",
+        "storage reclaim time",
+        "p95 and worst case"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-REL-01",
+        "metrics": [
+          "release.stop_ms",
+          "release.cooperative_ms",
+          "release.storage_reclaim_ms"
+        ]
+      },
+      "decision_affected": "REL-01, PERF-04; Job Object deadline values.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-STORE-01",
+      "title": "Filesystem census including backend caches and native packs",
+      "purpose": "Prove no application-owned model bytes remain anywhere after release, including backend caches outside the staging root.",
+      "command": "clusterlm-bench faults --census full --kill-phases transfer,hashing,packing,mapping,allocation,ready,inference,cleanup --out results/census-<machine>.json",
+      "machines": [
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "bytes under staging root",
+        "bytes in backend cache dirs (CUDA cache, temp, AppData)",
+        "files created during lease (ETW/procmon diff)"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-STORE-01",
+        "metrics": [
+          "census.residual_bytes",
+          "census.unexpected_paths"
+        ]
+      },
+      "decision_affected": "STORE-01..04 acceptance.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-NUM-01",
+      "title": "Numerical correctness of distributed execution on the real artifact",
+      "purpose": "Teacher-forced layer/logit comparisons of split versus unsplit execution, all speculative rejection lengths, CPU vs GPU expert paths.",
+      "command": "clusterlm-bench numerics --backend strata --model <ultra-dir> --plan <plan> --reference unsplit --q 1,2,3,4 --out results/numerics.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "max/mean abs logit difference per layer boundary",
+        "greedy agreement",
+        "state equality after every rejection position",
+        "stochastic sampling validation"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-NUM-01",
+        "metrics": [
+          "numerics.max_abs_logit_diff",
+          "numerics.greedy_agreement",
+          "numerics.rollback_ok"
+        ]
+      },
+      "decision_affected": "NUM-01; tolerances for CPU/GPU kernel choice and boundary precision.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-MTP-01",
+      "title": "MTP acceptance and verification cost",
+      "purpose": "Measure mean emitted tokens per round A and verification cost for q=1..4 on the declared corpus.",
+      "command": "clusterlm-bench cluster --plan <plan> --q 1,2,3,4 --corpus corpus/mixed --tokens 512 --repeat 5 --out results/mtp.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "A per workload category",
+        "draft_ms",
+        "verify ms per stage",
+        "p95/p99 inter-token gaps"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-MTP-01",
+        "metrics": [
+          "mtp.acceptance_mean",
+          "mtp.draft_ms",
+          "round.total_ms"
+        ]
+      },
+      "decision_affected": "Production q; whether MTP is enabled (SHOULD HAVE).",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PLACE-01",
+      "title": "Placement calibration: predicted versus measured",
+      "purpose": "Run the top placement candidates end-to-end and compare against the cost model; determine optimal layer boundaries and node order.",
+      "command": "clusterlm-bench placement --profiles results/ --model <ultra-dir> --top 6 --execute --out results/placement.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "predicted vs measured decode/prefill/prepare per candidate",
+        "both node orders",
+        "Father prefix/tail sizes"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PLACE-01",
+        "metrics": [
+          "placement.prediction_error",
+          "placement.best_plan"
+        ]
+      },
+      "decision_affected": "Optimal layer boundaries, expert residency, recommended plan.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-P0A-01",
+      "title": "Stock/pinned llama.cpp RPC baseline",
+      "purpose": "Establish the existing-runtime baseline with persistent RPC caches disabled; record allocation ownership and where spill executes.",
+      "command": "clusterlm-bench baseline llama-rpc --pin third_party/upstream.json --model <model> --nodes <g14>,<3060> --out results/p0a.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Fast, Strong and Ultra artifacts",
+      "measurements": [
+        "decode/prefill",
+        "graph/control call counts and payload bytes",
+        "host-weight ownership",
+        "filesystem effects (cache disabled)"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-P0A-01",
+        "metrics": [
+          "decode_tok_s",
+          "prefill_tok_s",
+          "rpc.bytes_per_token"
+        ]
+      },
+      "decision_affected": "P0-E architecture decision (ARCH-01).",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-P0B-01",
+      "title": "Strata local hybrid baseline and partial-domain microbenchmarks",
+      "purpose": "Build the pinned Strata, confirm exact IQ3_S support, and benchmark layer/expert kernels within each machine's budgets.",
+      "command": "clusterlm-bench baseline strata --pin third_party/upstream.json --model <ultra-dir> --partial-domains --out results/p0b-<machine>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "exact tensor support",
+        "local decode where resident fit is feasible",
+        "low-RAM complement mode on Father",
+        "per-layer timings"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-P0B-01",
+        "metrics": [
+          "strata.decode_tok_s",
+          "strata.layer_ms"
+        ]
+      },
+      "decision_affected": "P0-E; Strata adapter viability.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-P0C-01",
+      "title": "Grouped expert-domain barrier cost",
+      "purpose": "Measure whether concurrent remote CPU expert work repays 48 per-layer barriers on the real LAN.",
+      "command": "clusterlm-bench domain grouped-experts --layers representative --nodes <g14>,<3060> --out results/grouped.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "per-layer barrier RTT",
+        "remote expert compute",
+        "aggregation cost"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-P0C-01",
+        "metrics": [
+          "grouped.layer_barrier_ms",
+          "grouped.net_gain_ms"
+        ]
+      },
+      "decision_affected": "Whether the grouped expert-domain or mixed variant proceeds to P0-D.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PERF-01",
+      "title": "Ultra decode throughput at 4K/8K",
+      "purpose": "Measure emitted tok/s per workload category with MTP overhead included (PERF-01).",
+      "command": "clusterlm-bench cluster --tier ultra --context 4096,8192 --corpus corpus/mixed --tokens 512 --repeat 5 --interleave --out results/perf-ultra.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "median, p10 tok/s per category",
+        "p95/p99 inter-token gaps",
+        "worst stall",
+        "accepted tokens per round"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PERF-01",
+        "metrics": [
+          "decode_tok_s.median",
+          "decode_tok_s.p10",
+          "gap_ms.p99"
+        ]
+      },
+      "decision_affected": "Ultra 20+ tok/s claim (pass/fail recorded honestly).",
+      "status": "pending",
+      "acceptance": "median >= 20 emitted tok/s per category at 4K/8K"
+    },
+    {
+      "id": "HQ-PERF-02",
+      "title": "Long-context behaviour (16K/32K, 64K/128K reported separately)",
+      "purpose": "Measure decode/prefill and residency changes as context grows; report separately from 4K/8K.",
+      "command": "clusterlm-bench cluster --tier ultra --context 16384,32768,65536,131072 --repeat 5 --out results/perf-long.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "decode tok/s",
+        "state bytes per domain",
+        "CPU miss fraction change",
+        "hard paging events"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PERF-02",
+        "metrics": [
+          "decode_tok_s.median",
+          "state_bytes"
+        ]
+      },
+      "decision_affected": "Per-context placement profiles; UI context limits.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PERF-03",
+      "title": "Cold preparation, cold TTFT and warm TTFT",
+      "purpose": "Separate preparation from first-token latency and warm follow-up latency (PERF-03).",
+      "command": "clusterlm-bench cluster --tier ultra --measure cold-prepare,cold-ttft,warm-ttft --repeat 5 --out results/ttft.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "prepare_s",
+        "cold TTFT",
+        "warm TTFT"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PERF-03",
+        "metrics": [
+          "prepare.total_ms",
+          "ttft_ms.cold",
+          "ttft_ms.warm"
+        ]
+      },
+      "decision_affected": "UI estimates; keep-ready policy.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PERF-04",
+      "title": "Sustained run and repeated release/reprepare cycles",
+      "purpose": "30-minute sustained laptop run and >=20 full release/reprepare cycles without memory creep or slowing cleanup.",
+      "command": "clusterlm-bench cluster --tier ultra --sustained 30m --release-cycles 20 --out results/soak.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "tok/s over time",
+        "RSS/commit/VRAM per cycle",
+        "release time per cycle",
+        "residual bytes per cycle"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PERF-04",
+        "metrics": [
+          "soak.tok_s_trend",
+          "soak.memory_creep_bytes",
+          "soak.release_ms_trend"
+        ]
+      },
+      "decision_affected": "PERF-04 acceptance.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-STRONG-01",
+      "title": "Strong tier qualification",
+      "purpose": "Repeat placement, MTP and performance experiments for the Strong artifact (separate cache economics).",
+      "command": "clusterlm-bench cluster --tier strong --context 4096,8192 --repeat 5 --out results/perf-strong.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)"
+      ],
+      "model": "Strong-tier Swift IQ2_XS artifact",
+      "measurements": [
+        "decode/prefill tok/s",
+        "acceptance",
+        "residency"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-STRONG-01",
+        "metrics": [
+          "decode_tok_s.median"
+        ]
+      },
+      "decision_affected": "Strong tier claims.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-FAST-01",
+      "title": "Fast tier local baseline",
+      "purpose": "Measure Father-only Fast tier throughput and its load time as the fallback target.",
+      "command": "clusterlm-bench baseline fast --model <fast-model> --repeat 5 --out results/perf-fast.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)"
+      ],
+      "model": "Fast-tier dense model",
+      "measurements": [
+        "decode/prefill tok/s",
+        "load time",
+        "re-prefill time"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-FAST-01",
+        "metrics": [
+          "decode_tok_s.median",
+          "load_ms"
+        ]
+      },
+      "decision_affected": "Fallback UX timing.",
+      "status": "pending"
+    }
+  ]
+}

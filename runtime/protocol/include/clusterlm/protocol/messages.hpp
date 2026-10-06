@@ -182,9 +182,11 @@ struct RunWindow {
   domain::WindowRequest request;   // epoch, session, window, base position, expected state, positions
   StageId stage;
   domain::StageActivations activations;
-  // Direct routing: if set, the receiver forwards its result to the next stage's peer instead of
-  // returning it to the sender. Final results always go to Father.
+  // Direct routing: if set, the receiver forwards its result to the next stage's authorized peer instead of
+  // returning it. The last stage of a forwarded chain always returns its StageResult to Father.
   bool forward_to_peer = false;
+  // Timings of stages already traversed by a forwarded chain, so Father receives the whole breakdown.
+  std::vector<domain::StageTiming> upstream_timings;
 };
 
 struct StageResult {
