@@ -53,9 +53,14 @@ Result<std::unique_ptr<CanonicalModelStore>> CanonicalModelStore::open(const std
 }
 
 Result<Bytes> CanonicalModelStore::load_unlocked(const ManifestObject& obj) const {
-  // Checked before allocating: for a converted object byte_size is not bounded by the shard sizes.
-  if (obj.representation.conversion_version != 0)
+  // Checked before allocating: byte_size must be exactly the stored ranges (bounded by the shard sizes), which also
+  // holds for a pre-converted object; anything that would need on-the-fly conversion is refused here.
+  if (!served_as_stored(obj))
     return make_error(ErrorCode::kUnimplemented, "object '" + obj.name + "': conversion not supported by this store");
+  std::uint64_t stored = 0;
+  for (const auto& r : obj.source_ranges) stored += r.length;
+  if (stored != obj.byte_size)
+    return make_error(ErrorCode::kDataLoss, "object '" + obj.name + "': byte size does not match its source ranges");
   Bytes out(obj.byte_size);
   std::size_t pos = 0;
   // One open per object per shard, one bounded read per source range.
@@ -75,9 +80,6 @@ Result<Bytes> CanonicalModelStore::load_unlocked(const ManifestObject& obj) cons
       return make_error(ErrorCode::kDataLoss, "object '" + obj.name + "': short read");
     pos += static_cast<std::size_t>(r.length);
   }
-  // Conversion (conversion_version > 0) would happen here; only pre-converted objects are served.
-  if (!served_as_stored(obj))
-    return make_error(ErrorCode::kUnimplemented, "object '" + obj.name + "': conversion not supported by this store");
   CLM_RETURN_IF_ERROR(verify_object_bytes(obj, out));
   return out;
 }

@@ -204,9 +204,17 @@ TEST_CASE("a converted object with an absurd byte_size is refused without alloca
   victim.byte_size = 1ull << 44;  // 16 TiB; not bounded by the shard sizes for a converted object
   auto store = objects::CanonicalModelStore::open(fx.dir.path(), m);
   REQUIRE(store.is_ok());
+  // Pre-converted form (source digest == object digest): byte_size must equal the stored ranges.
   auto r = store.value()->read_object_bytes(victim.name);
   REQUIRE_FALSE(r.is_ok());
-  CHECK(r.status().code() == ErrorCode::kUnimplemented);
+  CHECK(r.status().code() == ErrorCode::kDataLoss);
+  // A conversion the store would have to perform itself is refused outright.
+  victim.source_digest.bytes[0] ^= 1;
+  auto store2 = objects::CanonicalModelStore::open(fx.dir.path(), m);
+  REQUIRE(store2.is_ok());
+  auto r2 = store2.value()->read_object_bytes(victim.name);
+  REQUIRE_FALSE(r2.is_ok());
+  CHECK(r2.status().code() == ErrorCode::kUnimplemented);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

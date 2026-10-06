@@ -93,8 +93,17 @@ Input mutate(const Input& base, const Input& other, Rng& rng) {
 
 int main(int argc, char** argv) {
   std::size_t mutations = 48;
+#ifdef _MSC_VER
+  char* env = nullptr;
+  std::size_t env_len = 0;
+  if (_dupenv_s(&env, &env_len, "CLUSTERLM_FUZZ_MUTATIONS") == 0 && env != nullptr) {
+    mutations = static_cast<std::size_t>(std::strtoull(env, nullptr, 10));
+  }
+  std::free(env);
+#else
   if (const char* env = std::getenv("CLUSTERLM_FUZZ_MUTATIONS"))
     mutations = static_cast<std::size_t>(std::strtoull(env, nullptr, 10));
+#endif
   std::vector<std::filesystem::path> files;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
