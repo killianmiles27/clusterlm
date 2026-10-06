@@ -8,7 +8,7 @@
 namespace clusterlm::bench {
 
 namespace {
-double percentile(std::vector<double> v, double p) {
+double percentile_of(std::vector<double> v, double p) {
   if (v.empty()) return 0;
   std::sort(v.begin(), v.end());
   const double idx = p * static_cast<double>(v.size() - 1);
@@ -17,6 +17,23 @@ double percentile(std::vector<double> v, double p) {
   return v[lo] + (v[hi] - v[lo]) * (idx - static_cast<double>(lo));
 }
 }  // namespace
+
+double Distribution::mean() const {
+  if (samples.empty()) return 0;
+  double sum = 0;
+  for (double s : samples) sum += s;
+  return sum / static_cast<double>(samples.size());
+}
+
+double Distribution::stddev() const {
+  if (samples.size() < 2) return 0;
+  const double m = mean();
+  double acc = 0;
+  for (double s : samples) acc += (s - m) * (s - m);
+  return std::sqrt(acc / static_cast<double>(samples.size() - 1));
+}
+
+double Distribution::percentile(double p) const { return percentile_of(samples, p); }
 
 nlohmann::json Distribution::to_json(const std::string& unit) const {
   nlohmann::json j;
@@ -27,11 +44,12 @@ nlohmann::json Distribution::to_json(const std::string& unit) const {
   for (double s : samples) sum += s;
   j["mean"] = sum / static_cast<double>(samples.size());
   j["min"] = *std::min_element(samples.begin(), samples.end());
-  j["p10"] = percentile(samples, 0.10);
-  j["p50"] = percentile(samples, 0.50);
-  j["p95"] = percentile(samples, 0.95);
-  j["p99"] = percentile(samples, 0.99);
+  j["p10"] = percentile_of(samples, 0.10);
+  j["p50"] = percentile_of(samples, 0.50);
+  j["p95"] = percentile_of(samples, 0.95);
+  j["p99"] = percentile_of(samples, 0.99);
   j["max"] = *std::max_element(samples.begin(), samples.end());
+  j["stddev"] = stddev();
   return j;
 }
 
@@ -69,6 +87,16 @@ BenchmarkResult::BenchmarkResult(std::string experiment, const HostInfo& host) {
   doc_["metrics"] = nlohmann::json::object();
   doc_["checks"] = nlohmann::json::array();
   doc_["pending_qualification"] = nlohmann::json::array();
+}
+
+void BenchmarkResult::set_host_role(const std::string& role, const std::string& machine_id) {
+  doc_["environment"]["host_role"] = role;
+  if (!machine_id.empty()) doc_["environment"]["machine_id"] = machine_id;
+}
+
+void BenchmarkResult::set_gpu(const std::string& name, const std::string& driver) {
+  doc_["environment"]["gpu"] = name;
+  if (!driver.empty()) doc_["environment"]["driver"] = driver;
 }
 
 void BenchmarkResult::mark_simulated(const std::string& key, nlohmann::json value) {

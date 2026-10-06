@@ -64,6 +64,10 @@ def render(reg: dict) -> str:
         out.append(f"- **Decision affected:** {e['decision_affected']}\n")
         if "acceptance" in e:
             out.append(f"- **Acceptance:** {e['acceptance']}\n")
+        if e.get("tool_gaps"):
+            out.append("- **Not yet measurable by `clusterlm-bench`:**\n")
+            for g in e["tool_gaps"]:
+                out.append(f"  - {g}\n")
     return "".join(out)
 
 

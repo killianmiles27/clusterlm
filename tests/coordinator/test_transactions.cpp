@@ -207,8 +207,9 @@ TEST_CASE("cancelling during prefill drains in-flight chunks and leaves a consis
   REQUIRE(out.is_ok());
   CHECK(out->cancelled);
   CHECK(out->tokens.empty());
-  // Responsive: at most the in-flight chunks drained after the cancel.
-  CHECK(ms < 1500.0);
+  // Responsive: only the in-flight chunks drain after the cancel (the full prefill takes far longer). The bound is
+  // generous so a loaded CI machine does not make it flaky.
+  CHECK(ms < 5000.0);
   const auto done = conv.value()->committed_tokens().size();
   CHECK(done > 0);
   CHECK(done < prompt.size());

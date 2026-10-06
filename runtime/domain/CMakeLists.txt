@@ -3,7 +3,7 @@ clusterlm_module(clusterlm_domain_api
   DEPS clusterlm_objects)
 
 clusterlm_module(clusterlm_domain
-  SOURCES src/reference_domain.cpp src/reference_backend.cpp src/drafter.cpp src/sampling.cpp
+  SOURCES src/reference_domain.cpp src/reference_backend.cpp src/drafter.cpp src/sampling.cpp src/reference_kernels.cpp
   DEPS clusterlm_domain_api clusterlm_windows clusterlm_objects)
 
 # Bitwise-reproducible FP32: forbid fused multiply-add contraction in the reference kernels.
