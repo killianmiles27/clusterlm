@@ -1,0 +1,1 @@
+clusterlm_test(test_config SOURCES test_settings_store.cpp DEPS clusterlm_config clusterlm_platform)

@@ -1,0 +1,1 @@
+clusterlm_test(test_pairing SOURCES test_pairing.cpp DEPS clusterlm_pairing clusterlm_transport)

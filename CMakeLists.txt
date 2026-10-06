@@ -51,6 +51,8 @@ foreach(module
     orchestrator/coordinator
     orchestrator/planning
     orchestrator/catalog
+    orchestrator/config
+    orchestrator/pairing
     orchestrator/father-service
     node/worker
     node/service
