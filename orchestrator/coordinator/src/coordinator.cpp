@@ -520,7 +520,7 @@ Result<std::unique_ptr<Coordinator>> Coordinator::create(CoordinatorConfig confi
   impl->cfg = std::move(config);
   CLM_ASSIGN_OR_RETURN(impl->store, objects::CanonicalModelStore::open(impl->cfg.model_dir));
   impl->backend = domain::make_reference_backend();
-  if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(*impl->cfg.impairment);
+  if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(impl->cfg.impairment->bandwidth_bytes_per_s);
   for (const auto& ep : impl->cfg.nodes) {
     auto n = std::make_unique<RemoteNode>();
     n->endpoint = ep;

@@ -745,7 +745,7 @@ Result<std::unique_ptr<NodeWorker>> NodeWorker::start(NodeConfig config) {
   if (impl->cfg.backend != "reference")
     return make_error(ErrorCode::kUnimplemented, "backend '" + impl->cfg.backend + "' is not available in this build");
   impl->backend = domain::make_reference_backend();
-  if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(*impl->cfg.impairment);
+  if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(impl->cfg.impairment->bandwidth_bytes_per_s);
 
   // Orphan recovery runs before any lease can be accepted.
   lease::LeaseStoreOptions opts;

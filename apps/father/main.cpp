@@ -11,6 +11,7 @@
 #include "clusterlm/common/log.hpp"
 #include "clusterlm/coordinator/coordinator.hpp"
 #include "clusterlm/domain/drafter.hpp"
+#include "clusterlm/objects/canonical_store.hpp"
 
 using namespace clusterlm;
 
@@ -83,8 +84,12 @@ int main(int argc, char** argv) {
   req.max_new_tokens = static_cast<std::uint32_t>(args.integer("max-new", 32));
   req.q = static_cast<std::uint32_t>(args.integer("q", 1));
   req.prefill_chunk = static_cast<std::uint32_t>(args.integer("prefill-chunk", 128));
+  std::unique_ptr<objects::CanonicalModelStore> drafter_store;
   if (req.q > 1) {
-    auto drafter = domain::make_mtp_fixture_drafter(c.manifest(), cfg.model_dir);
+    auto store = objects::CanonicalModelStore::open(cfg.model_dir);
+    if (!store.is_ok()) return fail(store.status());
+    drafter_store = std::move(store).value();
+    auto drafter = domain::MtpFixtureDrafter::create(c.manifest(), *drafter_store);
     if (!drafter.is_ok()) return fail(drafter.status());
     req.drafter = std::move(drafter).value();
   }
