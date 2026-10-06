@@ -39,6 +39,7 @@ Windows pinned-memory behaviour.
 | [HQ-P0A-01](#hq-p0a-01) | Stock/pinned llama.cpp RPC baseline | Father, Node G14, Node 3060 | pending |
 | [HQ-P0B-01](#hq-p0b-01) | Strata local hybrid baseline and partial-domain microbenchmarks | Father, Node G14, Node 3060 | pending |
 | [HQ-P0C-01](#hq-p0c-01) | Grouped expert-domain barrier cost | Father, Node G14, Node 3060 | pending |
+| [HQ-P0C-02](#hq-p0c-02) | Grouped expert-domain on real hardware: LAN peers, quantized kernels, real routing | Father, Node G14, Node 3060 | pending |
 | [HQ-PERF-01](#hq-perf-01) | Ultra decode throughput at 4K/8K | Father, Node G14, Node 3060 | pending |
 | [HQ-PERF-02](#hq-perf-02) | Long-context behaviour (16K/32K, 64K/128K reported separately) | Father, Node G14, Node 3060 | pending |
 | [HQ-PERF-03](#hq-perf-03) | Cold preparation, cold TTFT and warm TTFT | Father, Node G14, Node 3060 | pending |
@@ -311,16 +312,35 @@ Windows pinned-memory behaviour.
 
 **Grouped expert-domain barrier cost** — status: `pending`
 
-- **Purpose:** Measure whether concurrent remote CPU expert work repays 48 per-layer barriers on the real LAN.
-- **Command:** `clusterlm-bench domain grouped-experts --layers representative --nodes <g14>,<3060> --out results/grouped.json`
+- **Purpose:** Measure whether concurrent remote CPU expert work repays 48 per-layer barriers on the real LAN. The clusterlm-expert-domain-bench executable implements the protocol, the Father executor and a Synthetic simulation (fixture model, in-process domains over loopback with simulated links, layer-domain comparison through the Coordinator); it can only emit Synthetic results. A Measured run needs the real-LAN peers and kernels listed in HQ-P0C-02.
+- **Command:** `clusterlm-expert-domain-bench --experiment HQ-P0C-01 --remote-domains 2 --q 1,2,3,4 --presets unlimited,gige-simulated,gige-degraded --windows 64 --out results/grouped.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
-  - per-layer barrier RTT
-  - remote expert compute
-  - aggregation cost
+  - per-layer barrier RTT (first send to last result, per layer)
+  - remote expert compute (domain-reported, per layer)
+  - aggregation cost (Father combine + finalize)
+  - messages and bytes per layer and per target pass for q = 1..4
+  - barrier wait versus Father's overlapped local expert work
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0C-01"`; metrics `grouped.layer_barrier_ms`, `grouped.net_gain_ms`
 - **Decision affected:** Whether the grouped expert-domain or mixed variant proceeds to P0-D.
+
+### HQ-P0C-02
+
+**Grouped expert-domain on real hardware: LAN peers, quantized kernels, real routing** — status: `pending`
+
+- **Purpose:** Replace the parts of the grouped expert-domain prototype that cannot run in the cloud: expert domains as separate machines reached over the real 1GbE link with mutual TLS (the prototype runs them as threads over loopback), quantized GPU/CPU expert kernels (the prototype runs FP32 reference SwiGLU), and the model's real routing statistics (the analytic model assumes uniform independent routing). Real routing decides how fast the expert union grows with q and how balanced the domains are.
+- **Command:** `clusterlm-bench domain grouped-experts-real --q 1,2,3,4 --route-trace results/route-trace.json --nodes <g14>,<3060> --out results/grouped-real.json`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Measurements:**
+  - expert-union size per layer and per domain at q = 1..4 under real routing
+  - per-domain share of selections (load imbalance) for range, strided and hot/cold ownership
+  - quantized expert kernel time per distinct expert on each CPU and, for Father, GPU-resident experts
+  - per-layer barrier time and its p95/p99 on the physical LAN
+  - end-to-end emitted tok/s of grouped versus layer-domain on the same model
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0C-02"`; metrics `grouped_real.union_growth_q4`, `grouped_real.domain_imbalance`, `grouped_real.layer_barrier_ms_p95`
+- **Decision affected:** Whether the grouped expert-domain topology replaces or complements the layer-domain pipeline, which expert ownership it uses, and the q cap that keeps the expert union affordable.
 
 ### HQ-PERF-01
 
