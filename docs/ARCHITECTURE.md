@@ -37,7 +37,10 @@ A round verifies `q` positions: the next token followed by `q−1` drafts from t
 
 1. Father runs the prefix, sends `RunWindow` to the first Node, and receives the last Node's `StageResult`.
    Nodes forward directly to their peer, so Father does not relay.
-2. Father runs the tail and decides the accepted prefix `n` by greedy verification.
+2. Father runs the tail and decides the accepted prefix `n`: greedy verification at temperature 0, otherwise
+   stochastic speculative sampling (accept with probability min(1, P/Q), resample from the residual on rejection,
+   bonus token when every draft is accepted). The output distribution equals the target model's; this is tested
+   with chi-square tests, not greedy equality.
 3. Father sends `CommitWindow(n)` to every domain and waits for every `CommitAck` before the next window.
 
 Every domain delegates admission to `windows::WindowLedger`, so the rules are identical in-process and remote:
@@ -48,6 +51,7 @@ Every domain delegates admission to `windows::WindowLedger`, so the rules are id
 - An exact base position and state version.
 - An accepted length in `[1, q]`.
 - Idempotent commit replay.
+- `AbortWindow`, which discards one outstanding window and keeps the session (used by cancel).
 - Abort that invalidates the session.
 
 A worker failure, a stale epoch or an unknown commit outcome aborts the distributed session and advances the
@@ -59,20 +63,33 @@ replayed blindly.
 | Module | Target | Responsibility |
 |---|---|---|
 | `runtime/common` | `clusterlm_common` | Status/Result, explicit LE codec, SHA-256, strong IDs, privacy-safe logging |
-| `runtime/objects` | `clusterlm_objects` | `ModelGeometry`, `ModelManifest`, `ObjectResolver`, `CanonicalModelStore`, deterministic fixture models |
-| `runtime/domain` | `clusterlm_domain_api`, `clusterlm_domain` | `StageBoundary`, `ExecutionDomain`, `BackendAdapter`, CPU reference backend, drafters |
-| `runtime/windows` | `clusterlm_windows` | Speculative-window ledger: epochs, window IDs, state versions, commit/abort |
-| `runtime/transport` | `clusterlm_transport` | Framed TCP, mutual TLS 1.3 with pinned device identities, network impairment and fault injection |
-| `runtime/protocol` | `clusterlm_protocol` | Father/Node messages (§9 of the addendum), bounded decoding, per-channel `MessageStream` |
-| `runtime/platform` | `clusterlm_platform` | File mapping, durable journal files, safe deletion, child processes, Windows adapters (activity, power, Job Objects, DXGI) |
-| `runtime/backends` | optional | Strata and llama.cpp adapter skeletons (CUDA, behind CMake options) |
+| `runtime/objects` | `clusterlm_objects` | `ModelGeometry`, `ModelManifest`, `ObjectResolver`, `CanonicalModelStore` (bounded streaming), GGUF v2/v3 parser and manifest builder, fixture models; tools `clusterlm-model-inspect`, `clusterlm-fixture-model` ([model-manifest.md](model-manifest.md)) |
+| `runtime/domain` | `clusterlm_domain_api`, `clusterlm_domain` | `StageBoundary`, `ExecutionDomain`, `BackendAdapter`, CPU reference backend, drafters, speculative sampling |
+| `runtime/windows` | `clusterlm_windows` | Speculative-window ledger: epochs, window IDs, state versions, commit, abort_window, abort_session |
+| `runtime/transport` | `clusterlm_transport` | Framed TCP, mutual TLS 1.3 with pinned device identities, TLS exporter for pairing, network impairment and fault injection |
+| `runtime/protocol` | `clusterlm_protocol` | Father/Node messages, bounded decoding, per-channel `MessageStream` ([protocol.md](protocol.md)) |
+| `runtime/platform` | `clusterlm_platform` | File mapping, durable journals, safe deletion, child processes, named-pipe/Unix-socket IPC, service host, firewall, ACLs, Windows adapters (activity, power, WTS, Job Objects, DXGI) |
+| `runtime/backends/strata-layout` | `clusterlm_strata_layout` | Strata field-major ⇄ ClusterLM position-major boundary transpose (always built) |
+| `runtime/backends/strata-core` | `clusterlm_strata_core` | `StrataDomain` state machine over a `StrataEngine`, object mapping and conversion, MTP drafter adapter (always built; [backends/strata-port.md](backends/strata-port.md)) |
+| `runtime/backends/strata` | `clusterlm_strata_cpu`, `clusterlm_backend_strata`, `clusterlm-strata` | Patched pinned Strata: CPU expert kernels (`CLUSTERLM_ENABLE_STRATA_CPU`), CUDA engine (`CLUSTERLM_ENABLE_STRATA`), model conversion tool |
+| `runtime/backends/llama` | `clusterlm_backend_llama`, `clusterlm-llama-rpc-server` | Pinned llama.cpp: Fast-tier Father-only domain, P0-A RPC baseline harness (`CLUSTERLM_ENABLE_LLAMA`; [backends/llama-local.md](backends/llama-local.md)) |
+| `runtime/backends/factory` | `clusterlm_backend_factory` | `--backend reference\|llama\|strata`; an unbuilt backend is an error, never a fallback |
 | `node/lease-store` | `clusterlm_lease_store` | Ephemeral lease object store, content-free journal, orphan recovery |
-| `node/worker` | `clusterlm_node_worker` | Node service: lease state machine, provisioning, domain hosting, peer forwarding, release |
-| `orchestrator/placement` | `clusterlm_placement` | Hardware profiles with provenance, cost model, placement search, Pareto frontier |
-| `orchestrator/coordinator` | `clusterlm_coordinator` | Father orchestration: connect, prepare, generate, release |
-| `bench` | `clusterlm-bench` | ClusterLM Bench: profiles, transport, local clusters, faults, placement, qualification registry |
-| `orchestrator/diagnostics` | `clusterlm_diagnostics` | Redacting diagnostics bundle and log ring buffer (`clusterlm-father diagnostics`) |
-| `apps` | `clusterlm-node`, `clusterlm-father` | Executables |
+| `node/worker` | `clusterlm_node_worker` | Node worker: lease state machine, provisioning with resume, domain hosting, peer forwarding, release |
+| `node/service` | `clusterlm_node_service` | Node supervisor: policy, revocation deadlines, Job Object termination, pairing/trust state |
+| `orchestrator/catalog` | `clusterlm_catalog` | Fast/Strong/Ultra tier catalog ([tiers.md](tiers.md)) |
+| `orchestrator/placement` | `clusterlm_placement` | Hardware profiles with provenance, cost model, placement search, Pareto frontier ([placement.md](placement.md)) |
+| `orchestrator/planning` | `clusterlm_planning` | Workload model, replan triggers, placement reports |
+| `orchestrator/coordinator` | `clusterlm_coordinator` | Father orchestration: connect, prepare, pipelined prefill, speculative decode, conversations, cancel, release |
+| `orchestrator/father-service` | `clusterlm_father_service` | Tier selection, readiness, fallback, production providers |
+| `orchestrator/pairing` | `clusterlm_pairing` | SPAKE2 pairing bound to the TLS channel ([pairing.md](pairing.md)) |
+| `orchestrator/config` | `clusterlm_config` | Versioned owner-only Father/Node settings |
+| `orchestrator/diagnostics` | `clusterlm_diagnostics` | Redacting diagnostics bundle and log ring buffer |
+| `experimental/expert-domains` | `clusterlm_expert_domains` | Isolated grouped expert-domain prototype ([experimental/expert-domains.md](experimental/expert-domains.md)) |
+| `bench` | `clusterlm-bench` | ClusterLM Bench: CPU/memory/GPU/PCIe probes, calibration, transport, local clusters, faults, baselines, placement inputs, qualification registry ([benchmark-methodology.md](benchmark-methodology.md)) |
+| `ui` | `clusterlm-father-ui`, `clusterlm-node-ui` | Dear ImGui + D3D11 shells over portable view-models ([ui.md](ui.md)) |
+| `apps` | `clusterlm-node`, `clusterlm-father`, `clusterlm-node-service`, `clusterlm-node-helper`, `clusterlm-father-agent` | Executables ([windows-architecture.md](windows-architecture.md), [father-ipc.md](father-ipc.md)) |
+| `packaging` | — | WiX MSIs, signing, install smoke tests ([packaging.md](packaging.md)) |
 
 ## Channels and transport
 
@@ -141,6 +158,7 @@ provenance: `Synthetic`, `Measured` or `Qualified`.
 | Faults | `--crash-at <phase>`, fault rules, local-activity revocation, restart and orphan recovery |
 | Physical Nodes | Change the endpoints. Real measurements replace synthetic profiles through ClusterLM Bench |
 
-The Strata CUDA backend is the leading production candidate. It needs the hardware, so its adapter is a
-skeleton that returns `kHardwareUnavailable`/`kUnimplemented`. It sits behind the same `BackendAdapter`
-interface the reference backend uses.
+The Strata backend is real code: the patched, pinned Strata sources are built behind
+`CLUSTERLM_ENABLE_STRATA` (CUDA) and `CLUSTERLM_ENABLE_STRATA_CPU`, and `StrataDomain` runs end to end through
+Father and Node with a fake engine in CI. Its CPU expert kernels are tested against ggml-cpu. Nothing on a GPU has
+run here: on a machine without CUDA hardware, `prepare` returns `kHardwareUnavailable`, never a fallback.
