@@ -209,6 +209,9 @@ class ServiceImpl final : public FatherService {
     std::uint32_t max_context = 0;
     std::unique_ptr<coordinator::Coordinator> coord;
     Deployment dep;
+    // The distributed session holding this tier's conversation state between turns. Reset on any failure or
+    // tier change; a history that is not an extension of what it holds also starts a new one.
+    std::shared_ptr<coordinator::Conversation> conversation;
   };
 
   // ---- plumbing ------------------------------------------------------------------------------------------
@@ -287,6 +290,8 @@ class ServiceImpl final : public FatherService {
 
   Status teardown_active() {
     if (!active_.coord) return Status::ok();
+    if (active_.conversation) (void)active_.coord->close_conversation(*active_.conversation);
+    active_.conversation.reset();
     {
       std::lock_guard lk(m_);
       active_ready_ = false;  // not ready from this moment
@@ -429,61 +434,85 @@ class ServiceImpl final : public FatherService {
       }
       drafter = active_.dep.make_drafter();
     }
-    while (run.out.size() < req.max_new_tokens) {
-      if (cancel_.load()) {
-        lr.cancelled = true;
+    // Full token history for this answer: the rendered conversation plus what this answer has emitted so far
+    // (non-empty after a fallback: the new tier continues the same answer).
+    std::vector<std::int32_t> history = prompt;
+    history.insert(history.end(), run.out.begin(), run.out.end());
+    auto& conv = active_.conversation;
+    auto held = [&] {
+      std::vector<std::int32_t> h = conv->committed_tokens();
+      h.insert(h.end(), conv->pending_tokens().begin(), conv->pending_tokens().end());
+      return h;
+    };
+    if (conv && conv->valid()) {
+      const auto h = held();
+      if (h.size() > history.size() || !std::equal(h.begin(), h.end(), history.begin())) {
+        (void)active_.coord->close_conversation(*conv);
+        conv.reset();
+      }
+    }
+    if (!conv || !conv->valid()) {
+      auto opened = active_.coord->open_conversation();
+      if (!opened.is_ok()) {
+        lr.status = opened.status();
         return lr;
       }
-      const auto remaining = static_cast<std::uint32_t>(req.max_new_tokens - run.out.size());
-      const auto seg = std::min(remaining, deps_.options.segment_tokens);
-      coordinator::GenerationRequest g;
-      g.prompt = prompt;
-      g.prompt.insert(g.prompt.end(), run.out.begin(), run.out.end());
-      g.max_new_tokens = seg;
-      g.q = req.q;
-      g.drafter = drafter;
-      Stopwatch sw;
-      auto res = active_.coord->generate(g);
-      if (!res.is_ok()) {
-        {
-          std::lock_guard lk(m_);
-          active_ready_ = false;  // the distributed session is invalid; the prepared plan is no longer current
-        }
-        lr.status = res.status();
-        if (res.status().code() == ErrorCode::kInvalidArgument) lr.fatal = true;
-        return lr;
-      }
-      run.gen_ms += sw.elapsed_ms();
-      auto toks = res->tokens;
-      if (toks.size() > seg) toks.resize(seg);
-      if (toks.empty()) {
-        lr.status = make_error(ErrorCode::kInternal, "backend returned no tokens");
-        return lr;
-      }
-      for (const auto& r : res->rounds)
-        if (!r.prefill) {
-          ++run.decode_rounds;
-          run.accepted_sum += r.accepted;
-        }
-      run.out.insert(run.out.end(), toks.begin(), toks.end());
-      if (!run.segments.empty() && run.segments.back().tier_id == tier.id) run.segments.back().tokens += static_cast<std::uint32_t>(toks.size());
-      else run.segments.push_back({tier.id, tier.model.display_name, static_cast<std::uint32_t>(toks.size())});
+      conv = std::move(opened).value();
+    }
+    const auto already = held().size();
+    coordinator::GenerationRequest g;
+    g.conversation = conv;
+    g.prompt.assign(history.begin() + static_cast<std::ptrdiff_t>(already), history.end());
+    g.max_new_tokens = static_cast<std::uint32_t>(req.max_new_tokens - run.out.size());
+    g.q = req.q;
+    g.drafter = drafter;
+    g.cancel = run_cancel_;
+    g.on_tokens = [&](std::span<const std::int32_t> toks) {
+      std::vector<std::int32_t> v(toks.begin(), toks.end());
+      run.out.insert(run.out.end(), v.begin(), v.end());
+      if (!run.segments.empty() && run.segments.back().tier_id == tier.id)
+        run.segments.back().tokens += static_cast<std::uint32_t>(v.size());
+      else
+        run.segments.push_back({tier.id, tier.model.display_name, static_cast<std::uint32_t>(v.size())});
       if (!run.got_first) {
         run.got_first = true;
         run.ttft_ms = run.since_start.elapsed_ms();
       }
       {
         std::lock_guard lk(m_);
-        tokens_emitted_ += toks.size();
+        tokens_emitted_ += v.size();
       }
       TokensEvent ev;
       ev.request = run.id;
       ev.tier_id = tier.id;
       ev.model_name = tier.model.display_name;
-      ev.text = deps_.tokenizer->decode(toks);
-      ev.tokens = std::move(toks);
+      ev.text = deps_.tokenizer->decode(v);
+      ev.tokens = std::move(v);
       emit(ev);
+    };
+    Stopwatch sw;
+    auto res = active_.coord->generate(g);
+    run.gen_ms += sw.elapsed_ms();
+    if (!res.is_ok()) {
+      {
+        std::lock_guard lk(m_);
+        active_ready_ = false;  // the distributed session is invalid; the prepared plan is no longer current
+      }
+      conv.reset();
+      lr.status = res.status();
+      if (res.status().code() == ErrorCode::kInvalidArgument) lr.fatal = true;
+      return lr;
     }
+    for (const auto& r : res->rounds)
+      if (!r.prefill) {
+        ++run.decode_rounds;
+        run.accepted_sum += r.accepted;
+      }
+    if (res->cancelled) {
+      lr.cancelled = true;
+      return lr;
+    }
+    if (res->tokens.empty()) lr.status = make_error(ErrorCode::kInternal, "backend returned no tokens");
     return lr;
   }
 
@@ -604,7 +633,9 @@ class ServiceImpl final : public FatherService {
   std::condition_variable cv_;
   std::thread job_;
   bool job_running_ = false;
-  std::atomic<bool> cancel_{false};
+  // Shared with the Coordinator's GenerationRequest so cancel() reaches the in-flight window directly.
+  std::shared_ptr<std::atomic<bool>> run_cancel_ = std::make_shared<std::atomic<bool>>(false);
+  std::atomic<bool>& cancel_ = *run_cancel_;
   std::atomic<RequestId> next_request_{0};
   RequestId current_request_ = 0;
   std::string selected_;
@@ -624,7 +655,6 @@ class ServiceImpl final : public FatherService {
 Result<std::unique_ptr<FatherService>> make_father_service(ServiceDeps deps) {
   if (!deps.tokenizer || !deps.readiness || !deps.deployments)
     return make_error(ErrorCode::kInvalidArgument, "tokenizer, readiness source and deployment provider are required");
-  if (deps.options.segment_tokens == 0) return make_error(ErrorCode::kInvalidArgument, "segment_tokens must be > 0");
   return std::unique_ptr<FatherService>(new ServiceImpl(std::move(deps)));
 }
 

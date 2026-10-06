@@ -140,7 +140,6 @@ struct DiagnosticsSnapshot {
 };
 
 struct ServiceOptions {
-  std::uint32_t segment_tokens = 4;  // tokens per Coordinator session; bounds cancel latency and loss exposure
   std::chrono::milliseconds progress_poll{100};
   std::uint32_t default_context_tokens = 4096;
 };

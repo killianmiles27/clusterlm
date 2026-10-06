@@ -132,7 +132,7 @@ struct Fixture {
   std::shared_ptr<Collector> events = std::make_shared<Collector>();
   catalog::Catalog cat;
 
-  explicit Fixture(std::uint32_t segment = 4) {
+  Fixture() {
     auto m = objects::write_fixture_model(objects::FixtureSpec{}, dir / "model");
     REQUIRE(m.is_ok());
     manifest = m.value();
@@ -166,7 +166,6 @@ struct Fixture {
     deps.tokenizer = tokenizer;
     deps.readiness = source;
     deps.deployments = provider;
-    deps.options.segment_tokens = segment;
     deps.options.progress_poll = 20ms;
     auto s = father::make_father_service(std::move(deps));
     REQUIRE(s.is_ok());
@@ -277,7 +276,7 @@ TEST_CASE("chat streams tokens identical to the Father-only reference and keeps 
   const auto ref = f.reference(expected_prompt, 18);
 
   auto toks = f.events->all<father::TokensEvent>();
-  REQUIRE(toks.size() == 5);  // 18 tokens in segments of 4
+  REQUIRE(toks.size() == 18);  // streamed as each decode round emits (q = 1: one token per round)
   for (const auto& t : toks) {
     CHECK(t.request == rid.value());
     CHECK(t.tier_id == "ultra");
@@ -337,7 +336,7 @@ TEST_CASE("diagnostics are redacted by default and carry no prompt or response t
   CHECK(full.conversation[0].content == "TOP-SECRET-PROMPT");
 }
 
-TEST_CASE("cancel stops generation promptly at a segment boundary and keeps the partial answer") {
+TEST_CASE("cancel stops generation promptly at the next window and keeps the partial answer") {
   Fixture f;
   f.prepare("strong");
   std::atomic<father::RequestId> rid{0};
@@ -359,7 +358,7 @@ TEST_CASE("cancel stops generation promptly at a segment boundary and keeps the 
   REQUIRE(fin.size() == 1);
   CHECK(fin[0].reason == father::FinishReason::kCancelled);
   CHECK(fin[0].stats.tokens < 200);
-  CHECK(fin[0].stats.tokens >= 4);
+  CHECK(fin[0].stats.tokens >= 1);
   CHECK(f.svc->cancel(r.value()).code() == ErrorCode::kNotFound);  // already finished
   CHECK(f.svc->conversation().size() == 2);  // user + partial assistant
   REQUIRE(f.svc->release().is_ok());
@@ -525,7 +524,7 @@ TEST_CASE("when no lower tier can continue, the request ends with an explicit er
   auto fin = f.events->all<father::FinishedEvent>();
   REQUIRE(fin.size() == 1);
   CHECK(fin[0].reason == father::FinishReason::kFailed);
-  CHECK(fin[0].stats.tokens >= 4);  // the partial answer is reported, not discarded
+  CHECK(fin[0].stats.tokens >= 1);  // the partial answer is reported, not discarded
   CHECK(f.svc->conversation().size() == 2);
   CHECK(f.svc->diagnostics().requests_failed == 1);
   CHECK_FALSE(f.svc->diagnostics().last_error.empty());
