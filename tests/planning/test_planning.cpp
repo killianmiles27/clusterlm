@@ -1,6 +1,7 @@
 // Placement -> executable plan -> distributed execution, end to end on the fixture model.
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <filesystem>
 
 #include "clusterlm/node/node_worker.hpp"
@@ -14,7 +15,7 @@ namespace fs = std::filesystem;
 namespace {
 
 fs::path temp_dir(const char* name) {
-  auto p = fs::temp_directory_path() / (std::string("clm-planning-") + name + "-" + std::to_string(::getpid()));
+  auto p = fs::temp_directory_path() / (std::string("clm-planning-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   fs::remove_all(p);
   fs::create_directories(p);
   return p;

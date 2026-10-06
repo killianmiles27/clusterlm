@@ -57,7 +57,9 @@ Father, G14 or 3060 machines.
 5. **Stochastic speculative acceptance.** Greedy verification only so far.
 6. **A runtime-reported allocation ledger from the real backend** (`describe_requirements`) feeding placement
    admission.
-7. **Product surfaces** (Father UI, tray, installer, pairing UX) after the lifecycle above is exercised on hardware.
+7. **Windows key-file ACL.** The device private key is written with POSIX mode 0600; on Windows it inherits the
+   directory ACL. Restrict it explicitly (owner + SYSTEM only) before pairing ships.
+8. **Product surfaces** (Father UI, tray, installer, pairing UX) after the lifecycle above is exercised on hardware.
 
 ## Pending hardware qualification
 
