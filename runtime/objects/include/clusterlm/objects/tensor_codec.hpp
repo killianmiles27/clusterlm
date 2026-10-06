@@ -1,11 +1,13 @@
 #pragma once
 // Tensor byte codecs shared by the fixture generator and the reference backend.
 //
-// Two representations exist in the fixture model:
+// Three representations are understood:
 //   "f32"          little-endian IEEE-754 binary32, row-major;
 //   "q8_0-fixture" blocks of 32 elements: one little-endian f32 scale followed by 32 int8 values (36 bytes).
 //                  Dequantization is `scale * q` in FP32 and is exact/deterministic: the backend must never
 //                  requantize or approximate it.
+//   "q8_0"         ggml Q8_0 as stored in GGUF files: blocks of 32 elements, one little-endian binary16 scale
+//                  followed by 32 int8 values (34 bytes). Dequantization is `f32(scale) * q`.
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -17,6 +19,8 @@ namespace clusterlm::objects {
 
 inline constexpr std::string_view kQuantF32 = "f32";
 inline constexpr std::string_view kQuantQ8Fixture = "q8_0-fixture";
+inline constexpr std::string_view kQuantQ8_0 = "q8_0";
+inline constexpr std::uint32_t kQ8_0BlockBytes = 2 + 32;
 inline constexpr std::uint32_t kQ8BlockElems = 32;
 inline constexpr std::uint32_t kQ8BlockBytes = 4 + kQ8BlockElems;
 
@@ -30,5 +34,11 @@ Status decode_tensor(std::string_view quant_type, ByteSpan bytes, std::span<floa
 // Encoders (used by the generator and by tests that need a corrupted/alternate representation).
 void encode_f32(std::span<const float> values, Bytes& out);
 Status encode_q8_fixture(std::span<const float> values, Bytes& out);
+// ggml Q8_0 (quantize_row_q8_0_ref semantics: d = amax/127, q = round(x/d), d stored as binary16).
+Status encode_q8_0_ggml(std::span<const float> values, Bytes& out);
+
+// IEEE-754 binary16 <-> binary32 (round-to-nearest-even on the way down).
+float half_to_float(std::uint16_t h);
+std::uint16_t float_to_half(float f);
 
 }  // namespace clusterlm::objects
