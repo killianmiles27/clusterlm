@@ -4,6 +4,9 @@
 // ABI kResidualHandoffF32V1 mirrors Strata's verifier handoff (verify.hpp, `handoff_floats`):
 //   hc residual streams of width H, one pending block-output vector of width H, and hc injection values,
 // i.e. (hc*H + H + hc) FP32 values per token position, explicit little-endian, contiguous, position-major.
+// Strata's native buffer at the pin is field-major per window ([R: T×hc·H][bo: T×H][inj: T×hc], verify.cpp
+// 682-688/1335-1340); the wire stays position-major so its layout does not depend on window length, and the
+// Strata adapter transposes (one exact host copy). See docs/backends/strata-port.md.
 // For Flash-Next (hc=4, H=2560) that is 51,216 bytes per position. The next stage folds the pending write
 // into its first operation. Changing precision or dropping the pending vector is a different ABI, never a
 // silent change.
