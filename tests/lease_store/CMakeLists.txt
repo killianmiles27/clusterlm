@@ -1,0 +1,10 @@
+add_executable(lease_store_crash_helper crash_helper.cpp)
+target_link_libraries(lease_store_crash_helper PRIVATE clusterlm_lease_store clusterlm_platform clusterlm_common)
+clusterlm_set_warnings(lease_store_crash_helper)
+
+clusterlm_test(test_lease_store
+  SOURCES test_lease_store.cpp test_journal.cpp test_crash_recovery.cpp
+  DEPS clusterlm_lease_store clusterlm_platform clusterlm_common)
+add_dependencies(test_lease_store lease_store_crash_helper)
+target_compile_definitions(test_lease_store PRIVATE
+  LEASE_CRASH_HELPER_PATH="$<TARGET_FILE:lease_store_crash_helper>")
