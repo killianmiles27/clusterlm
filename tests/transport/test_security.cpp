@@ -202,3 +202,16 @@ TEST_CASE("mutual TLS refuses a plaintext peer and kMutualTls requires an identi
   no_identity.mode = SecurityConfig::Mode::kMutualTls;
   CHECK(listen(Endpoint{"127.0.0.1", 0}, no_identity).status().code() == ErrorCode::kInvalidArgument);
 }
+
+TEST_CASE("mutual TLS: sending to a peer that has gone away is an error, never SIGPIPE") {
+  // The default SIGPIPE disposition terminates the process; a vanished peer must surface as kUnavailable.
+  auto node = make_identity("node");
+  auto father = make_identity("father");
+  Pair p = connect_pair(tls(node, {father->fingerprint()}), tls(father, {node->fingerprint()}), node->fingerprint());
+  REQUIRE(p.client);
+  REQUIRE(p.server);
+  p.server.reset();  // the peer disappears without close_notify
+  Status last;
+  for (int i = 0; i < 200 && last.is_ok(); ++i) last = p.client->send(make_frame(4, 64 * 1024));
+  CHECK_FALSE(last.is_ok());
+}

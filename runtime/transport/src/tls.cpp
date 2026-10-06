@@ -6,14 +6,72 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdint>
 #include <mutex>
 #include <unordered_set>
+
+#ifndef _WIN32
+#include <openssl/bio.h>
+#include <sys/socket.h>
+#endif
 
 #include "security_internal.hpp"
 
 namespace clusterlm::transport {
 
 namespace {
+
+#ifndef _WIN32
+// OpenSSL's socket BIO writes with write(2), which raises SIGPIPE when the peer has already closed the connection
+// and kills the process. This BIO is the same descriptor I/O with send(MSG_NOSIGNAL), so a vanished peer surfaces as
+// an error on the connection (as on the plain-TCP path), never as a signal.
+int nosig_write(BIO* b, const char* buf, int len) {
+  const int fd = static_cast<int>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+  BIO_clear_retry_flags(b);
+  const ssize_t n = ::send(fd, buf, static_cast<std::size_t>(len), MSG_NOSIGNAL);
+  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) BIO_set_retry_write(b);
+  return static_cast<int>(n);
+}
+
+int nosig_read(BIO* b, char* buf, int len) {
+  const int fd = static_cast<int>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+  BIO_clear_retry_flags(b);
+  const ssize_t n = ::recv(fd, buf, static_cast<std::size_t>(len), 0);
+  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) BIO_set_retry_read(b);
+  return static_cast<int>(n);
+}
+
+long nosig_ctrl(BIO* b, int cmd, long, void* ptr) {
+  switch (cmd) {
+    case BIO_CTRL_FLUSH:
+      return 1;
+    case BIO_C_GET_FD:
+      if (ptr != nullptr) *static_cast<int*>(ptr) = static_cast<int>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+      return static_cast<long>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+    default:
+      return 0;
+  }
+}
+
+int nosig_create(BIO* b) {
+  BIO_set_init(b, 1);
+  return 1;
+}
+
+const BIO_METHOD* nosig_socket_method() {
+  static BIO_METHOD* method = [] {
+    BIO_METHOD* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR, "clusterlm-socket");
+    if (m == nullptr) return m;
+    BIO_meth_set_write(m, nosig_write);
+    BIO_meth_set_read(m, nosig_read);
+    BIO_meth_set_ctrl(m, nosig_ctrl);
+    BIO_meth_set_create(m, nosig_create);
+    return m;
+  }();
+  return method;
+}
+#endif
 
 // Per-connection pinning decision, consulted from the OpenSSL verify callback.
 struct PinPolicy {
@@ -100,8 +158,16 @@ class TlsStream final : public Stream {
   Status init(bool server) {
     if (ssl_ == nullptr) return make_error(ErrorCode::kInternal, "SSL_new failed: " + openssl_errors());
     SSL_set_app_data(ssl_, policy_.get());
+#ifdef _WIN32
     if (SSL_set_fd(ssl_, static_cast<int>(sock_.handle())) != 1)
       return make_error(ErrorCode::kInternal, "SSL_set_fd failed");
+#else
+    const BIO_METHOD* method = nosig_socket_method();
+    BIO* bio = method != nullptr ? BIO_new(method) : nullptr;
+    if (bio == nullptr) return make_error(ErrorCode::kInternal, "socket BIO allocation failed: " + openssl_errors());
+    BIO_set_data(bio, reinterpret_cast<void*>(static_cast<std::intptr_t>(sock_.handle())));
+    SSL_set_bio(ssl_, bio, bio);  // the SSL owns the BIO; the socket stays owned by sock_
+#endif
     if (server) SSL_set_accept_state(ssl_);
     else SSL_set_connect_state(ssl_);
     return Status::ok();
