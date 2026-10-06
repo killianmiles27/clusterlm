@@ -86,6 +86,7 @@ ModelCostInputs flash_next_planning_estimate() {
   }
   m.state_bytes_per_context_token = {0, 4096};
   m.boundary_bytes_per_position = 51'216;
+  m.batch_scratch_bytes_per_token = 512ull << 10;  // SYNTHETIC: per-token activation workspace on a GPU domain
   m.ple_layer = 2;
   m.father_only = {600ull << 20, 600ull << 20, 1500ull << 20, 512ull << 20};
   m.draft_ms = Quantity::synthetic(6.0, "synthetic: development estimate (draft + embed + head + sampling)");

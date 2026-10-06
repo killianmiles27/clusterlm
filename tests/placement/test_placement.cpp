@@ -274,10 +274,12 @@ TEST_CASE("search output is well formed: sorted, pareto-optimal, deterministic h
   CHECK(res.candidates[*res.best_throughput].metrics.decode_tok_s >= recommended(res).metrics.decode_tok_s);
   CHECK(res.candidates[*res.best_preparation].metrics.prepare_s <= recommended(res).metrics.prepare_s);
 
-  // Pareto: members are mutually non-dominated; every non-member is dominated by some member.
+  // Pareto (3-D: prepare_s min, decode_tok_s max, prefill_s min): members are mutually non-dominated; every
+  // non-member is dominated by or tied with some member.
   REQUIRE_FALSE(res.pareto.empty());
   auto dominates = [&](const PredictedMetrics& a, const PredictedMetrics& b) {
-    return a.prepare_s <= b.prepare_s && a.decode_tok_s >= b.decode_tok_s && (a.prepare_s < b.prepare_s || a.decode_tok_s > b.decode_tok_s);
+    return a.prepare_s <= b.prepare_s && a.decode_tok_s >= b.decode_tok_s && a.prefill_s <= b.prefill_s &&
+           (a.prepare_s < b.prepare_s || a.decode_tok_s > b.decode_tok_s || a.prefill_s < b.prefill_s);
   };
   for (std::size_t i = 0; i < res.candidates.size(); ++i) {
     const bool member = std::find(res.pareto.begin(), res.pareto.end(), i) != res.pareto.end();
@@ -285,11 +287,12 @@ TEST_CASE("search output is well formed: sorted, pareto-optimal, deterministic h
     for (std::size_t j = 0; j < res.candidates.size(); ++j)
       dominated |= dominates(res.candidates[j].metrics, res.candidates[i].metrics);
     if (member) CHECK_FALSE(dominated);
-    else {  // a non-member is dominated or tied (equal metrics) by some member
+    else {
       bool covered = false;
       for (std::size_t j : res.pareto)
         covered |= res.candidates[j].metrics.prepare_s <= res.candidates[i].metrics.prepare_s &&
-                   res.candidates[j].metrics.decode_tok_s >= res.candidates[i].metrics.decode_tok_s;
+                   res.candidates[j].metrics.decode_tok_s >= res.candidates[i].metrics.decode_tok_s &&
+                   res.candidates[j].metrics.prefill_s <= res.candidates[i].metrics.prefill_s;
       CHECK(covered);
     }
   }
