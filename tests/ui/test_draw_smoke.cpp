@@ -3,6 +3,8 @@
 // (that is HQ-UI-01 on Windows).
 #include <doctest/doctest.h>
 
+#include <filesystem>
+
 #include <imgui/imgui.h>
 
 #include "clusterlm/ui/clients.hpp"
@@ -110,14 +112,17 @@ TEST_CASE("father window draws in every view-model state at several sizes") {
 
 TEST_CASE("father window draws when the Father side is unreachable and in demo mode") {
   Headless h;
-  IpcFatherClient c{IpcFatherClient::Options{}};
+  IpcFatherClient::Options o;
+  o.endpoint.name = ipc::father_ui_pipe_name("smoke-absent");
+  o.endpoint.socket_dir = std::filesystem::temp_directory_path() / "clm-ui-smoke-absent";
+  IpcFatherClient c{o};
   FatherViewModel vm(c);
   FatherDrawState ui;
   ui.force_sections_open = true;
   auto draw = [&](float w, float hh) { draw_father_ui(vm, ui, w, hh); };
   CHECK(h.frame(1280, 800, draw) > 0);
   CHECK(h.frame(1280, 800, draw) > 0);
-  CHECK(vm.snapshot().connection_message == IpcFatherClient::seam_message());
+  CHECK(vm.snapshot().connection_message == IpcFatherClient::not_running_message());
 }
 
 TEST_CASE("node window draws in every state") {

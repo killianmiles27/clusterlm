@@ -146,7 +146,12 @@ void draw_controls(FatherViewModel& vm, FatherDrawState& ui, const FatherViewSta
       if (ImGui::SmallButton("Unpair")) (void)vm.unpair(m.machine_id);
       ImGui::PopID();
     }
-    if (ImGui::Button("Pair a new machine")) (void)vm.start_pairing();
+    ImGui::InputTextWithHint("##pair_addr", "Address shown on the Node (host:port)", &ui.pair.address);
+    ImGui::InputTextWithHint("##pair_code", "Pairing code", &ui.pair.code);
+    ImGui::InputTextWithHint("##pair_name", "Name (optional)", &ui.pair.name);
+    if (ImGui::Button("Pair this machine")) {
+      if (vm.start_pairing(ui.pair).is_ok()) ui.pair = PairingRequest{};
+    }
     if (!st.pairing.message.empty()) text_wrapped(st.pairing.message, &kAmber);
   }
 

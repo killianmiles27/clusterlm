@@ -47,7 +47,7 @@ class InProcessFatherClient final : public FatherClient {
   Result<FatherSettings> get_settings() override;
   Status set_settings(const FatherSettings& settings) override;
   Result<std::vector<PairedMachine>> paired_machines() override;
-  Status start_pairing() override;
+  Status start_pairing(const PairingRequest& request) override;
   Status unpair(std::string_view machine_id) override;
   father::SubscriptionId subscribe(father::EventSink sink) override { return svc_.subscribe(std::move(sink)); }
   void unsubscribe(father::SubscriptionId id) override { svc_.unsubscribe(id); }
@@ -60,45 +60,51 @@ class InProcessFatherClient final : public FatherClient {
   FatherSettings settings_;
 };
 
-// ---- IPC seam ----------------------------------------------------------------------------------------------
+// ---- Father agent over IPC -----------------------------------------------------------------------------------
 
-// SEAM (WP14): the Father UI <-> agent transport carries opaque payloads in ipc::MessageKind::kFatherRequest /
-// kFatherReply / kFatherEvent envelopes on the per-user pipe ipc::father_ui_pipe_name(). The payload layout is
-// defined by the Father agent workstream; this class deliberately does NOT invent one. To complete it: connect
-// with ipc::connect(), translate each FatherClient call into a request payload, decode replies, and run a reader
-// thread that turns kFatherEvent payloads back into father::Event for subscribers. Until then every method fails
-// with kUnavailable (calls) or kUnimplemented (pairing) and the UI shows the message verbatim.
+// Client of the Father agent's local pipe API (docs/father-ipc.md, FatherServiceApi): JSON requests in
+// kFatherRequest envelopes, replies matched by id, events pushed as kFatherEvent. One reader thread demultiplexes
+// replies and events; calls block with a timeout. The connection is made lazily and re-made after loss: an absent
+// agent is reported as kUnavailable in words, never as a crash. Token IDs never arrive (the agent sends only
+// counts), so TokensEvent::tokens holds placeholders of the right length.
 class IpcFatherClient final : public FatherClient {
  public:
   struct Options {
-    ipc::Endpoint endpoint;  // ipc::father_ui_pipe_name(user tag)
+    ipc::Endpoint endpoint;  // name = ipc::father_ui_pipe_name(tag); socket_dir for POSIX
     ipc::ClientOptions client;
+    std::chrono::milliseconds connect_timeout{1000};
+    std::chrono::milliseconds request_timeout{15000};
+    std::chrono::milliseconds pairing_timeout{25000};  // the agent blocks up to 20 s on pairing
   };
-  explicit IpcFatherClient(Options options) : opts_(std::move(options)) {}
-  static std::string_view seam_message();
+  explicit IpcFatherClient(Options options);
+  ~IpcFatherClient() override;
+  static std::string_view not_running_message();
 
-  Result<std::vector<catalog::TierReadiness>> list_tiers(std::uint32_t) override;
-  Result<std::vector<TierParticipant>> participants(std::string_view) override;
-  std::string selected_tier() override { return {}; }
-  Status select_tier(std::string_view) override;
-  Status prepare_tier(std::string_view, std::uint32_t) override;
-  Result<father::RequestId> send_chat(father::ChatRequest) override;
-  Status cancel(father::RequestId) override;
+  Result<std::vector<catalog::TierReadiness>> list_tiers(std::uint32_t context_tokens) override;
+  Result<std::vector<TierParticipant>> participants(std::string_view tier_id) override;
+  std::string selected_tier() override;
+  Status select_tier(std::string_view tier_id) override;
+  Status prepare_tier(std::string_view tier_id, std::uint32_t context_tokens) override;
+  Result<father::RequestId> send_chat(father::ChatRequest request) override;
+  Status cancel(father::RequestId request) override;
   Status release() override;
   Status reset_conversation() override;
   Result<ContextUse> context_use() override;
-  Result<DiagnosticsExport> export_diagnostics(bool) override;
+  Result<DiagnosticsExport> export_diagnostics(bool include_text) override;
   Result<FatherSettings> get_settings() override;
-  Status set_settings(const FatherSettings&) override;
+  Status set_settings(const FatherSettings& settings) override;
   Result<std::vector<PairedMachine>> paired_machines() override;
-  Status start_pairing() override;
-  Status unpair(std::string_view) override;
-  father::SubscriptionId subscribe(father::EventSink) override { return 0; }
-  void unsubscribe(father::SubscriptionId) override {}
-  std::string_view stats_provenance() const override { return "Measured"; }
+  Status start_pairing(const PairingRequest& request) override;
+  Status unpair(std::string_view machine_id) override;
+  father::SubscriptionId subscribe(father::EventSink sink) override;
+  void unsubscribe(father::SubscriptionId id) override;
+  // "Synthetic" when the agent runs the development fixture model (its numbers are not a measurement of anything).
+  std::string_view stats_provenance() const override { return dev_fixture_.load() ? "Synthetic" : "Measured"; }
 
  private:
-  Options opts_;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+  std::atomic<bool> dev_fixture_{false};
 };
 
 // ---- scripted ----------------------------------------------------------------------------------------------
@@ -145,7 +151,7 @@ class ScriptedFatherClient : public FatherClient {
   Result<FatherSettings> get_settings() override;
   Status set_settings(const FatherSettings& settings) override;
   Result<std::vector<PairedMachine>> paired_machines() override;
-  Status start_pairing() override;
+  Status start_pairing(const PairingRequest& request) override;
   Status unpair(std::string_view machine_id) override;
   father::SubscriptionId subscribe(father::EventSink sink) override;
   void unsubscribe(father::SubscriptionId id) override;

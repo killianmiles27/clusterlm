@@ -74,7 +74,7 @@ struct FatherViewModel::Gate {
 };
 
 FatherViewModel::FatherViewModel(FatherClient& client, bool demo)
-    : client_(client), gate_(std::make_shared<Gate>()), provenance_(client.stats_provenance()) {
+    : client_(client), gate_(std::make_shared<Gate>()) {
   gate_->vm = this;
   st_.demo = demo;
   if (auto s = client_.get_settings(); s.is_ok()) {
@@ -406,7 +406,7 @@ void FatherViewModel::on_event(const father::Event& ev) {
       l.fallbacks = e.stats.fallbacks;
       l.final_model = ascii_display(e.stats.final_model);
       l.reason = std::string(father::to_string(e.reason));
-      l.provenance = vm.provenance_;
+      l.provenance = std::string(vm.client_.stats_provenance());
       if (!e.stats.final_tier.empty()) st.active_tier = e.stats.final_tier;
       if (!e.stats.final_model.empty()) {
         st.active_model = ascii_display(e.stats.final_model);
@@ -660,10 +660,13 @@ Status FatherViewModel::export_diagnostics() {
   return Status::ok();
 }
 
-Status FatherViewModel::start_pairing() {
-  auto s = client_.start_pairing();
+Status FatherViewModel::start_pairing(const PairingRequest& request) {
+  auto s = client_.start_pairing(request);
+  Result<std::vector<PairedMachine>> list = s.is_ok() ? client_.paired_machines() : Result<std::vector<PairedMachine>>(s);
   std::lock_guard lk(mu_);
-  st_.pairing.message = s.is_ok() ? "Pairing started." : ascii_display(s.message());
+  st_.pairing.message = s.is_ok() ? "Paired. Compare the short code on both screens." : ascii_display(s.message());
+  if (s.is_ok() && list.is_ok()) st_.pairing.machines = list.value();
+  refresh_pending_ = true;
   return s;
 }
 

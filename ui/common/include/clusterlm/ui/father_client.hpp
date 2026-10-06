@@ -3,9 +3,7 @@
 //
 // The view-models depend on this interface only. Implementations:
 //   * InProcessFatherClient (in_process_father_client.hpp): wraps a father::FatherService; tests + dev mode.
-//   * IpcFatherClient (ipc_father_client.hpp): the seam for the Father agent pipe. Its wire layout belongs to the
-//     Father agent workstream (WP14); until that lands every call fails with kUnavailable/kUnimplemented and the UI
-//     says so in words.
+//   * IpcFatherClient (clients.hpp): the real client of the Father agent's JSON IPC API (docs/father-ipc.md).
 //   * ScriptedFatherClient (scripted_father_client.hpp): a controllable fake (unit tests, `--demo` mode).
 //
 // Events are the father::Event variants. Only TokensEvent ever carries answer text: the UI never displays
@@ -32,6 +30,13 @@ struct PairedMachine {
   std::string machine_id;   // user-facing name
   std::string role_hint;    // "Father", "Node", ...
   std::string fingerprint;  // short device-id fingerprint, may be empty
+};
+
+// What the user types to pair a Node: the address and one-time code shown on that Node's screen.
+struct PairingRequest {
+  std::string address;  // host:port
+  std::string code;
+  std::string name;     // optional friendly name
 };
 
 struct FatherSettings {
@@ -80,7 +85,7 @@ class FatherClient {
 
   // Pairing may be Unimplemented; the UI then explains that pairing is done elsewhere.
   virtual Result<std::vector<PairedMachine>> paired_machines() = 0;
-  virtual Status start_pairing() = 0;
+  virtual Status start_pairing(const PairingRequest& request) = 0;
   virtual Status unpair(std::string_view machine_id) = 0;
 
   virtual father::SubscriptionId subscribe(father::EventSink sink) = 0;

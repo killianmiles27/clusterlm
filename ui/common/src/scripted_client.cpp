@@ -191,9 +191,9 @@ Result<std::vector<PairedMachine>> ScriptedFatherClient::paired_machines() {
   if (auto f = take_failure("paired_machines"); !f.is_ok()) return f;
   return paired_;
 }
-Status ScriptedFatherClient::start_pairing() {
+Status ScriptedFatherClient::start_pairing(const PairingRequest& r) {
   std::lock_guard lk(mu_);
-  record("start_pairing");
+  record("start_pairing:" + r.address);
   return take_failure("start_pairing");
 }
 Status ScriptedFatherClient::unpair(std::string_view machine_id) {

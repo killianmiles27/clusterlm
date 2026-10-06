@@ -57,7 +57,7 @@ Status InProcessFatherClient::set_settings(const FatherSettings& s) {
 
 Result<std::vector<PairedMachine>> InProcessFatherClient::paired_machines() { return opts_.paired; }
 
-Status InProcessFatherClient::start_pairing() {
+Status InProcessFatherClient::start_pairing(const PairingRequest&) {
   return make_error(ErrorCode::kUnimplemented, "Pairing is not available in the in-process client.");
 }
 Status InProcessFatherClient::unpair(std::string_view) {

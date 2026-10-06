@@ -414,7 +414,8 @@ TEST_CASE("pairing: unimplemented is explained, unpair removes the machine") {
   REQUIRE(vm.unpair("G14").is_ok());
   CHECK(vm.snapshot().pairing.machines.size() == 1);
   e.client.fail_next("start_pairing", make_error(ErrorCode::kUnimplemented, "Pairing is done in the Father agent in this version"));
-  CHECK(vm.start_pairing().code() == ErrorCode::kUnimplemented);
+  CHECK(vm.start_pairing({"10.0.0.2:7000", "ABCD-1234", ""}).code() == ErrorCode::kUnimplemented);
+  CHECK(e.client.calls().back() == "start_pairing:10.0.0.2:7000");
   CHECK(vm.snapshot().pairing.message == "Pairing is done in the Father agent in this version");
 }
 

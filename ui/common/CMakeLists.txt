@@ -1,6 +1,6 @@
 clusterlm_module(clusterlm_ui_common
-  SOURCES src/common.cpp src/in_process_client.cpp src/ipc_clients.cpp src/scripted_client.cpp
-  DEPS clusterlm_common clusterlm_catalog clusterlm_father_service clusterlm_platform Threads::Threads)
+  SOURCES src/common.cpp src/in_process_client.cpp src/ipc_clients.cpp src/ipc_father_client.cpp src/scripted_client.cpp
+  DEPS clusterlm_common clusterlm_catalog clusterlm_father_service clusterlm_platform clusterlm_third_party Threads::Threads)
 
 if(WIN32)
   # Win32 + Direct3D 11 host for ImGui, shared by both executables.

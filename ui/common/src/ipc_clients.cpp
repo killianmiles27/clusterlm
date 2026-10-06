@@ -1,34 +1,7 @@
-// IpcFatherClient (documented seam, not functional) and IpcNodeClient (helper pipe messages).
+// IpcNodeClient (helper pipe messages). IpcFatherClient lives in ipc_father_client.cpp.
 #include "clusterlm/ui/clients.hpp"
 
 namespace clusterlm::ui {
-
-// ---- Father seam ---------------------------------------------------------------------------------------------
-
-std::string_view IpcFatherClient::seam_message() {
-  return "The connection to the Father agent is not available in this build. The agent protocol is not wired yet.";
-}
-
-namespace {
-Status unavailable() { return make_error(ErrorCode::kUnavailable, std::string(IpcFatherClient::seam_message())); }
-Status unimplemented() { return make_error(ErrorCode::kUnimplemented, std::string(IpcFatherClient::seam_message())); }
-}  // namespace
-
-Result<std::vector<catalog::TierReadiness>> IpcFatherClient::list_tiers(std::uint32_t) { return unavailable(); }
-Result<std::vector<TierParticipant>> IpcFatherClient::participants(std::string_view) { return unavailable(); }
-Status IpcFatherClient::select_tier(std::string_view) { return unavailable(); }
-Status IpcFatherClient::prepare_tier(std::string_view, std::uint32_t) { return unavailable(); }
-Result<father::RequestId> IpcFatherClient::send_chat(father::ChatRequest) { return unavailable(); }
-Status IpcFatherClient::cancel(father::RequestId) { return unavailable(); }
-Status IpcFatherClient::release() { return unavailable(); }
-Status IpcFatherClient::reset_conversation() { return unavailable(); }
-Result<ContextUse> IpcFatherClient::context_use() { return unavailable(); }
-Result<DiagnosticsExport> IpcFatherClient::export_diagnostics(bool) { return unavailable(); }
-Result<FatherSettings> IpcFatherClient::get_settings() { return FatherSettings{}; }
-Status IpcFatherClient::set_settings(const FatherSettings& s) { return validate(s); }
-Result<std::vector<PairedMachine>> IpcFatherClient::paired_machines() { return unimplemented(); }
-Status IpcFatherClient::start_pairing() { return unimplemented(); }
-Status IpcFatherClient::unpair(std::string_view) { return unimplemented(); }
 
 // ---- Node ----------------------------------------------------------------------------------------------------
 

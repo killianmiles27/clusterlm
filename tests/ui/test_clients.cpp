@@ -156,18 +156,6 @@ TEST_CASE("IpcNodeClient settings: defaults come back, saving is Unimplemented a
   CHECK(c.set_settings(s).code() == ErrorCode::kInvalidArgument);  // validation still comes first
 }
 
-TEST_CASE("IpcFatherClient is a documented seam: calls fail with a readable reason, nothing is invented") {
-  IpcFatherClient c{IpcFatherClient::Options{}};
-  auto t = c.list_tiers(4096);
-  CHECK_FALSE(t.is_ok());
-  CHECK(t.status().code() == ErrorCode::kUnavailable);
-  CHECK(t.status().message() == IpcFatherClient::seam_message());
-  CHECK(c.send_chat({}).status().code() == ErrorCode::kUnavailable);
-  CHECK(c.start_pairing().code() == ErrorCode::kUnimplemented);
-  CHECK(c.paired_machines().status().code() == ErrorCode::kUnimplemented);
-  CHECK(c.stats_provenance() != "Qualified");
-}
-
 TEST_CASE("ScriptedFatherClient delivers events to subscribers and stops after unsubscribe") {
   ScriptedFatherClient c;
   int n = 0;

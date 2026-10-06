@@ -158,7 +158,7 @@ class FatherViewModel {
   void set_include_conversation(bool include);
   void refresh_diagnostics();
   Status export_diagnostics();
-  Status start_pairing();
+  Status start_pairing(const PairingRequest& request);
   Status unpair(const std::string& machine_id);
   void dismiss_banner();
 
@@ -189,7 +189,6 @@ class FatherViewModel {
   bool context_pending_ = true;
   bool tiers_loaded_ = false;
   std::chrono::steady_clock::time_point last_poll_{};
-  std::string provenance_;
   bool active_from_answer_ = false;  // active model comes from what actually answered, not from the selection
 };
 

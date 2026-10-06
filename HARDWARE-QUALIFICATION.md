@@ -62,6 +62,7 @@ Windows pinned-memory behaviour.
 | [HQ-P0D-01](#hq-p0d-01) | Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail | Father, Node G14, Node 3060 | pending |
 | [HQ-INSTALL-01](#hq-install-01) | Install both MSI packages on the real machines: service, firewall, ACLs, uninstall cleanliness | Father, Node G14, Node 3060 | pending |
 | [HQ-PAIR-01](#hq-pair-01) | Pairing on the real Windows LAN | Father, Node G14, Node 3060 | pending |
+| [HQ-UI-01](#hq-ui-01) | Father and Node UI manual walkthrough on Windows 11 | Father, Node G14, Node 3060 | pending |
 
 ## Experiments
 
@@ -794,3 +795,26 @@ Windows pinned-memory behaviour.
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PAIR-01"`; metrics `pairing.fingerprint_match`, `pairing.lockout_after_failures`, `pairing.relay_rejected`, `pairing.unpair_revocation_ms`, `pairing.firewall_rule_profiles`
 - **Decision affected:** Whether the typed-address pairing UX and the 3-failure lockout are adequate on a real LAN; whether the pairing port needs discovery or a different firewall scope; whether unpair needs a Father->Node notification; how the Node UI triggers pairing mode on Windows.
 - **Acceptance:** fingerprints agree on both screens; lockout after exactly 3 failures; relay never pairs; unpair revokes in under 5 s with zero residual staging
+
+### HQ-UI-01
+
+**Father and Node UI manual walkthrough on Windows 11** — status: `pending`
+
+- **Purpose:** Verify on real Windows 11 what Linux cannot: the Win32 + Direct3D 11 Dear ImGui windows (clusterlm-father-ui, clusterlm-node-ui) start and render, the Node tray icon and menu work, DPI scaling is correct on mixed-DPI monitors, and the prepare / chat / cancel / fallback / diagnostics flows read correctly against the real Father agent.
+- **Command:** `manual: docs/ui.md#hq-ui-01 (clusterlm-father-ui --demo for the scripted flows; clusterlm-father-ui against clusterlm-father-agent for the real ones; clusterlm-node-ui --tray)`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** none for --demo (Synthetic scripted events); the agent's models for the real flows
+- **Measurements:**
+  - Both executables start without a console window; a second launch of the same executable does nothing (single instance per session)
+  - Father window: tier cards show Unavailable/Available/Preparing x%/Ready from the real agent; Ready never appears before the agent says so; headline and notes are readable
+  - Father window: preparation shows a progress bar and an ETA labelled estimate; chat streams live; Cancel stops the answer and keeps the partial text; Enter sends, Ctrl+Enter adds a line
+  - Father window: lock or use the G14 mid-answer: a fallback message naming both models appears inline, the answer continues under the new model and its attribution says so, and the conversation is kept
+  - Advanced diagnostics: rows carry provenance labels (Synthetic for the dev fixture, Measured otherwise, never Qualified); export writes a file under %LOCALAPPDATA%\ClusterLM\diagnostics and the file contains no prompt or answer text unless the include box was ticked
+  - Node tray: icon appears; left click toggles the window; right click menu Show/Hide, Pause/Resume, Quit work; closing the window hides it to the tray; the tooltip shows the state; the icon returns after restarting explorer.exe
+  - Node window: state label follows the service (Available/Busy/Paused...) within a few seconds; Pause and Resume reach the service; settings validation messages appear; the 'cannot save Node settings yet' note is shown until the config store lands
+  - DPI: at 100%, 150% and 200% scaling and when dragging the window between monitors of different DPI (PerMonitorV2) text and spacing scale together and nothing is clipped; record whether the FontGlobalScale blur is acceptable
+  - Windows without a usable GPU (RDP session, VM): the window falls back to the WARP software rasteriser or reports the failure in a message box
+  - Pairing form in the Father window pairs a Node with the code from its console and shows the short fingerprint to compare
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-UI-01"`; metrics `ui.father_starts`, `ui.node_tray_menu_works`, `ui.dpi_scaling_ok`, `ui.fallback_message_shown`, `ui.diagnostics_redacted_by_default`
+- **Decision affected:** Whether Dear ImGui over D3D11 is acceptable as the product UI toolkit on the target machines (DPI sharpness, accessibility, remote-session behaviour), or whether a native toolkit is needed.
+- **Acceptance:** every listed behaviour observed and recorded; any blocker (blur, missing tray icon, clipped text) filed against the UI before release

@@ -19,6 +19,7 @@ struct FatherDrawState {
   std::size_t last_signature = 0;   // transcript length signature for auto-scroll
   double last_diag_refresh = -1e9;
   std::string settings_message;
+  PairingRequest pair;              // pairing form
   bool force_sections_open = false;  // smoke tests: draw the collapsible sections too
 };
 
