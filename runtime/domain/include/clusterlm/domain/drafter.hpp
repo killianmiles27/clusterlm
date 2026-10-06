@@ -11,15 +11,28 @@
 #include <span>
 #include <vector>
 
+#include "clusterlm/domain/sampling.hpp"
 #include "clusterlm/objects/provisioned.hpp"
 
 namespace clusterlm::domain {
+
+// A drafted continuation and, for stochastic speculative sampling, the drafter distribution each token was
+// sampled from (`probs` empty = deterministic drafter; verification then treats each draft as one-hot).
+struct DraftProposal {
+  std::vector<std::int32_t> tokens;
+  std::vector<std::vector<float>> probs;
+};
 
 class Drafter {
  public:
   virtual ~Drafter() = default;
   virtual std::vector<std::int32_t> draft(std::span<const std::int32_t> committed_tokens, std::int32_t next_token,
                                           std::uint32_t count) = 0;
+  // Stochastic proposal. The default is the deterministic draft (valid: one-hot Q keeps sampling exact).
+  virtual DraftProposal propose(std::span<const std::int32_t> committed_tokens, std::int32_t next_token,
+                                std::uint32_t count, const SamplingParams& /*params*/, Rng& /*rng*/) {
+    return DraftProposal{draft(committed_tokens, next_token, count), {}};
+  }
 };
 
 // Chained one-step draft using the fixture `mtp_drafter` object: d = argmax(W * rmsnorm(embd[prev])).
@@ -29,8 +42,12 @@ class MtpFixtureDrafter final : public Drafter {
                                                            const objects::ObjectResolver& resolver);
   std::vector<std::int32_t> draft(std::span<const std::int32_t> committed_tokens, std::int32_t next_token,
                                   std::uint32_t count) override;
+  // Samples each draft from the MTP head's own distribution (same temperature/top-k/top-p as the target).
+  DraftProposal propose(std::span<const std::int32_t> committed_tokens, std::int32_t next_token, std::uint32_t count,
+                        const SamplingParams& params, Rng& rng) override;
   // One draft step (exposed for tests).
   std::int32_t step(std::int32_t prev) const;
+  std::vector<float> step_logits(std::int32_t prev) const;
 
  private:
   MtpFixtureDrafter() = default;

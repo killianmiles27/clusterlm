@@ -256,6 +256,11 @@ struct NodeWorker::Impl {
       (void)s.send(r.is_ok() ? Message(protocol::CommitAckMessage{c->stage, r.value()})
                              : error_reply(r.status(), protocol::MessageType::kCommitWindow),
                    corr);
+    } else if (auto* aw = std::get_if<protocol::AbortWindow>(&m)) {
+      auto r = abort_window(*aw);
+      (void)s.send(r.is_ok() ? Message(protocol::WindowAborted{aw->stage, r.value()})
+                             : error_reply(r.status(), protocol::MessageType::kAbortWindow),
+                   corr);
     } else if (auto* ab = std::get_if<protocol::AbortSession>(&m)) {
       auto st = abort(*ab);
       (void)s.send(st.is_ok() ? Message(protocol::SessionOpened{ab->epoch, ab->session})
@@ -367,7 +372,20 @@ struct NodeWorker::Impl {
     return Status::ok();
   }
 
+  Result<domain::WindowAbortAck> abort_window(const protocol::AbortWindow& a) {
+    std::lock_guard exec(exec_mu);
+    domain::ExecutionDomain* d;
+    {
+      std::lock_guard lock(mu);
+      auto it = domains.find(a.stage.value);
+      if (it == domains.end()) return make_error(ErrorCode::kNotFound, "stage not hosted here");
+      d = it->second.get();
+    }
+    return d->abort_window(a.epoch, a.session, a.window);
+  }
+
   Result<domain::CommitAck> commit(const protocol::CommitWindow& c) {
+    phase("commit");
     std::lock_guard exec(exec_mu);
     domain::ExecutionDomain* d;
     {
@@ -403,6 +421,7 @@ struct NodeWorker::Impl {
       provision = stream;
     }
     if (!send_hello_ack(*stream).is_ok()) return;
+    if (auto st = send_provision_status(*stream); !st.is_ok()) return;
     while (!stopping.load()) {
       auto received = stream->receive(kPollInterval);
       if (!received.is_ok()) {
@@ -422,6 +441,28 @@ struct NodeWorker::Impl {
     }
     std::lock_guard lock(mu);
     if (provision == stream) provision.reset();
+  }
+
+  // A (re)attached provision channel resumes the lease: objects already sealed stay; partially received
+  // objects are reset so Father can resend them whole (chunks of a broken stream may never have arrived).
+  Status send_provision_status(MessageStream& s) {
+    protocol::ProvisionStatus status;
+    {
+      std::lock_guard lock(mu);
+      status.lease = lease;
+      if (plan && state == NodeState::kPreparing) {
+        for (const auto& a : plan->assignments) {
+          auto* w = store->find_object(a.object_index);
+          if (w == nullptr) continue;
+          if (w->is_sealed()) {
+            status.sealed_objects.push_back(a.object_index);
+          } else if (w->bytes_received() > 0) {
+            CLM_RETURN_IF_ERROR(w->reset());
+          }
+        }
+      }
+    }
+    return s.send(status);
   }
 
   Status provision_chunk(const protocol::ProvisionChunk& c) {
@@ -497,6 +538,7 @@ struct NodeWorker::Impl {
       spec.layers = sa.layers;
       spec.max_context = sa.max_context;
       spec.max_window = sa.max_window;
+      spec.max_local_batch = sa.max_local_batch;
       if (sa.role != domain::StageRole::kMiddle)
         return make_error(ErrorCode::kPermissionDenied, "Nodes host token-free middle stages only");
       CLM_ASSIGN_OR_RETURN(auto d, backend->create_domain(plan->manifest, spec));
@@ -587,11 +629,18 @@ struct NodeWorker::Impl {
       }
     }
     if (d != nullptr) {
-      phase("inference");
+      phase(run.auto_commit ? "prefill" : "inference");
       Stopwatch sw;
-      Result<domain::StageActivations> out = [&] {
+      Result<domain::StageActivations> out = [&]() -> Result<domain::StageActivations> {
         std::lock_guard exec(exec_mu);
-        return d->run_window(run.request, run.activations);
+        auto r = d->run_window(run.request, run.activations);
+        if (!r.is_ok() || !run.auto_commit) return r;
+        // Prefill: commit every position before the result leaves this stage, so the next chunk can follow
+        // immediately. A commit failure fails the window like any execution failure.
+        domain::CommitRequest c{run.request.epoch, run.request.session, run.request.window, run.request.positions,
+                                run.request.expected_state};
+        if (auto ack = d->commit_window(c); !ack.is_ok()) return ack.status();
+        return r;
       }();
       domain::StageTiming timing;
       timing.compute_ns = sw.elapsed_ns();
@@ -648,6 +697,7 @@ struct NodeWorker::Impl {
     next.request = run.request;
     next.stage = auth.to_stage;
     next.forward_to_peer = true;
+    next.auto_commit = run.auto_commit;
     next.upstream_timings = timings;
     next.activations = std::move(acts);
     if (auto st = peer->send(next, corr); !st.is_ok()) {

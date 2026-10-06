@@ -53,6 +53,30 @@ std::int32_t MtpFixtureDrafter::step(std::int32_t prev) const {
   return best;
 }
 
+std::vector<float> MtpFixtureDrafter::step_logits(std::int32_t prev) const {
+  const std::size_t H = hidden_;
+  std::vector<float> logits(vocab_, 0.0f);
+  if (prev < 0 || static_cast<std::uint32_t>(prev) >= vocab_) return logits;
+  std::vector<float> x(H);
+  refmath::rmsnorm(embd_.data() + static_cast<std::size_t>(prev) * H, norm_.data(), H, x.data());
+  for (std::uint32_t v = 0; v < vocab_; ++v) logits[v] = refmath::dot(head_.data() + std::size_t{v} * H, x.data(), H);
+  return logits;
+}
+
+DraftProposal MtpFixtureDrafter::propose(std::span<const std::int32_t> committed, std::int32_t next_token,
+                                         std::uint32_t count, const SamplingParams& params, Rng& rng) {
+  if (params.greedy()) return DraftProposal{draft(committed, next_token, count), {}};
+  DraftProposal out;
+  std::int32_t prev = next_token;
+  for (std::uint32_t i = 0; i < count; ++i) {
+    auto probs = distribution(step_logits(prev), params);
+    prev = sample_from(probs, rng);
+    out.tokens.push_back(prev);
+    out.probs.push_back(std::move(probs));
+  }
+  return out;
+}
+
 std::vector<std::int32_t> MtpFixtureDrafter::draft(std::span<const std::int32_t>, std::int32_t next_token,
                                                    std::uint32_t count) {
   std::vector<std::int32_t> out;

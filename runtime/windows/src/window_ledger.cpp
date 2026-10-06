@@ -92,6 +92,14 @@ domain::CommitAck WindowLedger::finish_commit(const domain::CommitRequest& reque
   return *s.last_ack;
 }
 
+Result<domain::WindowAbortAck> WindowLedger::abort_window(Epoch epoch, SessionId session, WindowId window) {
+  CLM_ASSIGN_OR_RETURN(SessionState * s, lookup(epoch, session));
+  if (!s->last_window || *s->last_window < window)
+    return failed("abort names window " + window.str() + " which was never admitted");
+  if (s->outstanding && s->outstanding->window == window) s->outstanding.reset();
+  return domain::WindowAbortAck{session, window, s->committed_position, s->state};
+}
+
 Status WindowLedger::abort_session(Epoch epoch, SessionId session) {
   auto it = sessions_.find(session);
   if (it == sessions_.end()) return Status::ok();  // already gone: abort is idempotent cleanup

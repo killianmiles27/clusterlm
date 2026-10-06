@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -14,6 +15,11 @@
 #include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
 #include "clusterlm/protocol/wire.hpp"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#endif
 
 namespace clusterlm::coordinator {
 
@@ -159,6 +165,11 @@ class Inbox {
     closed_ = std::move(why);
     cv_.notify_all();
   }
+  // Drop everything queued (results and loss notices of a previous plan's streams).
+  void clear() {
+    std::lock_guard lock(mu_);
+    items_.clear();
+  }
   // Wait for the first message satisfying `pred`.
   template <typename Pred>
   Result<ReceivedMessage> wait(Pred pred, std::chrono::milliseconds timeout) {
@@ -185,9 +196,17 @@ class Inbox {
   std::optional<Status> closed_;
 };
 
+// Correlation id marking a synthetic "this stream failed" message pushed into a shared inbox.
+constexpr std::uint64_t kStreamLost = ~std::uint64_t{0};
+
 struct StreamWithInbox {
   std::shared_ptr<MessageStream> stream;
   Inbox inbox;
+  // When set, received messages go to this shared inbox instead (activation results from every Node feed one
+  // event queue so the window pipeline can react to whichever stage finishes first). Stream failure is then
+  // reported as an ErrorMessage with correlation kStreamLost instead of closing the shared inbox.
+  Inbox* sink = nullptr;
+  std::string name;
   std::thread reader;
   std::atomic<bool> stop{false};
 
@@ -197,13 +216,25 @@ struct StreamWithInbox {
         auto r = stream->receive(100ms);
         if (!r.is_ok()) {
           if (r.status().code() == ErrorCode::kDeadlineExceeded) continue;
-          inbox.close(r.status());
+          if (stop.load()) break;
+          fail(r.status());
           return;
         }
-        inbox.push(std::move(r).value());
+        (sink ? *sink : inbox).push(std::move(r).value());
       }
-      inbox.close(make_error(ErrorCode::kUnavailable, "stream closed"));
+      if (!sink) inbox.close(make_error(ErrorCode::kUnavailable, "stream closed"));
     });
+  }
+  void fail(const Status& why) {
+    if (!sink) {
+      inbox.close(why);
+      return;
+    }
+    ReceivedMessage m;
+    m.message = protocol::ErrorMessage{ErrorCode::kUnavailable, name + " activation channel lost: " + why.message(),
+                                       protocol::MessageType::kStageResult};
+    m.correlation = kStreamLost;
+    sink->push(std::move(m));
   }
   void shutdown() {
     stop.store(true);
@@ -244,6 +275,8 @@ struct RemoteNode {
 };
 
 struct Coordinator::Impl {
+  // Declared first so it outlives every Node stream whose reader thread pushes into it.
+  Inbox results;  // StageResults from every Node's activation channel
   CoordinatorConfig cfg;
   std::unique_ptr<objects::CanonicalModelStore> store;
   std::unique_ptr<domain::BackendAdapter> backend;
@@ -262,7 +295,8 @@ struct Coordinator::Impl {
                              cfg.faults);
   }
 
-  Result<std::unique_ptr<StreamWithInbox>> open_channel(RemoteNode& n, Channel channel, bool start_reader) {
+  Result<std::unique_ptr<StreamWithInbox>> open_channel(RemoteNode& n, Channel channel, bool start_reader,
+                                                        Inbox* sink = nullptr) {
     std::optional<std::string> expected;
     if (!n.endpoint.device_id.empty()) expected = n.endpoint.device_id;
     CLM_ASSIGN_OR_RETURN(auto conn, transport::connect(n.endpoint.endpoint, cfg.security, expected, 5s));
@@ -280,6 +314,8 @@ struct Coordinator::Impl {
       return make_error(ErrorCode::kVersionMismatch, "Node speaks protocol " + std::to_string(ack.protocol_version));
     n.device_id = ack.device_id;
     n.lease = ack.lease;
+    s->sink = sink;
+    s->name = n.endpoint.name;
     if (start_reader) s->start();
     return s;
   }
@@ -358,9 +394,46 @@ struct Coordinator::Impl {
     return p;
   }
 
-  // Stream every assigned object over the provision channel in bounded, individually digested chunks.
+  // Stream every assigned object over the provision channel in bounded, individually digested chunks. If the
+  // bulk connection breaks while the lease is still valid, reconnect and resume: the Node reports which objects
+  // are already sealed (ProvisionStatus) and only the rest are sent again, whole.
   Status provision_node(RemoteNode& n, const protocol::PreparePlan& p) {
+    std::vector<bool> sealed(p.manifest.objects.size(), false);
+    Status last;
+    for (int attempt = 0; attempt <= cfg.provision_retries; ++attempt) {
+      if (cancel_prepare.load()) return make_error(ErrorCode::kCancelled, "preparation cancelled");
+      if (attempt > 0) {
+        log::warn("provision_resume", {{"node", n.endpoint.name}, {"attempt", std::to_string(attempt)},
+                                       {"after", last.to_string()}});
+        if (n.provision) n.provision->shutdown();
+        auto ch = open_channel(n, Channel::kProvision, true);
+        if (!ch.is_ok()) {
+          last = ch.status();
+          continue;
+        }
+        n.provision = std::move(ch).value();
+        ++n.provision_report.resumes;
+      }
+      auto status = n.provision->inbox.wait(
+          [](const ReceivedMessage& r) { return std::holds_alternative<protocol::ProvisionStatus>(r.message); },
+          cfg.request_timeout);
+      if (!status.is_ok()) {
+        last = status.status();
+        continue;
+      }
+      for (auto idx : std::get<protocol::ProvisionStatus>(status->message).sealed_objects)
+        if (idx < sealed.size()) sealed[idx] = true;
+      last = provision_pass(n, p, sealed);
+      if (last.is_ok() || last.code() != ErrorCode::kUnavailable) return last;
+    }
+    return last;
+  }
+
+  Status provision_pass(RemoteNode& n, const protocol::PreparePlan& p, std::vector<bool>& sealed) {
+    std::size_t outstanding = 0;
     for (const auto& a : p.assignments) {
+      if (sealed[a.object_index]) continue;
+      if (cancel_prepare.load()) return make_error(ErrorCode::kCancelled, "preparation cancelled");
       const auto& obj = p.manifest.objects[a.object_index];
       // Bounded streaming read: Father never holds more than one chunk of an object in memory.
       CLM_RETURN_IF_ERROR(store->stream_object(
@@ -377,14 +450,16 @@ struct Coordinator::Impl {
       CLM_RETURN_IF_ERROR(n.provision->stream->send(seal, n.provision->stream->next_correlation()));
       n.provision_report.bytes += obj.byte_size;
       ++n.provision_report.objects;
+      ++outstanding;
     }
     // Every seal must be acknowledged; any chunk/seal error arrives as an ErrorMessage.
-    for (std::size_t i = 0; i < p.assignments.size(); ++i) {
+    for (; outstanding > 0; --outstanding) {
       CLM_ASSIGN_OR_RETURN(auto reply, n.provision->inbox.wait([](const ReceivedMessage&) { return true; },
                                                                cfg.prepare_timeout));
       if (auto* e = std::get_if<protocol::ErrorMessage>(&reply.message)) return make_error(e->code, e->message);
-      if (!std::holds_alternative<protocol::ObjectSealed>(reply.message))
-        return make_error(ErrorCode::kProtocolError, "unexpected message on provision channel");
+      auto* ok = std::get_if<protocol::ObjectSealed>(&reply.message);
+      if (ok == nullptr) return make_error(ErrorCode::kProtocolError, "unexpected message on provision channel");
+      if (ok->object_index < sealed.size()) sealed[ok->object_index] = true;
     }
     return Status::ok();
   }
@@ -414,7 +489,7 @@ struct Coordinator::Impl {
     // Provisioning is over; the bulk channel is not kept open during inference.
     n.provision->shutdown();
     n.provision.reset();
-    CLM_ASSIGN_OR_RETURN(n.activation, open_channel(n, Channel::kActivation, true));
+    CLM_ASSIGN_OR_RETURN(n.activation, open_channel(n, Channel::kActivation, true, &results));
     n.provision_report.prepare_ms = sw.elapsed_ms();
     return Status::ok();
   }
@@ -444,6 +519,24 @@ struct Coordinator::Impl {
   }
 
   // ---- execution -------------------------------------------------------------------------------------
+  //
+  // Windows move through the stages as events: Father runs the prefix, sends the activations to the first Node
+  // (which forwards along the authorized peer chain in direct mode), and every StageResult from any Node lands
+  // in one shared queue (`results`). In relay mode Father forwards each result to the next Node itself. The
+  // tail runs when the last remote stage's result arrives. Prefill keeps several auto-committed chunks in flight
+  // (bounded); decode has exactly one window in flight.
+
+  std::atomic<bool> cancel_prepare{false};
+
+  struct Flight {
+    domain::WindowRequest req;
+    bool auto_commit = false;
+    std::size_t hop = 0;  // index into remote_stages() of the stage currently computing it
+    Stopwatch launched;
+    RoundTrace* trace = nullptr;
+  };
+
+  static bool cancelled(const GenerationRequest& r) { return r.cancel && r.cancel->load(); }
 
   void abort_everywhere(SessionId session, const std::string& reason) {
     for (auto& [id, d] : local) (void)d->abort_session(epoch, session);
@@ -455,83 +548,164 @@ struct Coordinator::Impl {
     epoch = epoch.next();
   }
 
-  // Run one window through every stage. Returns the tail logits.
-  Result<domain::Logits> run_round(const domain::WindowRequest& req, std::span<const std::int32_t> tokens,
-                                   RoundTrace& trace) {
-    const auto& stages = plan->stages;
-    Stopwatch sw;
-    CLM_ASSIGN_OR_RETURN(auto acts, local.at(stages.front().stage.value)->run_prefix(req, tokens));
-    trace.prefix_ms = sw.elapsed_ms();
-
-    const auto remotes = remote_stages();
-    sw.reset();
-    if (!remotes.empty()) {
-      const bool chain = cfg.direct_peer && remotes.size() > 1;
-      for (std::size_t i = 0; i < remotes.size(); ++i) {
-        auto& n = node_for(*remotes[i]);
-        protocol::RunWindow run;
-        run.lease = n.lease;
-        run.request = req;
-        run.stage = remotes[i]->stage;
-        run.forward_to_peer = chain;
-        run.activations = std::move(acts);
-        const auto corr = n.activation->stream->next_correlation();
-        const auto payload = protocol::encode(run).size();
-        CLM_RETURN_IF_ERROR(n.activation->stream->send(run, corr));
-        ++trace.boundary_messages;
-        trace.boundary_payload_bytes += payload;
-        // In chain mode the result comes back from the LAST Node; otherwise from this one.
-        auto& reply_node = chain ? node_for(*remotes.back()) : n;
-        CLM_ASSIGN_OR_RETURN(auto reply, reply_node.activation->inbox.wait(
-                                             [&](const ReceivedMessage& r) {
-                                               auto* sr = std::get_if<protocol::StageResult>(&r.message);
-                                               return sr != nullptr && sr->window == req.window &&
-                                                      sr->session == req.session;
-                                             },
-                                             cfg.window_timeout));
-        auto& result = std::get<protocol::StageResult>(reply.message);
-        ++trace.boundary_messages;
-        trace.boundary_payload_bytes += reply.wire_bytes;
-        if (result.status != ErrorCode::kOk)
-          return make_error(result.status, "stage " + result.stage.str() + ": " + result.error_message);
-        if (result.epoch != req.epoch) return make_error(ErrorCode::kStaleEpoch, "StageResult from another epoch");
-        trace.remote_timings = result.timings;
-        acts = std::move(result.activations);
-        if (chain) break;
-      }
+  // Discard one outstanding window everywhere; sessions keep their committed state. Domains that never saw the
+  // window (it had not reached them yet) treat it as a no-op; ones that are still computing it discard it after.
+  Status abort_window_everywhere(const domain::WindowRequest& req) {
+    for (auto& [id, d] : local) {
+      auto r = d->abort_window(req.epoch, req.session, req.window);
+      // A local domain that has not admitted the window yet rejects it as never admitted: nothing to discard.
+      if (!r.is_ok() && r.status().code() != ErrorCode::kFailedPrecondition) return r.status();
     }
-    trace.remote_ms = sw.elapsed_ms();
-    sw.reset();
-    CLM_ASSIGN_OR_RETURN(auto logits, local.at(stages.back().stage.value)->run_tail(req, acts));
-    trace.tail_ms = sw.elapsed_ms();
+    for (const auto* s : remote_stages()) {
+      auto& n = node_for(*s);
+      auto r = n.control->call<protocol::WindowAborted>(
+          protocol::AbortWindow{req.epoch, req.session, req.window, s->stage}, cfg.request_timeout);
+      if (!r.is_ok() && r.status().code() != ErrorCode::kFailedPrecondition) return r.status();
+    }
+    return Status::ok();
+  }
+
+  // Send a window's activations to remote stage `hop`.
+  Status send_hop(Flight& f, std::size_t hop, domain::StageActivations&& acts) {
+    const auto remotes = remote_stages();
+    auto& n = node_for(*remotes[hop]);
+    protocol::RunWindow run;
+    run.lease = n.lease;
+    run.request = f.req;
+    run.stage = remotes[hop]->stage;
+    run.forward_to_peer = cfg.direct_peer && hop + 1 < remotes.size();
+    run.auto_commit = f.auto_commit;
+    run.activations = std::move(acts);
+    const auto corr = n.activation->stream->next_correlation();
+    const auto payload = protocol::encode(run).size();
+    CLM_RETURN_IF_ERROR(n.activation->stream->send(run, corr));
+    f.hop = hop;
+    ++f.trace->boundary_messages;
+    f.trace->boundary_payload_bytes += payload;
+    return Status::ok();
+  }
+
+  // Prefix + first hop (or straight to the tail when every stage is local).
+  Result<std::optional<domain::Logits>> launch(Flight& f, std::span<const std::int32_t> tokens) {
+    Stopwatch sw;
+    auto& prefix = *local.at(plan->stages.front().stage.value);
+    CLM_ASSIGN_OR_RETURN(auto acts, prefix.run_prefix(f.req, tokens));
+    if (f.auto_commit) CLM_RETURN_IF_ERROR(local_commit(prefix, f.req, f.req.positions).status());
+    f.trace->prefix_ms = sw.elapsed_ms();
+    if (remote_stages().empty()) {
+      CLM_ASSIGN_OR_RETURN(auto logits, run_tail(f, acts));
+      return std::optional<domain::Logits>(std::move(logits));
+    }
+    f.launched.reset();
+    CLM_RETURN_IF_ERROR(send_hop(f, 0, std::move(acts)));
+    return std::optional<domain::Logits>();
+  }
+
+  Result<domain::Logits> run_tail(Flight& f, const domain::StageActivations& acts) {
+    Stopwatch sw;
+    auto& tail = *local.at(plan->stages.back().stage.value);
+    CLM_ASSIGN_OR_RETURN(auto logits, tail.run_tail(f.req, acts));
+    if (f.auto_commit) CLM_RETURN_IF_ERROR(local_commit(tail, f.req, f.req.positions).status());
+    f.trace->tail_ms = sw.elapsed_ms();
     return logits;
   }
 
+  static Result<domain::CommitAck> local_commit(domain::ExecutionDomain& d, const domain::WindowRequest& req,
+                                                std::uint32_t accepted) {
+    return d.commit_window({req.epoch, req.session, req.window, accepted, req.expected_state});
+  }
+
+  // Wait for the next StageResult of any in-flight window and advance it. Returns the completed window's
+  // index into `flights` and its logits when it left the tail, nullopt when it only moved one hop.
+  Result<std::optional<std::pair<std::size_t, domain::Logits>>> advance(std::vector<Flight>& flights,
+                                                                        const GenerationRequest& request,
+                                                                        double& wait_ms) {
+    Stopwatch waited;
+    const auto deadline = SteadyClock::now() + cfg.window_timeout;
+    Result<ReceivedMessage> got = make_error(ErrorCode::kDeadlineExceeded, "no result");
+    while (true) {
+      got = results.wait([](const ReceivedMessage&) { return true; }, 50ms);
+      if (got.is_ok() || got.status().code() != ErrorCode::kDeadlineExceeded) break;
+      if (SteadyClock::now() >= deadline)
+        return make_error(ErrorCode::kDeadlineExceeded, "timed out waiting for a stage result");
+      if (cancelled(request) && !flights.empty() && !flights.front().auto_commit)
+        return make_error(ErrorCode::kCancelled, "cancelled while waiting for verification");
+    }
+    wait_ms += waited.elapsed_ms();
+    if (!got.is_ok()) return got.status();
+    if (auto* e = std::get_if<protocol::ErrorMessage>(&got->message)) return make_error(e->code, e->message);
+    auto* sr = std::get_if<protocol::StageResult>(&got->message);
+    if (sr == nullptr) return make_error(ErrorCode::kProtocolError, "unexpected message on an activation channel");
+    std::size_t idx = flights.size();
+    for (std::size_t i = 0; i < flights.size(); ++i)
+      if (flights[i].req.window == sr->window && flights[i].req.session == sr->session && flights[i].req.epoch == sr->epoch)
+        idx = i;
+    // A result for a window that is no longer in flight (aborted window, previous epoch) is a straggler.
+    if (idx == flights.size()) return std::optional<std::pair<std::size_t, domain::Logits>>();
+    Flight& f = flights[idx];
+    if (sr->status != ErrorCode::kOk)
+      return make_error(sr->status, "stage " + sr->stage.str() + ": " + sr->error_message);
+    ++f.trace->boundary_messages;
+    f.trace->boundary_payload_bytes += got->wire_bytes;
+    const auto remotes = remote_stages();
+    std::size_t done_hop = remotes.size();
+    for (std::size_t h = 0; h < remotes.size(); ++h)
+      if (remotes[h]->stage == sr->stage) done_hop = h;
+    if (done_hop == remotes.size()) return make_error(ErrorCode::kProtocolError, "StageResult from an unknown stage");
+    f.trace->remote_timings.insert(f.trace->remote_timings.end(), sr->timings.begin(), sr->timings.end());
+    if (done_hop + 1 < remotes.size()) {
+      // Relay mode: Father forwards to the next Node. (In direct mode only the last Node reports to Father.)
+      if (cfg.direct_peer) return make_error(ErrorCode::kProtocolError, "intermediate result in direct-peer mode");
+      CLM_RETURN_IF_ERROR(send_hop(f, done_hop + 1, std::move(sr->activations)));
+      return std::optional<std::pair<std::size_t, domain::Logits>>();
+    }
+    f.trace->remote_ms = f.launched.elapsed_ms();
+    CLM_ASSIGN_OR_RETURN(auto logits, run_tail(f, sr->activations));
+    return std::optional<std::pair<std::size_t, domain::Logits>>(std::make_pair(idx, std::move(logits)));
+  }
+
+  // Commit `accepted` positions of a decode window on every domain and wait for every acknowledgement. A lost
+  // acknowledgement is retried with the identical (idempotent) CommitWindow; the Node replays its ack.
   Status commit_round(const domain::WindowRequest& req, std::uint32_t accepted, RoundTrace& trace) {
     Stopwatch sw;
     domain::CommitRequest c{req.epoch, req.session, req.window, accepted, req.expected_state};
-    // Send every remote commit first so Nodes commit in parallel, then commit locally, then collect acks.
-    std::vector<std::pair<RemoteNode*, std::uint64_t>> pending;
+    struct Pending {
+      RemoteNode* node;
+      StageId stage;
+      std::uint64_t corr;
+    };
+    std::vector<Pending> pending;
     for (const auto* s : remote_stages()) {
       auto& n = node_for(*s);
       const auto corr = n.control->stream->next_correlation();
       CLM_RETURN_IF_ERROR(n.control->stream->send(protocol::CommitWindow{c, s->stage}, corr));
       ++trace.control_messages;
-      pending.emplace_back(&n, corr);
+      pending.push_back({&n, s->stage, corr});
     }
     std::optional<domain::CommitAck> reference;
     for (auto& [id, d] : local) {
       CLM_ASSIGN_OR_RETURN(auto ack, d->commit_window(c));
       if (!reference) reference = ack;
     }
-    for (auto& [n, corr] : pending) {
-      const auto want = corr;
-      CLM_ASSIGN_OR_RETURN(auto reply, n->control->inbox.wait(
-                                           [want](const ReceivedMessage& r) { return r.correlation == want; },
-                                           cfg.request_timeout));
+    for (auto& p : pending) {
+      Result<ReceivedMessage> reply = make_error(ErrorCode::kDeadlineExceeded, "no ack");
+      for (int attempt = 0;; ++attempt) {
+        const auto want = p.corr;
+        reply = p.node->control->inbox.wait([want](const ReceivedMessage& r) { return r.correlation == want; },
+                                            cfg.request_timeout);
+        if (reply.is_ok() || reply.status().code() != ErrorCode::kDeadlineExceeded || attempt >= cfg.commit_retries)
+          break;
+        // Unknown commit outcome: resend the same commit. Replays are idempotent on the Node.
+        log::warn("commit_ack_timeout_retry", {{"node", p.node->endpoint.name}, {"window", req.window.str()}});
+        p.corr = p.node->control->stream->next_correlation();
+        CLM_RETURN_IF_ERROR(p.node->control->stream->send(protocol::CommitWindow{c, p.stage}, p.corr));
+        ++trace.commit_retries;
+        ++trace.control_messages;
+      }
+      if (!reply.is_ok()) return reply.status();
       ++trace.control_messages;
-      if (auto* e = std::get_if<protocol::ErrorMessage>(&reply.message)) return make_error(e->code, e->message);
-      auto* ack = std::get_if<protocol::CommitAckMessage>(&reply.message);
+      if (auto* e = std::get_if<protocol::ErrorMessage>(&reply->message)) return make_error(e->code, e->message);
+      auto* ack = std::get_if<protocol::CommitAckMessage>(&reply->message);
       if (ack == nullptr) return make_error(ErrorCode::kProtocolError, "expected CommitAck");
       // Every domain must agree on the committed position and state version.
       if (reference && (ack->ack.committed_position != reference->committed_position ||
@@ -540,6 +714,73 @@ struct Coordinator::Impl {
     }
     trace.commit_ms = sw.elapsed_ms();
     return Status::ok();
+  }
+
+  // Prefill `tokens` into the conversation as auto-committed chunks with at most `inflight` in the pipeline.
+  // Returns the logits of the last chunk's last position (the distribution of the next token).
+  Result<std::vector<float>> prefill(ConversationState& cs, std::span<const std::int32_t> tokens,
+                                     const GenerationRequest& request, GenerationResult& out) {
+    const std::uint32_t chunk = std::max<std::uint32_t>(1, std::min(request.prefill_chunk, plan->max_window));
+    const std::uint32_t inflight = std::max<std::uint32_t>(1, request.prefill_inflight);
+    const auto vocab = store->manifest().geometry.vocab_size;
+    std::vector<Flight> flights;
+    std::deque<RoundTrace> traces;  // stable addresses while windows are in flight
+    std::vector<float> last_logits;
+    std::size_t next = 0;      // next token offset to launch
+    bool stop_launching = false;
+    Stopwatch sw;
+    // Future positions/states are known in advance: each chunk commits fully.
+    std::uint64_t launch_position = cs.position;
+    StateVersion launch_state = cs.state;
+    auto finish = [&](std::size_t idx, domain::Logits&& logits) {
+      Flight& f = flights[idx];
+      f.trace->total_ms = f.launched.elapsed_ms() + f.trace->prefix_ms;
+      cs.position += f.req.positions;
+      cs.state = cs.state.next();
+      last_logits.assign(logits.data.end() - static_cast<std::ptrdiff_t>(vocab), logits.data.end());
+      flights.erase(flights.begin() + static_cast<std::ptrdiff_t>(idx));
+    };
+    while (next < tokens.size() || !flights.empty()) {
+      if (!stop_launching && cancelled(request)) stop_launching = true;  // drain what is in flight, launch no more
+      if (!stop_launching && next < tokens.size() && flights.size() < inflight) {
+        const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(chunk, tokens.size() - next));
+        cs.window = cs.window.next();
+        Flight f;
+        f.req = {cs.epoch, cs.session, cs.window, launch_position, launch_state, n};
+        f.auto_commit = true;
+        traces.emplace_back();
+        f.trace = &traces.back();
+        f.trace->prefill = true;
+        f.trace->positions = n;
+        f.trace->accepted = n;
+        f.trace->in_flight = static_cast<std::uint32_t>(flights.size());
+        out.prefill_max_in_flight = std::max<std::uint32_t>(out.prefill_max_in_flight, f.trace->in_flight + 1);
+        CLM_ASSIGN_OR_RETURN(auto done, launch(f, tokens.subspan(next, n)));
+        cs.committed.insert(cs.committed.end(), tokens.begin() + static_cast<std::ptrdiff_t>(next),
+                            tokens.begin() + static_cast<std::ptrdiff_t>(next + n));
+        launch_position += n;
+        launch_state = launch_state.next();
+        next += n;
+        ++out.prefill_chunks;
+        out.prefill_tokens += n;
+        flights.push_back(std::move(f));
+        if (done) finish(flights.size() - 1, std::move(*done));
+        continue;
+      }
+      if (flights.empty()) break;  // cancelled with nothing in flight
+      double wait = 0;
+      CLM_ASSIGN_OR_RETURN(auto adv, advance(flights, request, wait));
+      out.prefill_wait_ms += wait;
+      if (adv) finish(adv->first, std::move(adv->second));
+    }
+    const double ms = sw.elapsed_ms();
+    out.prefill_ms += ms;
+    if (ms > 0) out.prefill_tok_s = 1000.0 * out.prefill_tokens / ms;
+    for (auto& t : traces) out.rounds.push_back(std::move(t));
+    // Chunks that never launched are simply not part of the conversation; every launched chunk was drained, so
+    // all domains agree on the committed position and the conversation stays usable.
+    if (stop_launching && next < tokens.size()) return make_error(ErrorCode::kCancelled, "cancelled during prefill");
+    return last_logits;
   }
 };
 
@@ -594,6 +835,7 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
     im.drain_events(*n);
     n->self_released.reset();
   }
+  im.results.clear();
   Stopwatch sw;
   im.plan = plan;
   im.plan_hash = plan.hash(m.root_hash());
@@ -639,121 +881,243 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
 
 bool Coordinator::ready() const { return impl_->prepared; }
 
-Result<GenerationResult> Coordinator::generate(const GenerationRequest& request) {
+namespace {
+
+std::uint64_t peak_rss_bytes() {
+#ifdef _WIN32
+  PROCESS_MEMORY_COUNTERS pmc{};
+  if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return pmc.PeakWorkingSetSize;
+  return 0;
+#else
+  std::ifstream f("/proc/self/status");
+  std::string line;
+  while (std::getline(f, line))
+    if (line.rfind("VmHWM:", 0) == 0) return std::stoull(line.substr(6)) * 1024;
+  return 0;
+#endif
+}
+
+}  // namespace
+
+Result<std::shared_ptr<Conversation>> Coordinator::open_conversation() {
   auto& im = *impl_;
   if (!im.prepared) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
-  if (request.prompt.empty()) return make_error(ErrorCode::kInvalidArgument, "empty prompt");
-  if (request.q == 0 || request.q > im.plan->max_window)
-    return make_error(ErrorCode::kInvalidArgument, "q must be in [1, max_window]");
-  if (request.q > 1 && !request.drafter) return make_error(ErrorCode::kInvalidArgument, "q > 1 requires a drafter");
-  const std::uint32_t chunk = std::min(request.prefill_chunk, im.plan->max_window);
-  const auto vocab = im.store->manifest().geometry.vocab_size;
   CLM_RETURN_IF_ERROR(im.check_nodes_ready());
-
-  GenerationResult out;
+  auto conv = std::make_shared<Conversation>();
+  auto& cs = conv->coordinator_state();
   im.epoch = im.epoch.next();
-  out.epoch = im.epoch;
-  const SessionId session = im.next_session;
+  cs.epoch = im.epoch;
+  cs.session = im.next_session;
   im.next_session = im.next_session.next();
-
-  // Open the session on every domain.
-  for (auto& [id, d] : im.local) CLM_RETURN_IF_ERROR(d->open_session(im.epoch, session));
+  for (auto& [id, d] : im.local) CLM_RETURN_IF_ERROR(d->open_session(cs.epoch, cs.session));
   for (const auto* s : im.remote_stages()) {
-    auto st = im.node_for(*s).control->call<protocol::SessionOpened>(protocol::OpenSession{im.epoch, session},
+    auto st = im.node_for(*s).control->call<protocol::SessionOpened>(protocol::OpenSession{cs.epoch, cs.session},
                                                                      im.cfg.request_timeout);
     if (!st.is_ok()) {
-      im.abort_everywhere(session, "open failed");
+      im.abort_everywhere(cs.session, "open failed");
       return st.status();
     }
   }
+  cs.valid = true;
+  return conv;
+}
 
-  std::uint64_t position = 0;
-  StateVersion state{0};
-  WindowId window{0};
-  std::vector<std::int32_t> committed;  // every token whose state is committed (Father-local history)
-  std::int32_t next_token = -1;
+Status Coordinator::close_conversation(Conversation& conversation) {
+  auto& im = *impl_;
+  auto& cs = conversation.coordinator_state();
+  if (!cs.valid) return Status::ok();
+  cs.valid = false;
+  for (auto& [id, d] : im.local) (void)d->abort_session(cs.epoch, cs.session);
+  for (const auto* s : im.remote_stages()) {
+    auto& n = im.node_for(*s);
+    if (n.control)
+      (void)n.control->call<protocol::SessionOpened>(protocol::AbortSession{cs.epoch, cs.session, "closed"},
+                                                     im.cfg.request_timeout);
+  }
+  return Status::ok();
+}
+
+Result<GenerationResult> Coordinator::generate(const GenerationRequest& request) {
+  auto& im = *impl_;
+  if (!im.prepared) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
+  if (request.q == 0 || request.q > im.plan->max_window)
+    return make_error(ErrorCode::kInvalidArgument, "q must be in [1, max_window]");
+  if (request.q > 1 && !request.drafter) return make_error(ErrorCode::kInvalidArgument, "q > 1 requires a drafter");
+  if (request.max_new_tokens == 0) return make_error(ErrorCode::kInvalidArgument, "max_new_tokens must be positive");
+  const auto vocab = im.store->manifest().geometry.vocab_size;
+  for (auto t : request.prompt)
+    if (t < 0 || static_cast<std::uint32_t>(t) >= vocab) return make_error(ErrorCode::kInvalidArgument, "token outside the vocabulary");
+  CLM_RETURN_IF_ERROR(im.check_nodes_ready());
+
+  std::shared_ptr<Conversation> conv = request.conversation;
+  const bool one_shot = !conv;
+  if (one_shot) {
+    CLM_ASSIGN_OR_RETURN(conv, open_conversation());
+  } else if (!conv->valid()) {
+    return make_error(ErrorCode::kFailedPrecondition, "conversation session is no longer valid; open a new one");
+  }
+  auto& cs = conv->coordinator_state();
+  // This turn feeds the previous turn's unfed prediction first, then the new tokens.
+  std::vector<std::int32_t> feed = cs.pending;
+  feed.insert(feed.end(), request.prompt.begin(), request.prompt.end());
+  if (feed.empty()) return make_error(ErrorCode::kInvalidArgument, "nothing to prefill");
+  if (cs.position + feed.size() + request.max_new_tokens + request.q > im.plan->max_context)
+    return make_error(ErrorCode::kResourceExhausted, "turn would exceed the plan's context reservation");
+  cs.pending.clear();
+
+  GenerationResult out;
+  out.epoch = cs.epoch;
+  out.session = cs.session;
+  domain::Rng rng(request.sampling.seed ^ cs.session.value);
   Stopwatch total;
 
+  // Distributed failures invalidate the session everywhere; Father keeps its history for a re-prefill.
   auto fail = [&](const Status& st) -> Status {
-    im.abort_everywhere(session, st.message());
-    return make_error(st.code() == ErrorCode::kOk ? ErrorCode::kAborted : st.code(),
-                      "distributed session invalidated: " + st.to_string());
+    cs.valid = false;
+    im.abort_everywhere(cs.session, st.message());
+    return make_error(st.code(), "distributed session invalidated: " + st.message());
   };
 
-  // Prefill in bounded chunks.
-  for (std::size_t off = 0; off < request.prompt.size(); off += chunk) {
-    const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(chunk, request.prompt.size() - off));
-    window = window.next();
-    domain::WindowRequest req{im.epoch, session, window, position, state, n};
-    RoundTrace trace;
-    trace.prefill = true;
-    trace.positions = n;
-    Stopwatch rsw;
-    auto logits = im.run_round(req, std::span(request.prompt).subspan(off, n), trace);
-    if (!logits.is_ok()) return fail(logits.status());
-    if (auto st = im.commit_round(req, n, trace); !st.is_ok()) return fail(st);
-    trace.accepted = n;
-    trace.total_ms = rsw.elapsed_ms();
-    position += n;
-    state = state.next();
-    committed.insert(committed.end(), request.prompt.begin() + static_cast<std::ptrdiff_t>(off),
-                     request.prompt.begin() + static_cast<std::ptrdiff_t>(off + n));
-    if (off + n == request.prompt.size())
-      next_token = argmax(std::span<const float>(logits->data).subspan(std::size_t{n - 1} * vocab, vocab));
-    out.rounds.push_back(std::move(trace));
+  auto prefilled = im.prefill(cs, feed, request, out);
+  if (!prefilled.is_ok()) {
+    if (prefilled.status().code() == ErrorCode::kCancelled) {
+      out.cancelled = true;
+      out.peak_rss_bytes = peak_rss_bytes();
+      if (one_shot) (void)close_conversation(*conv);
+      return out;
+    }
+    return fail(prefilled.status());
   }
-  out.prefill_ms = total.elapsed_ms();
-  out.tokens.push_back(next_token);
-  out.first_token_ms = out.prefill_ms;
+  auto emit = [&](std::span<const std::int32_t> toks) {
+    std::size_t n = 0;
+    for (auto t : toks) {
+      if (out.tokens.size() >= request.max_new_tokens || out.stopped_on_token) break;
+      out.tokens.push_back(t);
+      ++n;
+      if (std::find(request.stop_tokens.begin(), request.stop_tokens.end(), t) != request.stop_tokens.end())
+        out.stopped_on_token = true;
+    }
+    if (n > 0 && request.on_tokens) request.on_tokens(std::span(out.tokens).last(n));
+    return n;
+  };
+  auto next_from = [&](std::span<const float> logits) {
+    if (request.sampling.greedy()) return domain::argmax_token(logits);
+    auto p = domain::distribution(logits, request.sampling);
+    return domain::sample_from(p, rng);
+  };
+  std::int32_t next_token = next_from(prefilled.value());
+  emit(std::span(&next_token, 1));
+  out.first_token_ms = total.elapsed_ms();
 
-  // Decode: speculative windows of q positions [next_token, d1..d_{q-1}].
+  // Decode: speculative windows [next_token, d1..d_{q-1}]. Drafts are never output unless accepted.
   Stopwatch decode;
-  while (out.tokens.size() < request.max_new_tokens) {
-    const std::uint32_t q = request.q;
+  while (out.tokens.size() < request.max_new_tokens && !out.stopped_on_token) {
+    if (Impl::cancelled(request)) {
+      out.cancelled = true;
+      break;
+    }
+    // Never verify more positions than the output budget can show: every committed position must correspond to
+    // a token the caller receives (or the one pending prediction).
+    const auto remaining = static_cast<std::uint32_t>(request.max_new_tokens - out.tokens.size());
+    const std::uint32_t q = std::min(request.q, remaining);
     RoundTrace trace;
     Stopwatch rsw;
     std::vector<std::int32_t> window_tokens{next_token};
+    domain::DraftProposal proposal;
     if (q > 1) {
       Stopwatch dsw;
-      auto drafts = request.drafter->draft(committed, next_token, q - 1);
+      proposal = request.drafter->propose(cs.committed, next_token, q - 1, request.sampling, rng);
       trace.draft_ms = dsw.elapsed_ms();
-      if (drafts.size() != q - 1) return fail(make_error(ErrorCode::kInternal, "drafter returned wrong count"));
-      window_tokens.insert(window_tokens.end(), drafts.begin(), drafts.end());
+      if (proposal.tokens.size() != q - 1) return fail(make_error(ErrorCode::kInternal, "drafter returned wrong count"));
+      window_tokens.insert(window_tokens.end(), proposal.tokens.begin(), proposal.tokens.end());
     }
-    window = window.next();
-    domain::WindowRequest req{im.epoch, session, window, position, state, q};
+    cs.window = cs.window.next();
+    Impl::Flight f;
+    f.req = {cs.epoch, cs.session, cs.window, cs.position, cs.state, q};
+    f.trace = &trace;
     trace.positions = q;
-    auto logits = im.run_round(req, window_tokens, trace);
-    if (!logits.is_ok()) return fail(logits.status());
-    // Accept the longest draft prefix the target model agrees with (greedy verification).
-    std::uint32_t accepted = 1;
-    while (accepted < q &&
-           argmax(std::span<const float>(logits->data).subspan(std::size_t{accepted - 1} * vocab, vocab)) ==
-               window_tokens[accepted])
-      ++accepted;
-    if (auto st = im.commit_round(req, accepted, trace); !st.is_ok()) return fail(st);
-    position += accepted;
-    state = state.next();
-    committed.insert(committed.end(), window_tokens.begin(), window_tokens.begin() + accepted);
-    for (std::uint32_t i = 1; i < accepted; ++i) out.tokens.push_back(window_tokens[i]);
-    next_token = argmax(std::span<const float>(logits->data).subspan(std::size_t{accepted - 1} * vocab, vocab));
-    out.tokens.push_back(next_token);
+    trace.proposed = q - 1;
+    std::vector<Impl::Flight> flights;
+    auto launched = im.launch(f, window_tokens);
+    if (!launched.is_ok()) return fail(launched.status());
+    domain::Logits logits;
+    if (launched.value()) {
+      logits = std::move(*launched.value());
+    } else {
+      flights.push_back(std::move(f));
+      while (true) {
+        auto adv = im.advance(flights, request, trace.wait_ms);
+        if (!adv.is_ok()) {
+          if (adv.status().code() == ErrorCode::kCancelled) {
+            // Discard the outstanding window everywhere; the conversation keeps its committed state and the
+            // unfed prediction stays pending for the next turn.
+            if (auto st = im.abort_window_everywhere(flights.front().req); !st.is_ok()) return fail(st);
+            out.cancelled = true;
+            break;
+          }
+          return fail(adv.status());
+        }
+        if (adv.value()) {
+          logits = std::move(adv.value()->second);
+          break;
+        }
+      }
+      if (out.cancelled) break;
+    }
+    // Verify on Father: greedy prefix match, or exact stochastic speculative sampling.
+    std::uint32_t accepted_drafts = 0;
+    std::int32_t following = -1;
+    auto at = [&](std::uint32_t i) { return std::span<const float>(logits.data).subspan(std::size_t{i} * vocab, vocab); };
+    if (request.sampling.greedy()) {
+      while (accepted_drafts + 1 < q && domain::argmax_token(at(accepted_drafts)) == window_tokens[accepted_drafts + 1])
+        ++accepted_drafts;
+      following = domain::argmax_token(at(accepted_drafts));
+    } else {
+      std::vector<std::vector<float>> target;
+      for (std::uint32_t i = 0; i < q; ++i) target.push_back(domain::distribution(at(i), request.sampling));
+      auto outcome = domain::verify_speculative(target, proposal.tokens, proposal.probs, rng);
+      accepted_drafts = outcome.accepted_drafts;
+      following = outcome.next_token;
+    }
+    // A stop token among the accepted drafts ends the turn there: commit through it and nothing after.
+    for (std::uint32_t i = 0; i < accepted_drafts; ++i) {
+      const auto t = window_tokens[i + 1];
+      if (std::find(request.stop_tokens.begin(), request.stop_tokens.end(), t) != request.stop_tokens.end()) {
+        accepted_drafts = i;
+        following = t;
+        break;
+      }
+    }
+    const std::uint32_t accepted = accepted_drafts + 1;  // positions committed: next_token + accepted drafts
+    if (auto st = im.commit_round(f.req, accepted, trace); !st.is_ok()) return fail(st);
+    cs.position += accepted;
+    cs.state = cs.state.next();
+    cs.committed.insert(cs.committed.end(), window_tokens.begin(), window_tokens.begin() + accepted);
+    std::vector<std::int32_t> new_tokens(window_tokens.begin() + 1, window_tokens.begin() + accepted);
+    new_tokens.push_back(following);
     trace.accepted = accepted;
+    trace.accepted_drafts = accepted_drafts;
+    trace.emitted = static_cast<std::uint32_t>(emit(new_tokens));
+    next_token = following;
     trace.total_ms = rsw.elapsed_ms();
+    out.proposed_positions += trace.proposed;
+    out.accepted_drafts += accepted_drafts;
+    out.draft_ms_total += trace.draft_ms;
+    out.verify_ms_total += trace.prefix_ms + trace.remote_ms + trace.tail_ms;
+    out.commit_ms_total += trace.commit_ms;
     out.rounds.push_back(std::move(trace));
     ++out.decode_rounds;
   }
-  if (out.tokens.size() > request.max_new_tokens) out.tokens.resize(request.max_new_tokens);
+  // The last emitted token has not been fed yet; the next turn feeds it first.
+  cs.pending.push_back(next_token);
   out.decode_ms = decode.elapsed_ms();
-  out.decode_tokens = static_cast<std::uint32_t>(out.tokens.size() - 1);
-
-  // The session is complete; free its sequence state everywhere (the lease and weights stay Ready).
-  for (auto& [id, d] : im.local) (void)d->abort_session(im.epoch, session);
-  for (const auto* s : im.remote_stages())
-    (void)im.node_for(*s).control->call<protocol::SessionOpened>(
-        protocol::AbortSession{im.epoch, session, "complete"}, im.cfg.request_timeout);
+  out.decode_tokens = out.tokens.empty() ? 0 : static_cast<std::uint32_t>(out.tokens.size() - 1);
+  out.peak_rss_bytes = peak_rss_bytes();
+  if (one_shot) (void)close_conversation(*conv);
   return out;
 }
+
+void Coordinator::cancel_prepare() { impl_->cancel_prepare.store(true); }
 
 Result<ReleaseReport> Coordinator::release() {
   auto& im = *impl_;
@@ -803,6 +1167,7 @@ Result<ReleaseReport> Coordinator::release() {
   }
   for (auto& [id, d] : im.local) (void)d->release();
   im.local.clear();
+  im.results.clear();
   im.plan.reset();
   im.prepared = false;
   return report;

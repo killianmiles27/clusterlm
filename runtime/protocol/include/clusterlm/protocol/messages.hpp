@@ -43,6 +43,7 @@ enum class MessageType : std::uint16_t {
   kObjectSealed = 15,
   kPlanReady = 16,
   kAuthorizePeer = 17,
+  kProvisionStatus = 18,
   kOpenSession = 20,
   kSessionOpened = 21,
   kRunWindow = 22,
@@ -50,6 +51,8 @@ enum class MessageType : std::uint16_t {
   kCommitWindow = 24,
   kCommitAck = 25,
   kAbortSession = 26,
+  kAbortWindow = 27,
+  kWindowAborted = 28,
   kReleaseLease = 30,
   kReleaseComplete = 31,
   kError = 40,
@@ -97,6 +100,7 @@ struct StageAssignment {
   objects::LayerRange layers;
   std::uint32_t max_context = 0;
   std::uint32_t max_window = 0;
+  std::uint32_t max_local_batch = 0;  // DomainSpec::max_local_batch (0 = max_window)
 };
 
 struct ObjectAssignment {
@@ -146,6 +150,14 @@ struct ObjectSealed {
   std::uint32_t object_index = 0;
 };
 
+// Sent by a Node right after HelloAck on every provision channel of a Preparing lease: the objects already
+// sealed under this lease. Father resends only the rest, so a broken bulk connection resumes within the same
+// uninterrupted lease instead of restarting from zero (partially received objects are reset and resent whole).
+struct ProvisionStatus {
+  LeaseGeneration lease;
+  std::vector<std::uint32_t> sealed_objects;
+};
+
 struct PlanReady {
   LeaseGeneration lease;
   Digest256 plan_hash;
@@ -187,6 +199,10 @@ struct RunWindow {
   bool forward_to_peer = false;
   // Timings of stages already traversed by a forwarded chain, so Father receives the whole breakdown.
   std::vector<domain::StageTiming> upstream_timings;
+  // Prefill: every stage commits all positions as soon as it has computed them. Prefill windows are never
+  // speculative, so this lets successive chunks pipeline through the stages without a commit round trip; each
+  // domain still processes its chunks strictly in window order.
+  bool auto_commit = false;
 };
 
 struct StageResult {
@@ -208,6 +224,18 @@ struct CommitWindow {
 struct CommitAckMessage {
   StageId stage;
   domain::CommitAck ack;
+};
+
+struct AbortWindow {
+  Epoch epoch;
+  SessionId session;
+  WindowId window;
+  StageId stage;
+};
+
+struct WindowAborted {
+  StageId stage;
+  domain::WindowAbortAck ack;
 };
 
 struct AbortSession {
@@ -250,7 +278,7 @@ struct Pong {
 using Message = std::variant<Hello, HelloAck, OfferResources, PreparePlan, PlanAccepted, ProvisionChunk, SealObject,
                              ObjectSealed, PlanReady, AuthorizePeer, OpenSession, SessionOpened, RunWindow, StageResult,
                              CommitWindow, CommitAckMessage, AbortSession, ReleaseLease, ReleaseComplete, ErrorMessage,
-                             Ping, Pong>;
+                             Ping, Pong, AbortWindow, WindowAborted, ProvisionStatus>;
 
 MessageType type_of(const Message& m);
 Channel channel_of(MessageType t);

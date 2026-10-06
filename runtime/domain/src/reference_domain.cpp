@@ -307,6 +307,18 @@ class ReferenceDomainImpl final : public ReferenceDomain {
     return ledger_.finish_commit(request);
   }
 
+  Result<WindowAbortAck> abort_window(Epoch epoch, SessionId session, WindowId window) override {
+    CLM_ASSIGN_OR_RETURN(WindowAbortAck ack, ledger_.abort_window(epoch, session, window));
+    // Window state is temporary by construction (snapshots, tentative KV slots past the committed position,
+    // tentative PLE history), so discarding it restores the committed session exactly.
+    auto it = windows_.find(session);
+    if (it != windows_.end() && it->second.id == window) {
+      windows_.erase(it);
+      ++metrics_.windows_aborted;
+    }
+    return ack;
+  }
+
   Status abort_session(Epoch epoch, SessionId session) override {
     CLM_RETURN_IF_ERROR(ledger_.abort_session(epoch, session));
     if (windows_.erase(session) != 0) ++metrics_.windows_aborted;

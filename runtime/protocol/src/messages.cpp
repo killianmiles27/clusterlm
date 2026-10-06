@@ -147,6 +147,7 @@ void encode_body(ByteWriter& w, const PreparePlan& m) {
     put(w, s.layers);
     w.u32(s.max_context);
     w.u32(s.max_window);
+    w.u32(s.max_local_batch);
   }
   w.u64(m.ram_cap_bytes);
   w.u64(m.vram_cap_bytes);
@@ -166,7 +167,7 @@ bool decode_body(ByteReader& r, PreparePlan& m, const DecodeLimits& l) {
   m.stages.resize(n);
   for (auto& s : m.stages) {
     if (!(get(r, s.stage) && get_enum(r, s.role, 2) && get(r, s.layers) && r.u32(s.max_context) &&
-          r.u32(s.max_window)))
+          r.u32(s.max_window) && r.u32(s.max_local_batch)))
       return false;
   }
   if (!(r.u64(m.ram_cap_bytes) && r.u64(m.vram_cap_bytes) && r.u64(m.staging_cap_bytes))) return false;
@@ -266,13 +267,15 @@ void encode_body(ByteWriter& w, const RunWindow& m) {
   put(w, m.request);
   put(w, m.stage);
   w.boolean(m.forward_to_peer);
+  w.boolean(m.auto_commit);
   w.u32(static_cast<std::uint32_t>(m.upstream_timings.size()));
   for (const auto& t : m.upstream_timings) put(w, t);
   m.activations.encode(w);
 }
 bool decode_body(ByteReader& r, RunWindow& m, const DecodeLimits& l) {
   std::uint32_t n;
-  if (!(get(r, m.lease) && get(r, m.request) && get(r, m.stage) && r.boolean(m.forward_to_peer) && r.u32(n) &&
+  if (!(get(r, m.lease) && get(r, m.request) && get(r, m.stage) && r.boolean(m.forward_to_peer) &&
+        r.boolean(m.auto_commit) && r.u32(n) &&
         n <= kMaxTimings))
     return false;
   m.upstream_timings.resize(n);
@@ -329,6 +332,42 @@ void encode_body(ByteWriter& w, const CommitAckMessage& m) {
   put(w, m.ack);
 }
 bool decode_body(ByteReader& r, CommitAckMessage& m, const DecodeLimits&) { return get(r, m.stage) && get(r, m.ack); }
+
+void encode_body(ByteWriter& w, const AbortWindow& m) {
+  put(w, m.epoch);
+  put(w, m.session);
+  put(w, m.window);
+  put(w, m.stage);
+}
+bool decode_body(ByteReader& r, AbortWindow& m, const DecodeLimits&) {
+  return get(r, m.epoch) && get(r, m.session) && get(r, m.window) && get(r, m.stage);
+}
+
+void encode_body(ByteWriter& w, const WindowAborted& m) {
+  put(w, m.stage);
+  put(w, m.ack.session);
+  put(w, m.ack.window);
+  w.u64(m.ack.committed_position);
+  put(w, m.ack.state);
+}
+bool decode_body(ByteReader& r, WindowAborted& m, const DecodeLimits&) {
+  return get(r, m.stage) && get(r, m.ack.session) && get(r, m.ack.window) && r.u64(m.ack.committed_position) &&
+         get(r, m.ack.state);
+}
+
+void encode_body(ByteWriter& w, const ProvisionStatus& m) {
+  put(w, m.lease);
+  w.u32(static_cast<std::uint32_t>(m.sealed_objects.size()));
+  for (auto i : m.sealed_objects) w.u32(i);
+}
+bool decode_body(ByteReader& r, ProvisionStatus& m, const DecodeLimits& l) {
+  std::uint32_t n;
+  if (!(get(r, m.lease) && r.u32(n) && n <= l.max_manifest_objects)) return false;
+  m.sealed_objects.resize(n);
+  for (auto& i : m.sealed_objects)
+    if (!r.u32(i)) return false;
+  return true;
+}
 
 void encode_body(ByteWriter& w, const AbortSession& m) {
   put(w, m.epoch);
@@ -406,6 +445,9 @@ CLM_MESSAGE_TYPE(ReleaseComplete, kReleaseComplete)
 CLM_MESSAGE_TYPE(ErrorMessage, kError)
 CLM_MESSAGE_TYPE(Ping, kPing)
 CLM_MESSAGE_TYPE(Pong, kPong)
+CLM_MESSAGE_TYPE(AbortWindow, kAbortWindow)
+CLM_MESSAGE_TYPE(WindowAborted, kWindowAborted)
+CLM_MESSAGE_TYPE(ProvisionStatus, kProvisionStatus)
 #undef CLM_MESSAGE_TYPE
 
 template <typename T>
@@ -455,6 +497,9 @@ std::string_view to_string(MessageType t) {
     case MessageType::kError: return "Error";
     case MessageType::kPing: return "Ping";
     case MessageType::kPong: return "Pong";
+    case MessageType::kAbortWindow: return "AbortWindow";
+    case MessageType::kWindowAborted: return "WindowAborted";
+    case MessageType::kProvisionStatus: return "ProvisionStatus";
   }
   return "Unknown";
 }
@@ -471,6 +516,7 @@ Channel channel_of(MessageType t) {
     case MessageType::kProvisionChunk:
     case MessageType::kSealObject:
     case MessageType::kObjectSealed:
+    case MessageType::kProvisionStatus:
       return Channel::kProvision;
     default:
       return Channel::kControl;
@@ -507,6 +553,9 @@ Result<Message> decode(MessageType type, ByteSpan payload, const DecodeLimits& l
     case MessageType::kError: return decode_as<ErrorMessage>(payload, limits);
     case MessageType::kPing: return decode_as<Ping>(payload, limits);
     case MessageType::kPong: return decode_as<Pong>(payload, limits);
+    case MessageType::kAbortWindow: return decode_as<AbortWindow>(payload, limits);
+    case MessageType::kWindowAborted: return decode_as<WindowAborted>(payload, limits);
+    case MessageType::kProvisionStatus: return decode_as<ProvisionStatus>(payload, limits);
   }
   return make_error(ErrorCode::kProtocolError, "unknown message type " + std::to_string(static_cast<int>(type)));
 }

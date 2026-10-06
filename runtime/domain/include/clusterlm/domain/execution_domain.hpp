@@ -19,6 +19,9 @@
 //     state changes are temporary until commit_window.
 //   * commit_window(accepted) keeps exactly the first `accepted` positions' state changes (1..q) and
 //     discards the rest; repeating the same commit is idempotent and returns the same ack.
+//   * abort_window discards the outstanding window (if it is the named one) and keeps the session at its
+//     committed state — used when a window is cancelled or must be dropped without ending the conversation;
+//     repeating it is harmless.
 //   * abort_session discards all uncommitted work and all sequence state for the session.
 //   * Any message with a stale epoch is rejected with kStaleEpoch.
 #include <cstdint>
@@ -45,6 +48,9 @@ struct DomainSpec {
   std::uint32_t max_context = 0;      // positions of sequence state to reserve
   std::uint32_t max_window = 0;       // maximum q (verification width) or prefill chunk positions
   std::uint32_t max_sessions = 1;
+  // Largest batch this domain processes in one local step (0 = max_window). A transport chunk larger than this
+  // is executed in local sub-batches, so a small GPU never forces a smaller chunk size on every other stage.
+  std::uint32_t max_local_batch = 0;
 };
 
 // Memory a domain needs, reported before allocation so admission can happen against live budgets.
@@ -73,6 +79,13 @@ struct CommitRequest {
   WindowId window;
   std::uint32_t accepted = 0;          // accepted-prefix length; never candidate token IDs
   StateVersion expected_state;
+};
+
+struct WindowAbortAck {
+  SessionId session;
+  WindowId window;
+  std::uint64_t committed_position = 0;
+  StateVersion state;
 };
 
 struct CommitAck {
@@ -131,6 +144,7 @@ class ExecutionDomain {
   virtual Result<Logits> run_tail(const WindowRequest& request, const StageActivations& input) = 0;
 
   virtual Result<CommitAck> commit_window(const CommitRequest& request) = 0;
+  virtual Result<WindowAbortAck> abort_window(Epoch epoch, SessionId session, WindowId window) = 0;
   virtual Status abort_session(Epoch epoch, SessionId session) = 0;
   // Release every allocation. After release the domain must be prepared again.
   virtual Status release() = 0;

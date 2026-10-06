@@ -104,6 +104,9 @@ class StrataDomain final : public ExecutionDomain {
     return pending("commit_window");
   }
 
+  Result<domain::WindowAbortAck> abort_window(Epoch, SessionId, WindowId) override {
+    return pending("abort_window");
+  }
   Status abort_session(Epoch, SessionId) override {
     // QUALIFICATION-PENDING: Strata has no abort-without-commit (finding 3); the whole session state is discarded.
     return pending("abort_session");

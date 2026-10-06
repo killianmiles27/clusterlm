@@ -52,6 +52,10 @@ class WindowLedger {
   };
   Result<CommitDecision> begin_commit(const domain::CommitRequest& request);
   domain::CommitAck finish_commit(const domain::CommitRequest& request);
+  // Discard the outstanding window if it is `window`; the session keeps its committed state. Aborting a
+  // window that is no longer outstanding (already committed, aborted or failed) is an idempotent no-op; naming
+  // a window that was never admitted is rejected.
+  Result<domain::WindowAbortAck> abort_window(Epoch epoch, SessionId session, WindowId window);
   Status abort_session(Epoch epoch, SessionId session);
   void clear();
 
