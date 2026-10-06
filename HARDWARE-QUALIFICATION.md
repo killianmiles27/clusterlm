@@ -45,6 +45,7 @@ Windows pinned-memory behaviour.
 | [HQ-PERF-04](#hq-perf-04) | Sustained run and repeated release/reprepare cycles | Father, Node G14, Node 3060 | pending |
 | [HQ-STRONG-01](#hq-strong-01) | Strong tier qualification | Father, Node G14 | pending |
 | [HQ-FAST-01](#hq-fast-01) | Fast tier local baseline | Father | pending |
+| [HQ-TIER-01](#hq-tier-01) | Tier catalog pinning and context-profile qualification | Father, Node G14, Node 3060 | pending |
 
 ## Experiments
 
@@ -414,3 +415,18 @@ Windows pinned-memory behaviour.
   - re-prefill time
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-FAST-01"`; metrics `decode_tok_s.median`, `load_ms`
 - **Decision affected:** Fallback UX timing.
+
+### HQ-TIER-01
+
+**Tier catalog pinning and context-profile qualification** — status: `pending`
+
+- **Purpose:** Download and inspect each catalog artifact on Father to pin its manifest root hash, then qualify each offered context profile (4K to 128K) per tier on the real machines so the catalog's qualified flags and readiness notes can change.
+- **Command:** `clusterlm-bench catalog inspect --model <tier-model-dir> --out results/catalog-<tier>.json && clusterlm-bench catalog contexts --tier <fast|strong|ultra> --contexts 4096,8192,16384,32768,65536,131072 --out results/contexts-<tier>.json`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** Fast, Strong and Ultra catalog artifacts (exact shard hashes recorded)
+- **Measurements:**
+  - manifest root hash and exact shard file names/sizes per tier
+  - per context profile: placement feasibility, VRAM/RAM margins, completion without OOM or lease loss
+  - which offered contexts are dropped from the catalog (e.g. Fast 64K/128K)
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-TIER-01"`; metrics `catalog.root_hash`, `context.qualified`, `context.vram_margin`
+- **Decision affected:** Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.

@@ -658,6 +658,34 @@
       },
       "decision_affected": "Fallback UX timing.",
       "status": "pending"
+    },
+    {
+      "id": "HQ-TIER-01",
+      "title": "Tier catalog pinning and context-profile qualification",
+      "purpose": "Download and inspect each catalog artifact on Father to pin its manifest root hash, then qualify each offered context profile (4K to 128K) per tier on the real machines so the catalog's qualified flags and readiness notes can change.",
+      "command": "clusterlm-bench catalog inspect --model <tier-model-dir> --out results/catalog-<tier>.json && clusterlm-bench catalog contexts --tier <fast|strong|ultra> --contexts 4096,8192,16384,32768,65536,131072 --out results/contexts-<tier>.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Fast, Strong and Ultra catalog artifacts (exact shard hashes recorded)",
+      "measurements": [
+        "manifest root hash and exact shard file names/sizes per tier",
+        "per context profile: placement feasibility, VRAM/RAM margins, completion without OOM or lease loss",
+        "which offered contexts are dropped from the catalog (e.g. Fast 64K/128K)"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-TIER-01",
+        "metrics": [
+          "catalog.root_hash",
+          "context.qualified",
+          "context.vram_margin"
+        ]
+      },
+      "decision_affected": "Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.",
+      "status": "pending"
     }
   ]
 }

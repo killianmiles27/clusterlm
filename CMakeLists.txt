@@ -48,6 +48,8 @@ foreach(module
     orchestrator/placement
     orchestrator/coordinator
     orchestrator/planning
+    orchestrator/catalog
+    orchestrator/father-service
     node/worker
     node/service
     bench

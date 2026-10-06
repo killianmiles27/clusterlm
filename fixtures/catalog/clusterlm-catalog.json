@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "catalog_id": "clusterlm-catalog",
+  "note": "Shipped tier catalog. Everything here is catalog policy, not a measurement: root hashes stay null (unpinned) until Father has downloaded and inspected the artifact, every context profile is unqualified and every performance target is pending qualification. Null file names and null artifact ids are recorded at first inspection.",
+  "fallback_order": [
+    "ultra",
+    "strong",
+    "fast"
+  ],
+  "tiers": [
+    {
+      "id": "fast",
+      "display_name": "Fast",
+      "model": {
+        "family": "Swift-1.5-Qwen3.8-27B",
+        "display_name": "Swift-1.5-Qwen3.8-27B GSQ-RCO IQ3_S",
+        "artifact_id": null,
+        "quant": "IQ3_S",
+        "expected_files": [
+          {
+            "role": "model",
+            "name": null,
+            "approx_bytes": null
+          }
+        ],
+        "expected_root_hash": null,
+        "pin_status": "unpinned"
+      },
+      "backend": "llama-local",
+      "roles": [
+        "father"
+      ],
+      "contexts": [
+        {
+          "tokens": 4096,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 8192,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 16384,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 32768,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 65536,
+          "offered": false,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 131072,
+          "offered": false,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        }
+      ],
+      "performance_targets": [],
+      "on_session_loss": {
+        "max_retries": 0,
+        "then": "stop"
+      },
+      "qualification_experiments": [
+        "HQ-FAST-01"
+      ]
+    },
+    {
+      "id": "strong",
+      "display_name": "Strong",
+      "model": {
+        "family": "Swift-1.5-Qwen3.8-Flash-Next",
+        "display_name": "Swift-1.5-Qwen3.8-Flash-Next GSQ-RCO IQ2_XS",
+        "artifact_id": null,
+        "quant": "IQ2_XS",
+        "expected_files": [
+          {
+            "role": "transformer-shard",
+            "name": null,
+            "approx_bytes": null
+          },
+          {
+            "role": "lookup-shard",
+            "name": null,
+            "approx_bytes": null
+          }
+        ],
+        "expected_root_hash": null,
+        "pin_status": "unpinned"
+      },
+      "backend": "strata-hybrid",
+      "roles": [
+        "father",
+        "node:laptop-class"
+      ],
+      "contexts": [
+        {
+          "tokens": 4096,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 8192,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 16384,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 32768,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 65536,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 131072,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        }
+      ],
+      "performance_targets": [],
+      "on_session_loss": {
+        "max_retries": 1,
+        "then": "downgrade"
+      },
+      "qualification_experiments": [
+        "HQ-STRONG-01"
+      ]
+    },
+    {
+      "id": "ultra",
+      "display_name": "Ultra",
+      "model": {
+        "family": "Qwen3.8-Flash-Next",
+        "display_name": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+        "artifact_id": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+        "quant": "IQ3_S",
+        "expected_files": [
+          {
+            "role": "transformer-shard",
+            "name": null,
+            "approx_bytes": 54800000000
+          },
+          {
+            "role": "lookup-shard",
+            "name": null,
+            "approx_bytes": 28800000000
+          }
+        ],
+        "expected_root_hash": null,
+        "pin_status": "unpinned"
+      },
+      "backend": "strata-hybrid",
+      "roles": [
+        "father",
+        "node:laptop-class",
+        "node:designated-3060"
+      ],
+      "contexts": [
+        {
+          "tokens": 4096,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 8192,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 16384,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 32768,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 65536,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        },
+        {
+          "tokens": 131072,
+          "offered": true,
+          "qualified": false,
+          "requirements": [
+            "feasible_placement",
+            "qualification_required"
+          ]
+        }
+      ],
+      "performance_targets": [
+        {
+          "metric": "decode_tok_s_median",
+          "value": 20,
+          "status": "pending_qualification",
+          "experiment": "HQ-PERF-01"
+        }
+      ],
+      "on_session_loss": {
+        "max_retries": 1,
+        "then": "downgrade"
+      },
+      "qualification_experiments": [
+        "HQ-PERF-01",
+        "HQ-PERF-02",
+        "HQ-PERF-03",
+        "HQ-PERF-04"
+      ]
+    }
+  ]
+}
