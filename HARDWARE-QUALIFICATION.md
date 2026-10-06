@@ -52,6 +52,7 @@ Windows pinned-memory behaviour.
 | [HQ-WIN-02](#hq-win-02) | Session helper activity, lock, suspend/resume and AC/battery transitions | Node G14, Node 3060 | pending |
 | [HQ-WIN-03](#hq-win-03) | Firewall rule scope verification | Father, Node G14, Node 3060 | pending |
 | [HQ-WIN-04](#hq-win-04) | Key and staging ACL verification | Father, Node G14, Node 3060 | pending |
+| [HQ-MODEL-01](#hq-model-01) | Real-model manifest and tensor inventory on Father | Father | pending |
 
 ## Experiments
 
@@ -597,3 +598,22 @@ Windows pinned-memory behaviour.
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-WIN-04"`; metrics `acl.key_principals`, `acl.key_inherited_entries`, `acl.staging_principals`, `acl.standard_user_read_denied`, `acl.admin_read_denied_without_takeown`
 - **Decision affected:** Whether owner+SYSTEM-only is sufficient or DPAPI at-rest protection (ADR 0133) is required; whether administrators need a recovery path.
 - **Acceptance:** principal sets are exactly {service account or user, SYSTEM}; no inherited entries; standard users and administrators without takeown are denied; a widened ACL is corrected by the next save
+
+### HQ-MODEL-01
+
+**Real-model manifest and tensor inventory on Father** — status: `pending`
+
+- **Purpose:** Run the GGUF inspector and a full object hash on Father against the downloaded Ultra, Strong and Fast artifacts, so the manifest, tensor mapping and placement inputs rest on the real files instead of fixtures. Confirms the Flash-Next tensor mapping (docs/model-manifest.md) covers every tensor, or names exactly what it does not.
+- **Command:** `clusterlm-model-inspect <artifact>-00001-of-0000N.gguf [<mtp>.gguf] --hash --hash-shards --threads 4 --manifest results/manifest-<tier>.json > results/inspect-<tier>.txt`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)
+- **Model:** Ultra (IQ3_S), Strong (IQ2_XS) and Fast (27B IQ3_S) GSQ-RCO GGUF artifacts as downloaded
+- **Measurements:**
+  - manifest root hash per artifact (with object and shard digests computed)
+  - tensor inventory by class and ggml type, and the exact list of unclassified tensors (expected: none)
+  - expert quant types per layer, including any mixed gate/up/down types
+  - per-layer dense, shared-expert and routed-expert bytes; Father-only bytes (embedding, PLE table, head, MTP)
+  - actual block_count, expert_count, expert_used_count, head counts, residual stream count and PLE layer versus the geometry the planner assumes
+  - wall time and read throughput of the full hash (bounded-buffer streaming on the model SSD)
+  - whether the MTP tensors ship inside the artifact or as a separate GGUF
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-MODEL-01"`; metrics `manifest.root_hash`, `manifest.unclassified_tensors`, `manifest.father_only_bytes`, `manifest.layer_bytes`, `hash.seconds`
+- **Decision affected:** Manifest and placement inputs (per-layer dense and expert bytes, quant types, Father-only residency); whether the tensor mapping needs new classes before provisioning is built on it; geometry assumptions in the fixtures and planner (PLE layer, residual streams, expert counts).
