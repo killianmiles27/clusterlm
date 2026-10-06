@@ -46,6 +46,7 @@ foreach(module
     node/lease-store
     orchestrator/placement
     orchestrator/coordinator
+    orchestrator/planning
     node/worker
     bench
     apps)

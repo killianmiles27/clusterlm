@@ -80,7 +80,8 @@ Status ClusterPlan::validate(const objects::ModelGeometry& g, std::size_t node_c
   std::uint32_t expect = 0;
   for (std::size_t i = 0; i < stages.size(); ++i) {
     const auto& s = stages[i];
-    if (s.layers.begin != expect || s.layers.empty())
+    // Only the tail may be empty: a head-only tail follows a plan whose last layers run elsewhere.
+    if (s.layers.begin != expect || (s.layers.empty() && s.role != domain::StageRole::kTail))
       return make_error(ErrorCode::kInvalidArgument, "stage ranges must be contiguous and non-empty");
     expect = s.layers.end;
     const bool father = s.domain == kFatherDomain;
