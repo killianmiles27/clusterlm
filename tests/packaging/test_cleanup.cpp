@@ -111,6 +111,8 @@ TEST_CASE("default layout: cleanup keeps a pairing identity, --purge removes it"
     std::ofstream(paths->node_identity / "device_key.pem") << "key";
     fs::create_directories(paths->node_logs);
     std::ofstream(paths->node_logs / "node.log") << "log";
+    std::ofstream(paths->node_root / "node-settings.json") << "{}";  // the paired Father and caps
+    std::ofstream(paths->node_root / "node-settings.json.corrupt-1") << "x";
   };
   populate();
 
@@ -120,6 +122,7 @@ TEST_CASE("default layout: cleanup keeps a pairing identity, --purge removes it"
   CHECK_FALSE(fs::exists(paths->node_staging));                // model fragments never survive
   CHECK(fs::exists(paths->node_identity / "device_key.pem"));  // the pairing identity does, by default
   CHECK(fs::exists(paths->node_logs / "node.log"));
+  CHECK(fs::exists(paths->node_root / "node-settings.json"));
 
   populate();
   r = run(quote(kService) + " --cleanup --purge");

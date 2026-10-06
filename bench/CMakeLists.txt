@@ -43,9 +43,15 @@ if(WIN32)
 endif()
 
 add_executable(clusterlm-bench src/main.cpp src/cmd_basic.cpp src/cmd_transport.cpp src/cmd_cluster.cpp
-  src/cmd_cpu.cpp src/cmd_gpu.cpp src/cmd_calibrate.cpp src/cmd_placement_inputs.cpp)
+  src/cmd_cpu.cpp src/cmd_gpu.cpp src/cmd_calibrate.cpp src/cmd_placement_inputs.cpp src/cmd_baseline_llama.cpp)
 target_link_libraries(clusterlm-bench PRIVATE clusterlm_bench_harness clusterlm_planning clusterlm_father_service)
 target_compile_definitions(clusterlm-bench PRIVATE CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 clusterlm_set_warnings(clusterlm-bench)
+# `baseline llama-rpc` drives the pinned llama.cpp in-process and spawns the pinned rpc-server (built beside us).
+if(TARGET clusterlm_llama_client)
+  target_link_libraries(clusterlm-bench PRIVATE clusterlm_llama_client)
+  target_compile_definitions(clusterlm-bench PRIVATE CLUSTERLM_BENCH_HAS_LLAMA=1)
+  add_dependencies(clusterlm-bench clusterlm-llama-rpc-server)
+endif()
 # clusterlm-bench spawns clusterlm-node from its own directory.
 add_dependencies(clusterlm-bench clusterlm-node)

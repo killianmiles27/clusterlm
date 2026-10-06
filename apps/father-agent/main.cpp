@@ -1,10 +1,17 @@
 // clusterlm-father-agent: per-user background agent for ClusterLM Father.
 //
-// Hosts the Coordinator configuration and serves the Father UI over a local named pipe (Windows) / Unix socket
-// (development). The Father service API itself is another workstream: this process currently answers every UI
-// request with kUnimplemented, but the transport, access control and lifecycle are final.
+// Runs FatherService with the production providers (persisted settings, live readiness, config-driven
+// placement) and serves the Father UI over a local named pipe (Windows) / Unix socket (development). The IPC
+// protocol is documented in docs/father-ipc.md.
 //
-//   clusterlm-father-agent [--model DIR] [--user-tag TAG] [--ipc-dir DIR] [--node NAME=HOST:PORT]...
+//   clusterlm-father-agent [--settings FILE] [--identity DIR] [--catalog FILE] [--profiles-dir DIR]
+//                          [--user-tag TAG] [--ipc-dir DIR] [--exit-on-stdin-eof]
+//                          [--dev-fixture-model]
+//
+// --dev-fixture-model is a DEVELOPMENT override: the model directory configured for a tier holds the small
+// fixture model, which the reference backend can run. It marks the backend available, auto-confirms the unpinned
+// model and labels every affected tier. Without it no tier is ever Ready in this build ("backend not available
+// in this build").
 //
 // Stops on Ctrl-C / SIGTERM (console) or when its stdin closes with --exit-on-stdin-eof (harnesses).
 #include <atomic>
@@ -14,9 +21,13 @@
 
 #include "cli.hpp"
 #include "clusterlm/common/log.hpp"
-#include "clusterlm/platform/paths.hpp"
-#include "clusterlm/platform/service_host.hpp"
 #include "clusterlm/father/father_agent.hpp"
+#include "clusterlm/father/father_service_api.hpp"
+#include "clusterlm/platform/adapters.hpp"
+#include "clusterlm/platform/mock_adapters.hpp"
+#include "clusterlm/platform/paths.hpp"
+#include "clusterlm/platform/process.hpp"
+#include "clusterlm/platform/service_host.hpp"
 
 using namespace clusterlm;
 
@@ -53,39 +64,88 @@ class AgentApp final : public platform::ServiceApp {
   std::thread watcher_;
 };
 
+int fail(const Status& s) {
+  std::fprintf(stderr, "error: %s\n", s.to_string().c_str());
+  return 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   cli::Args args(argc, argv);
   log::set_component("father-agent");
-  father::FatherAgentConfig cfg;
-  cfg.coordinator.model_dir = args.get("model");
-  for (const auto& spec : args.all("node")) {
-    const auto eq = spec.find('=');
-    if (eq == std::string::npos) continue;
-    auto ep = transport::Endpoint::parse(spec.substr(eq + 1));
-    if (!ep.is_ok()) {
-      std::fprintf(stderr, "error: %s\n", ep.status().to_string().c_str());
-      return 2;
-    }
-    cfg.coordinator.nodes.push_back({spec.substr(0, eq), ep.value(), ""});
+  auto paths = platform::default_paths();
+  if (!paths.is_ok()) return fail(paths.status());
+
+  auto settings = config::FatherSettingsStore::open(args.get("settings", config::father_settings_path(paths.value()).string()));
+  if (!settings.is_ok()) return fail(settings.status());
+  if (settings.value()->report().outcome == config::LoadReport::Outcome::kRecoveredCorrupt)
+    std::fprintf(stderr, "warning: %s\n", settings.value()->report().note.c_str());
+  std::shared_ptr<config::FatherSettingsStore> settings_shared(std::move(settings).value());
+
+  const std::filesystem::path identity_dir = args.get("identity", paths->father_identity.string());
+  auto ident = transport::DeviceIdentity::load_or_generate(identity_dir, "clusterlm-father");
+  if (!ident.is_ok()) return fail(ident.status());
+  auto identity = std::make_shared<const transport::DeviceIdentity>(std::move(ident).value());
+
+  const std::filesystem::path catalog_path = args.get("catalog", (platform::executable_dir() / "clusterlm-catalog.json").string());
+  auto cat = catalog::Catalog::load(catalog_path.string());
+  if (!cat.is_ok()) return fail(cat.status());
+
+  const bool dev = args.has("dev-fixture-model");
+  auto api_slot = std::make_shared<std::atomic<father::FatherServiceApi*>>(nullptr);
+  father::ProductionOptions po;
+  po.settings = settings_shared;
+  po.identity = identity;
+  po.profiles_dir = args.get("profiles-dir", (platform::executable_dir() / "profiles").string());
+  po.dev_fixture_model = dev;
+  po.session_phase = [api_slot] {
+    auto* a = api_slot->load();
+    return a ? a->session_phase() : father::SessionPhase::kNone;
+  };
+#ifdef _WIN32
+  {
+    std::shared_ptr<platform::PowerMonitor> power = platform::make_windows_power_monitor();
+    po.father_power = [power] {
+      catalog::PowerState st;
+      auto s = power->sample();
+      if (s.is_ok()) {
+        st.on_ac = s->on_ac_power;
+        st.battery_saver = s->battery_saver;
+      }
+      return st;
+    };
   }
+#endif
+
+  father::FatherApiConfig ac;
+  ac.catalog = std::move(cat).value();
+  ac.settings = settings_shared;
+  ac.identity = identity;
+  ac.readiness = std::make_shared<father::LiveReadinessSource>(po);
+  ac.deployments = std::make_shared<father::ConfigDeploymentProvider>(po);
+  ac.details = po.details;
+  ac.dev_fixture_model = dev;
+  if (dev) {
+    auto tok = father::FixtureByteTokenizer::create(256);
+    if (!tok.is_ok()) return fail(tok.status());
+    ac.tokenizer = tok.value();
+  }
+  auto api = father::FatherServiceApi::create(std::move(ac));
+  if (!api.is_ok()) return fail(api.status());
+  api_slot->store(api.value().get());
+
+  father::FatherAgentConfig cfg;
   auto user = ipc::current_user_id();
   cfg.user_tag = args.get("user-tag", user.is_ok() ? user.value() : "default");
-  auto paths = platform::default_paths();
-  cfg.ipc_dir = args.get("ipc-dir", paths.is_ok() ? paths->ipc_dir.string() : std::string());
+  cfg.ipc_dir = args.get("ipc-dir", paths->ipc_dir.string());
+  auto agent = father::FatherAgent::create(std::move(cfg), *api.value());
+  if (!agent.is_ok()) return fail(agent.status());
+  api.value()->set_event_push([a = agent.value().get()](Bytes b) { a->broadcast(std::move(b)); });
 
-  father::UnimplementedFatherApi api;
-  auto agent = father::FatherAgent::create(std::move(cfg), api);
-  if (!agent.is_ok()) {
-    std::fprintf(stderr, "error: %s\n", agent.status().to_string().c_str());
-    return 1;
-  }
   AgentApp app(*agent.value(), args.has("exit-on-stdin-eof"));
   auto rc = platform::run_in_console(app, {});  // a per-user agent is an ordinary process, not an SCM service
-  if (!rc.is_ok()) {
-    std::fprintf(stderr, "error: %s\n", rc.status().to_string().c_str());
-    return 1;
-  }
+  api_slot->store(nullptr);
+  if (!rc.is_ok()) return fail(rc.status());
   return rc.value();
 }

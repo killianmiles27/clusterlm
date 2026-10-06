@@ -61,6 +61,7 @@ Windows pinned-memory behaviour.
 | [HQ-MTP-02](#hq-mtp-02) | Strata MTP drafter on the Father tail | Father | pending |
 | [HQ-P0D-01](#hq-p0d-01) | Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail | Father, Node G14, Node 3060 | pending |
 | [HQ-INSTALL-01](#hq-install-01) | Install both MSI packages on the real machines: service, firewall, ACLs, uninstall cleanliness | Father, Node G14, Node 3060 | pending |
+| [HQ-PAIR-01](#hq-pair-01) | Pairing on the real Windows LAN | Father, Node G14, Node 3060 | pending |
 
 ## Experiments
 
@@ -360,7 +361,7 @@ Windows pinned-memory behaviour.
 **Stock/pinned llama.cpp RPC baseline** — status: `pending`
 
 - **Purpose:** Establish the existing-runtime baseline with persistent RPC caches disabled; record allocation ownership and where spill executes.
-- **Command:** `clusterlm-bench baseline llama-rpc --pin third_party/upstream.json --model <model> --nodes <g14>,<3060> --out results/p0a.json`
+- **Command:** `clusterlm-bench baseline llama-rpc --pin third_party/upstream.json --model <model> --nodes <g14>:50052,<3060>:50052 --node-fs-report <g14-report>,<3060-report> --on-target --out results/p0a.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Fast, Strong and Ultra artifacts
 - **Measurements:**
@@ -770,3 +771,26 @@ Windows pinned-memory behaviour.
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-INSTALL-01"`; metrics `install.exit_code`, `install.prerequisites_needed`, `service.configured_as_specified`, `firewall.rule_scope_matches_spec`, `acl.staging_principals`, `uninstall.residual_service_rules_files`, `uninstall.staging_present_after`, `signing.state`
 - **Decision affected:** Whether the MSI sequencing (service control, custom actions, Run-key autostart) is correct on real Windows 11, the default uninstall data policy (ADR 0291), and what a release needs to be signed (ADR 0292).
 - **Acceptance:** both packages install with no prerequisite and no network; the service, rule, Run values and ACLs match the spec exactly; the uninstall leaves no service, firewall rule, Run value, process or staging data (pairing identity only without CLUSTERLM_PURGE); an upgrade keeps exactly one rule and the identity
+
+### HQ-PAIR-01
+
+**Pairing on the real Windows LAN** — status: `pending`
+
+- **Purpose:** Pair the G14 and the 3060 with Father over the real 1GbE LAN using the SPAKE2 pairing protocol; verify that fingerprints shown on both sides agree, that three wrong codes lock pairing mode, that a TLS relay cannot pair, and that unpairing revokes the Father immediately (no connection, no lease).
+- **Command:** `manual: docs/pairing.md#hq-pair-01 (clusterlm-node-service --pair on each Node; pairing.start through the Father agent pipe; a relay host running a TLS-terminating proxy for the MITM step)`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** none (fixture worker, no model)
+- **Measurements:**
+  - Pairing mode on each Node prints a code and the short fingerprint; Father pairs with the correct code; the short fingerprint Father stores equals the one the Node printed
+  - The Windows firewall rule 'ClusterLM Node pairing (TCP-In)' (installed by --install) admits the Father on the Private profile only and the Father reaches the pairing port; the rule is absent on the Public profile
+  - Three wrong codes in a row lock pairing mode (listener closed); the correct code is then refused until pairing mode is restarted locally
+  - A relay host terminating TLS with its own certificate between Father and Node cannot complete pairing even forwarding every message; the Node counts one failure
+  - After pairing the Node worker accepts only the paired Father fingerprint (a second Father identity is rejected at the TLS handshake)
+  - Unpair on the Node (--unpair, or `unpair` in console mode; service restart): the Father's open connections drop and a new connect fails within seconds; no lease remains and staging census is 0
+  - Unpair on the Father removes the Node and its tier assignments; the Node still trusts that Father until it is unpaired locally (documented behaviour)
+  - Pairing mode expires after 5 minutes without a successful pairing and the port closes
+  - node-settings.json and father-settings.json are owner-only per icacls and survive a reboot
+  - How the Node user starts pairing mode while the service runs as LocalService (the CLI flag runs in the service process; a tray/helper-pipe trigger is not implemented): record what works
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PAIR-01"`; metrics `pairing.fingerprint_match`, `pairing.lockout_after_failures`, `pairing.relay_rejected`, `pairing.unpair_revocation_ms`, `pairing.firewall_rule_profiles`
+- **Decision affected:** Whether the typed-address pairing UX and the 3-failure lockout are adequate on a real LAN; whether the pairing port needs discovery or a different firewall scope; whether unpair needs a Father->Node notification; how the Node UI triggers pairing mode on Windows.
+- **Acceptance:** fingerprints agree on both screens; lockout after exactly 3 failures; relay never pairs; unpair revokes in under 5 s with zero residual staging

@@ -292,7 +292,7 @@ struct Coordinator::Impl {
   Inbox results;  // StageResults from every Node's activation channel
   CoordinatorConfig cfg;
   std::unique_ptr<objects::CanonicalModelStore> store;
-  std::unique_ptr<domain::BackendAdapter> backend;
+  std::shared_ptr<domain::BackendAdapter> backend;
   std::shared_ptr<transport::SimulatedLink> egress_link;  // Father's single NIC, shared by all Node links
   std::vector<std::unique_ptr<RemoteNode>> nodes;
   std::optional<ClusterPlan> plan;
@@ -817,15 +817,7 @@ Result<std::unique_ptr<Coordinator>> Coordinator::create(CoordinatorConfig confi
   auto impl = std::make_unique<Impl>();
   impl->cfg = std::move(config);
   CLM_ASSIGN_OR_RETURN(impl->store, objects::CanonicalModelStore::open(impl->cfg.model_dir));
-  if (impl->cfg.backend_factory) {
-    CLM_ASSIGN_OR_RETURN(impl->backend, impl->cfg.backend_factory());
-    if (!impl->backend) return make_error(ErrorCode::kInternal, "backend_factory returned no adapter");
-  } else {
-    backends::BackendOptions bo;
-    bo.name = impl->cfg.backend;
-    bo.strata = impl->cfg.strata;
-    CLM_ASSIGN_OR_RETURN(impl->backend, backends::make_backend(bo));
-  }
+  impl->backend = impl->cfg.backend ? impl->cfg.backend : std::shared_ptr<domain::BackendAdapter>(domain::make_reference_backend());
   if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(impl->cfg.impairment->bandwidth_bytes_per_s);
   for (const auto& ep : impl->cfg.nodes) {
     auto n = std::make_unique<RemoteNode>();
@@ -947,14 +939,14 @@ std::uint64_t peak_rss_bytes() {
 Result<std::shared_ptr<domain::Drafter>> Coordinator::make_drafter() {
   auto& im = *impl_;
   if (!im.prepared || !im.plan) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
-  if (!im.cfg.backend_factory && im.cfg.backend == "reference") {
+  if (im.backend->info().name != "strata") {
     CLM_ASSIGN_OR_RETURN(auto d, domain::MtpFixtureDrafter::create(im.store->manifest(), *im.store));
     return std::shared_ptr<domain::Drafter>(std::move(d));
   }
   auto it = im.local.find(im.plan->stages.back().stage.value);
   if (it == im.local.end() || it->second->spec().role != domain::StageRole::kTail)
     return make_error(ErrorCode::kFailedPrecondition, "the plan has no Father tail domain");
-  CLM_ASSIGN_OR_RETURN(auto d, backends::make_backend_drafter(im.cfg.backend, *it->second));
+  CLM_ASSIGN_OR_RETURN(auto d, backends::make_backend_drafter(im.backend->info().name, *it->second));
   return std::shared_ptr<domain::Drafter>(std::move(d));
 }
 

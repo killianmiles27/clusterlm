@@ -47,6 +47,21 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  linux-llama-cpu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Fetch pinned llama.cpp
+        run: python3 scripts/fetch_upstream.py llama.cpp
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLUSTERLM_ENABLE_LLAMA=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   windows-msvc:
     runs-on: windows-latest
     steps:

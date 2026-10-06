@@ -66,6 +66,11 @@ struct SecurityConfig {
   std::shared_ptr<const DeviceIdentity> identity;  // required for kMutualTls
   std::vector<std::string> trusted_peers;          // device_ids (fingerprints) accepted as peers
   std::uint32_t max_payload = 64u * 1024u * 1024u; // initial per-connection frame payload limit
+  // PAIRING CHANNEL ONLY (orchestrator/pairing): both sides still present certificates (so each learns the
+  // other's fingerprint) but ANY certificate is accepted at the TLS layer, because neither side knows the other's
+  // fingerprint yet. The channel must carry nothing but the pairing exchange, which authenticates the peer
+  // itself and binds both fingerprints and the TLS exporter secret into its confirmation (ADR 0270).
+  bool pairing_channel = false;
   std::shared_ptr<TrustStore> dynamic_trust = std::make_shared<TrustStore>();
 
   void trust(std::string fingerprint) const { dynamic_trust->add(std::move(fingerprint)); }

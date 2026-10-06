@@ -102,6 +102,9 @@ class FramedConnection final : public Connection {
   }
 
   void set_max_payload(std::uint32_t m) override { max_payload_.store(m, std::memory_order_relaxed); }
+  Result<Bytes> export_keying_material(std::string_view label, std::size_t length) const override {
+    return stream_->export_keying_material(label, length);
+  }
 
  private:
   Status parse_header() {

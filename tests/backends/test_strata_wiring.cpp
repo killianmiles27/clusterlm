@@ -5,8 +5,8 @@
 //   * end to end generation: boundary transpose, token-free Node stages, commit with partial acceptance, release,
 //   * a backend that cannot prepare (kHardwareUnavailable, as the CUDA engine does without a device) reports its real
 //     error through prepare()/PlanReady and leaves nothing behind on Father or on the Node.
-// The injected adapter is the guarded test seam (CoordinatorConfig/NodeConfig::backend_factory); the fake engine is not
-// duplicated.
+// The injected adapter goes through CoordinatorConfig::backend (a shared BackendAdapter) and, on the Node, the guarded
+// NodeConfig::backend_factory test seam.
 #include <doctest/doctest.h>
 
 #include <atomic>
@@ -15,6 +15,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 
 #include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/backends/strata/strata_domain.hpp"
@@ -209,13 +210,9 @@ struct Cluster {
     c.model_dir = dir / "model";
     c.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;
     c.nodes = endpoints;
-    c.backend = "strata";
     c.request_timeout = std::chrono::milliseconds(3000);
     c.window_timeout = std::chrono::milliseconds(5000);
-    auto obs_copy = obs;
-    c.backend_factory = [obs_copy, father_refuses]() -> Result<std::unique_ptr<domain::BackendAdapter>> {
-      return std::unique_ptr<domain::BackendAdapter>(std::make_unique<FakeStrataBackend>(obs_copy, father_refuses));
-    };
+    c.backend = std::make_shared<FakeStrataBackend>(obs, father_refuses);  // the shared_ptr<BackendAdapter> field
     return c;
   }
 
@@ -273,8 +270,10 @@ TEST_CASE("Node worker and Coordinator refuse an unknown or unbuilt backend") {
   coordinator::CoordinatorConfig cc;
   cc.model_dir = dir / "model";
   cc.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;
-  cc.backend = "vulkan-magic";
-  CHECK(coordinator::Coordinator::create(cc).status().code() == ErrorCode::kInvalidArgument);
+  // (Father builds its backend from --backend through the factory before creating the Coordinator.)
+  backends::BackendOptions bad;
+  bad.name = "vulkan-magic";
+  CHECK(backends::make_backend(bad).status().code() == ErrorCode::kInvalidArgument);
   std::error_code ec;
   fs::remove_all(dir, ec);
 }

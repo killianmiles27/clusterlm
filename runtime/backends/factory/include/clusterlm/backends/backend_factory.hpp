@@ -3,6 +3,7 @@
 // worker and the Coordinator (Father prefix/tail) so `--backend <name>` means the same thing on every machine.
 //
 //   "reference"  the deterministic CPU backend (runtime/domain), always available;
+//   "llama"      make_llama_backend() when built with CLUSTERLM_ENABLE_LLAMA (Father-only Fast backend), else kUnimplemented;
 //   "strata"     make_strata_backend() when this build has CLUSTERLM_ENABLE_STRATA, otherwise kUnimplemented
 //                ("built without CLUSTERLM_ENABLE_STRATA"). On a host without a usable CUDA device the adapter exists
 //                but its domains refuse prepare() with kHardwareUnavailable - nothing here pretends otherwise.
@@ -14,6 +15,9 @@
 #include <string_view>
 #include <vector>
 
+#if defined(CLUSTERLM_FACTORY_HAS_LLAMA)
+#include "clusterlm/backends/llama_backend.hpp"
+#endif
 #include "clusterlm/backends/strata_backend.hpp"
 #include "clusterlm/common/status.hpp"
 #include "clusterlm/domain/backend_adapter.hpp"
@@ -25,9 +29,13 @@ struct BackendOptions {
   std::string name = "reference";
   // Used only by "strata". Father-only fields (ple_table_gguf, mtp_dir) are ignored on Nodes by the adapter itself.
   StrataBackendOptions strata;
+  // Used only by "llama" (present only in a CLUSTERLM_ENABLE_LLAMA build).
+#if defined(CLUSTERLM_FACTORY_HAS_LLAMA)
+  LlamaBackendOptions llama;
+#endif
 };
 
-// Names this code knows ("reference", "strata"), whether or not they are built in.
+// Names this code knows ("reference", "llama", "strata"), whether or not they are built in.
 std::vector<std::string> known_backend_names();
 // True when the named backend is compiled into this binary.
 bool backend_built(std::string_view name);

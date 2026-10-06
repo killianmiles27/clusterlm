@@ -21,7 +21,6 @@
 #include <string>
 #include <vector>
 
-#include "clusterlm/backends/strata_backend.hpp"
 #include "clusterlm/common/digest.hpp"
 #include "clusterlm/common/ids.hpp"
 #include "clusterlm/common/status.hpp"
@@ -35,6 +34,7 @@
 
 namespace clusterlm::domain {
 class Drafter;
+class BackendAdapter;
 }
 
 namespace clusterlm::coordinator {
@@ -70,16 +70,12 @@ struct ClusterPlan {
 
 struct CoordinatorConfig {
   std::filesystem::path model_dir;      // canonical model directory (manifest.json + shards)
+  // Backend that hosts Father's local prefix/tail domains. Null = the deterministic reference backend. A Father-only
+  // backend such as the llama.cpp Fast backend or Strata is supplied here (clusterlm-father builds it from --backend
+  // through backends::make_backend); it is shared, so it must outlive the Coordinator.
+  std::shared_ptr<domain::BackendAdapter> backend;
   transport::SecurityConfig security;
   std::vector<NodeEndpoint> nodes;
-  // Backend of Father's own prefix/tail domains: "reference" or "strata" (runtime/backends/factory). An unknown or
-  // unbuilt backend makes create() fail. `strata` carries the Strata engine options, including the Father-only PLE
-  // table GGUF (prefix) and MTP runtime directory (tail).
-  std::string backend = "reference";
-  backends::StrataBackendOptions strata;
-  // Test seam: when set, creates the BackendAdapter instead of the named backend (`backend` is then ignored). Lets
-  // tests drive Father's domains through StrataDomain with a fake engine. Never set in production.
-  std::function<Result<std::unique_ptr<domain::BackendAdapter>>()> backend_factory;
   bool direct_peer = true;              // Node->Node activation forwarding instead of Father relay
   std::optional<transport::NetworkConditions> impairment;  // simulation only
   std::shared_ptr<transport::FaultInjector> faults;

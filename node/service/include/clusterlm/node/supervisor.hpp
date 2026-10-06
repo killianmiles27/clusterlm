@@ -33,6 +33,8 @@ struct IdlePolicy {
 struct SupervisorConfig {
   std::filesystem::path worker_binary;
   std::vector<std::string> worker_args;  // listen/staging/identity/... (the supervisor adds --start-busy)
+  // Device ids (certificate fingerprints) of paired Fathers; each is passed to the worker as `--trust <id>`.
+  std::vector<std::string> trusted_peers;
   IdlePolicy policy;
   std::chrono::milliseconds cooperative_deadline{2000};
   std::chrono::milliseconds status_poll{20};
@@ -73,6 +75,12 @@ class NodeSupervisor {
   // The machine woke up. The worker is guaranteed Busy: nothing is offered until policy is satisfied again
   // (the next tick() must observe an eligible machine; callers should invalidate stale activity data first).
   Result<std::vector<SupervisorEvent>> on_resume();
+
+  // Pairing state change: replaces the trusted Father list. The running worker keeps the old list in memory, so
+  // it is revoked (cooperatively, then forcibly) and restarted with the new one: an unpaired Father loses every
+  // connection and lease immediately. The worker comes back Busy; policy re-offers it on the next tick.
+  Result<std::vector<SupervisorEvent>> set_trusted_peers(std::vector<std::string> fingerprints);
+  const std::vector<std::string>& trusted_peers() const { return cfg_.trusted_peers; }
 
   bool eligible() const { return eligible_; }
   bool suspended() const { return suspended_; }
