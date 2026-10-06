@@ -1,0 +1,85 @@
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index a85100c..1df9241 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -81,6 +81,8 @@ public:
+ 
+     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
+     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
++    /// ClusterLM patch 0002: `tokens` may be null on a TOKEN-FREE stage - one that neither embeds (layer 0) nor runs
++    /// the PLE block (layer 1), see `needs_tokens()`; such a stage never reads a token id.
+     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
+     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
+     bool copy_logits(int t, float* host) const;
+@@ -122,6 +124,9 @@ public:
+     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
+     /// and `final_R` are the last stage's.
+     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
++    /// ClusterLM patch 0002: whether this stage reads token ids - it embeds them (layer 0) or runs the PLE block
++    /// (layer 1).  A stage for which this is false takes `tokens == nullptr` in run / prestage / pl_launch.
++    bool needs_tokens() const { return lb_ == 0 || ple_stage(); }
+     /// floats per token in a hand-off buffer
+     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
+ 
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 2811c9c..08a2ffe 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -1619,7 +1619,10 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
+     int32_t* const pk = h_pos_ + (size_t) max_t_ * g.n_head;
+     int32_t* const pi = pk + (size_t) max_t_ * g.n_head_kv;
+     for (int t = 0; t < T; ++t) {
+-        h_tok_[t] = tokens[t];
++        // ClusterLM patch 0002: a token-free stage (no embedding, no PLE: lb_ > 1) is given no tokens.  Nothing it
++        // runs reads h_tok_ (only the layer-0 embedding gathers it) or last_tokens_ (only the PLE stage's commit), so
++        // both are left alone rather than filled with a fabricated token array.
++        if (tokens != nullptr) h_tok_[t] = tokens[t];
+         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
+         const int32_t pos_t = (int32_t) (pos0 + t);
+         for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = pos_t;
+@@ -1633,7 +1636,8 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
+     std::atomic_thread_fence(std::memory_order_seq_cst);
+     last_t_ = T;
+     last_pos0_ = pos0;
+-    for (int t = 0; t < T; ++t) last_tokens_[t] = tokens[t];
++    if (tokens != nullptr)
++        for (int t = 0; t < T; ++t) last_tokens_[t] = tokens[t];
+     staged_ = true;
+ }
+ 
+@@ -1683,6 +1687,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
+     last_batch_ = false;
+     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
++    if (tokens == nullptr && needs_tokens()) {   // ClusterLM patch 0002
++        err = "verify: this stage embeds the tokens or runs the PLE block, so it needs the window's tokens";
++        return false;
++    }
+     const ModelGeometry& g = *g_;
+     SessionState& ss = *ss_;
+     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
+@@ -2663,6 +2671,7 @@ void Verifier::pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_
+ bool Verifier::prestage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2], std::string& err) {
+     if (fl_active_) { err = "verify: a window is in flight on this verifier"; return false; }
+     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
++    if (tokens == nullptr && needs_tokens()) { err = "verify: this stage needs the window's tokens"; return false; }
+     if (pl_ple_rows_.empty()) { err = "verify: pipelined window not prepared (capture_all)"; return false; }
+     const Clock::time_point t0 = Clock::now();
+     pl_stage(T, tokens, pos0, ple_prev);
+@@ -2676,6 +2685,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
+     if (fl_active_) { err = "verify: a window is already in flight on this verifier"; return false; }
+     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
++    if (tokens == nullptr && needs_tokens()) { err = "verify: this stage needs the window's tokens"; return false; }
+     SessionState& ss = *ss_;
+     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
+     if (exec_[T] == nullptr || commit_exec_ == nullptr || ev_done_ == nullptr || pl_ple_rows_.empty()) {
+@@ -2685,7 +2695,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
+     const Clock::time_point t0 = Clock::now();
+     last_batch_ = false;
+     bool staged = pl_prestaged_ && last_t_ == T && last_pos0_ == pos0;
+-    for (int t = 0; staged && t < T; ++t) staged = last_tokens_[t] == tokens[t];
++    for (int t = 0; staged && tokens != nullptr && t < T; ++t) staged = last_tokens_[t] == tokens[t];
+     if (staged && ss.ple.ready() && ple_stage())
+         staged = pl_prev_[0] == ss.ple_prev[0] && pl_prev_[1] == ss.ple_prev[1];
+     pl_prestaged_ = false;

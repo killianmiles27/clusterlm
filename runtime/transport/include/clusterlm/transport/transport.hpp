@@ -73,6 +73,12 @@ class Connection {
   virtual PeerIdentity peer() const = 0;
   virtual ConnectionStats stats() const = 0;
   virtual void set_max_payload(std::uint32_t max_payload) = 0;
+  // RFC 5705 / RFC 8446 keying material exported from the TLS session (SSL_export_keying_material, empty
+  // context). Both ends derive the same bytes only if they share one TLS session, which is what lets the
+  // pairing protocol detect a relay. kUnimplemented on plain (insecure loopback) connections.
+  virtual Result<Bytes> export_keying_material(std::string_view /*label*/, std::size_t /*length*/) const {
+    return make_error(ErrorCode::kUnimplemented, "no TLS session on this connection");
+  }
 };
 
 class Listener {

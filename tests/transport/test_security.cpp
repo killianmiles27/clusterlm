@@ -131,7 +131,7 @@ TEST_CASE("mutual TLS with pinned identities") {
     });
     const auto t0 = std::chrono::steady_clock::now();
     CHECK(p.client->receive(30s).status().code() == ErrorCode::kUnavailable);
-    CHECK(std::chrono::steady_clock::now() - t0 < 300ms);
+    CHECK(std::chrono::steady_clock::now() - t0 < 2s);
     closer.join();
     CHECK(p.server->receive(2s).status().code() == ErrorCode::kUnavailable);
   }

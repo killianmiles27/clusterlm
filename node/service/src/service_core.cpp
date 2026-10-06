@@ -102,6 +102,19 @@ void ServiceCore::stop() {
   }
 }
 
+Status ServiceCore::set_trusted_fathers(std::vector<std::string> fingerprints, std::string paired_father_short) {
+  std::lock_guard lock(mu_);
+  cfg_.paired_father = std::move(paired_father_short);
+  if (!started_.load()) {
+    cfg_.supervisor.trusted_peers = fingerprints;
+    return supervisor_.set_trusted_peers(std::move(fingerprints)).status();
+  }
+  auto r = supervisor_.set_trusted_peers(std::move(fingerprints));
+  if (!r.is_ok()) return r.status();
+  emit(r.value());
+  return Status::ok();
+}
+
 void ServiceCore::handle_power_event(const platform::PowerEvent& event) {
   using K = platform::PowerEventKind;
   std::lock_guard lock(mu_);
@@ -153,7 +166,10 @@ ipc::NodeState ServiceCore::state() const {
 ipc::StatusReply ServiceCore::status() const {
   ipc::StatusReply s;
   s.state = state();
-  s.paired_father = cfg_.paired_father;
+  {
+    std::lock_guard lock(mu_);
+    s.paired_father = cfg_.paired_father;
+  }
   s.helper_reports_fresh = activity_.reports_fresh();
   if (!cfg_.staging_root.empty()) {
     auto census = platform::census_under(cfg_.staging_root);

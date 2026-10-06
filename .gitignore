@@ -7,3 +7,5 @@ __pycache__/
 /bench-results/
 /.claude/worktrees/
 /third_party/upstream/
+/packaging/out/
+/stage/

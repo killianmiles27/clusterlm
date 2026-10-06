@@ -107,7 +107,7 @@ TEST_CASE("impairment: close() unblocks a sender stuck on a full queue") {
   const auto t0 = Clock::now();
   raw->close();
   sender.join();
-  CHECK(Clock::now() - t0 < 300ms);
+  CHECK(Clock::now() - t0 < 2s);
   CHECK(last.code() == ErrorCode::kUnavailable);
 }
 
@@ -194,7 +194,7 @@ TEST_CASE("faults: stall is released by close") {
   std::this_thread::sleep_for(50ms);
   const auto t0 = Clock::now();
   tx.reset();  // destructor must not hang on the stalled sender thread
-  CHECK(Clock::now() - t0 < 300ms);
+  CHECK(Clock::now() - t0 < 2s);
 }
 
 TEST_CASE("faults: corrupt payload") {

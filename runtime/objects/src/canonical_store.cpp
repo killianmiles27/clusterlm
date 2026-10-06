@@ -5,6 +5,15 @@
 
 namespace clusterlm::objects {
 
+// A converted object (conversion_version > 0) is served as stored only when its shard already holds the converted
+// bytes - a Father-side pre-converted store (e.g. clusterlm-strata convert), recognisable by source == object digest.
+// Converting on the fly is not this store's job.
+namespace {
+bool served_as_stored(const ManifestObject& obj) {
+  return obj.representation.conversion_version == 0 || obj.source_digest == obj.object_digest;
+}
+}  // namespace
+
 Status verify_object_bytes(const ManifestObject& obj, ByteSpan bytes) {
   if (bytes.size() != obj.byte_size)
     return make_error(ErrorCode::kDataLoss, "object '" + obj.name + "': size mismatch");
@@ -66,8 +75,8 @@ Result<Bytes> CanonicalModelStore::load_unlocked(const ManifestObject& obj) cons
       return make_error(ErrorCode::kDataLoss, "object '" + obj.name + "': short read");
     pos += static_cast<std::size_t>(r.length);
   }
-  // Conversion (conversion_version > 0) would happen here; the fixture model has none.
-  if (obj.representation.conversion_version != 0)
+  // Conversion (conversion_version > 0) would happen here; only pre-converted objects are served.
+  if (!served_as_stored(obj))
     return make_error(ErrorCode::kUnimplemented, "object '" + obj.name + "': conversion not supported by this store");
   CLM_RETURN_IF_ERROR(verify_object_bytes(obj, out));
   return out;
@@ -77,7 +86,7 @@ Status CanonicalModelStore::stream_object(std::string_view name, std::size_t chu
                                           const std::function<Status(std::uint64_t, ByteSpan)>& sink) const {
   const ManifestObject* obj = manifest_.find(name);
   if (obj == nullptr) return make_error(ErrorCode::kNotFound, "unknown object '" + std::string(name) + "'");
-  if (obj->representation.conversion_version != 0)
+  if (!served_as_stored(*obj))
     return make_error(ErrorCode::kUnimplemented, "object '" + obj->name + "': conversion not supported by this store");
   if (chunk_bytes == 0) return make_error(ErrorCode::kInvalidArgument, "chunk size must be positive");
   Sha256 digest;

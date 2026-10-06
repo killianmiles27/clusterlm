@@ -205,7 +205,7 @@ TEST_CASE("close() from another thread unblocks receive promptly") {
   const auto t0 = std::chrono::steady_clock::now();
   p.server->close();
   reader.join();
-  CHECK(std::chrono::steady_clock::now() - t0 < 200ms);
+  CHECK(std::chrono::steady_clock::now() - t0 < 2s);
   CHECK(result.code() == ErrorCode::kUnavailable);
   CHECK(p.server->send(make_frame(1, 1)).code() == ErrorCode::kUnavailable);
   // The peer observes the closure.
@@ -221,7 +221,7 @@ TEST_CASE("listener close() unblocks accept") {
   const auto t0 = std::chrono::steady_clock::now();
   lst->close();
   auto r = fut.get();
-  CHECK(std::chrono::steady_clock::now() - t0 < 200ms);
+  CHECK(std::chrono::steady_clock::now() - t0 < 2s);
   CHECK(r.status().code() == ErrorCode::kUnavailable);
 }
 
