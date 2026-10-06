@@ -397,7 +397,9 @@
       "measurements": [
         "predicted vs measured decode/prefill/prepare per candidate",
         "both node orders",
-        "Father prefix/tail sizes"
+        "Father prefix/tail sizes",
+        "per-context-profile (4K..128K) prediction error and feasibility flips",
+        "per-stage local micro-batch versus measured VRAM headroom"
       ],
       "output": {
         "schema": "bench/schema/benchmark-result.schema.json",
@@ -408,6 +410,36 @@
         ]
       },
       "decision_affected": "Optimal layer boundaries, expert residency, recommended plan.",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-PLACE-02",
+      "title": "Placement model inputs: routing aggregates, batch workspace, per-q acceptance",
+      "purpose": "Replace the Synthetic model-side inputs of the placement search with measurements on the real artifact: aggregate per-layer expert selection frequencies (clusterlm.routing_aggregates.v1, aggregates only, never sequences), the per-token activation workspace a GPU domain needs per local micro-batch token (ModelCostInputs::batch_scratch_bytes_per_token), the Father per-round overhead, and acceptance (mean emitted tokens per round) for each verify width q = 1..4. Until these exist every plan built on them stays Synthetic.",
+      "command": "clusterlm-bench placement-inputs --model <ultra-dir> --corpus <held-out-prompts> --q 1,2,3,4 --out results/placement-inputs.json",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)",
+      "measurements": [
+        "per (layer, expert) selection frequency over held-out text, written as aggregate counts only",
+        "peak activation workspace versus local micro-batch size on each GPU",
+        "Father draft/embed/head/sampling milliseconds per round",
+        "acceptance per q = 1..4 with its variance"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-PLACE-02",
+        "metrics": [
+          "routing.aggregates",
+          "batch.workspace_bytes_per_token",
+          "father.round_overhead_ms",
+          "mtp.acceptance_by_q"
+        ]
+      },
+      "decision_affected": "Provenance of every plan Synthetic -> Measured on the model side; expert residency; chosen q and local batches.",
       "status": "pending"
     },
     {

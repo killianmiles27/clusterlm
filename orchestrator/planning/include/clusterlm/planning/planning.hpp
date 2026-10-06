@@ -10,6 +10,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "clusterlm/coordinator/coordinator.hpp"
@@ -21,12 +22,40 @@ namespace clusterlm::planning {
 
 struct CostInputOptions {
   // Measured aggregate routing frequencies (layer x expert, rows summing to n_active). Empty = uniform
-  // synthetic placeholder.
+  // synthetic placeholder. Normally filled by apply_routing_aggregates.
   std::vector<std::vector<double>> routing_freq;
   placement::Provenance routing_provenance = placement::Provenance::kSynthetic;
+  std::string routing_source;  // recorded in ModelCostInputs::source
   std::optional<placement::Quantity> draft_ms;  // measured Father per-round overhead; default synthetic
   std::uint64_t lookup_working_set_bytes = 0;   // Father SSD-backed lookup cache budget counted in RAM
 };
+
+// Aggregate routing statistics for placement: how often each (layer, expert) is selected per position. These
+// are the ONLY routing information any planner input may carry: no token ids, text, prompts, per-position or
+// per-sequence routing, and no per-request data. Loading rejects any field outside the schema below, so a
+// file holding sequences cannot be accepted by accident.
+//
+//   { "schema": "clusterlm.routing_aggregates.v1",
+//     "provenance": "synthetic" | "measured",       // "qualified" is refused: only mark_qualified qualifies
+//     "source": "bench:run-id",
+//     "n_layers": L, "n_experts": E, "n_active": K,
+//     "positions": N,                                // positions aggregated (required with "counts")
+//     "frequencies": [[...E...] x L]  |  "counts": [[...E...] x L] }   // counts / positions = frequency
+//
+// Rows must sum to n_active (frequencies: within 1e-3 relative, then renormalised exactly; counts: within
+// rounding of positions * n_active) and each entry lies in [0, 1].
+struct RoutingAggregates {
+  std::vector<std::vector<double>> frequencies;
+  placement::Provenance provenance = placement::Provenance::kSynthetic;
+  std::string source;
+  std::uint64_t positions = 0;  // 0 when the file gave frequencies only
+  std::uint32_t n_layers = 0, n_experts = 0, n_active = 0;
+};
+Result<RoutingAggregates> routing_aggregates_from_json(std::string_view json);
+Result<RoutingAggregates> load_routing_aggregates(const std::string& path);
+std::string to_json(const RoutingAggregates& a, int indent = 2);
+// Feeds the aggregates into cost_inputs_from_manifest (frequencies, provenance, source).
+void apply_routing_aggregates(CostInputOptions& options, const RoutingAggregates& aggregates);
 
 Result<placement::ModelCostInputs> cost_inputs_from_manifest(const objects::ModelManifest& manifest,
                                                              const CostInputOptions& options = {});

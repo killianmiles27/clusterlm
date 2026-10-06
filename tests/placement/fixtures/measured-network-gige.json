@@ -1,0 +1,69 @@
+{
+  "father_egress_bytes_per_s": {
+    "provenance": "measured",
+    "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+    "value": 110000000.0
+  },
+  "links": [
+    {
+      "bandwidth_bytes_per_s": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 95000000.0
+      },
+      "from": "Father-4060Ti-7600",
+      "jitter_ms": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 0.1
+      },
+      "rtt_ms": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 0.4
+      },
+      "to": "Node-G14-4070-8945HS"
+    },
+    {
+      "bandwidth_bytes_per_s": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 110000000.0
+      },
+      "from": "Father-4060Ti-7600",
+      "jitter_ms": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 0.1
+      },
+      "rtt_ms": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 0.4
+      },
+      "to": "Node-3060-5600"
+    },
+    {
+      "bandwidth_bytes_per_s": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 110000000.0
+      },
+      "from": "Node-G14-4070-8945HS",
+      "jitter_ms": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 0.1
+      },
+      "rtt_ms": {
+        "provenance": "measured",
+        "source": "test-fixture: hand-written to imitate `clusterlm-bench calibrate` output; NOT a hardware measurement",
+        "value": 0.4
+      },
+      "to": "Node-3060-5600"
+    }
+  ],
+  "note": "hand-written measured-provenance test fixture (values are test inputs, not hardware measurements)",
+  "schema": "clusterlm.network_profile.v1",
+  "synthetic": false
+}

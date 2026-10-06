@@ -48,6 +48,13 @@ Result<placement::ModelCostInputs> cost_inputs_from_manifest(const objects::Mode
       (std::uint64_t{g.residual_streams} * g.hidden_size + g.hidden_size + g.residual_streams) * 4;
   in.ple_layer = static_cast<std::int32_t>(g.ple_layer);
   if (!options.routing_freq.empty()) {
+    if (options.routing_freq.size() != g.n_layers)
+      return make_error(ErrorCode::kInvalidArgument, "routing aggregates cover " + std::to_string(options.routing_freq.size()) +
+                                                         " layers, the manifest has " + std::to_string(g.n_layers));
+    for (const auto& row : options.routing_freq)
+      if (row.size() != g.n_experts)
+        return make_error(ErrorCode::kInvalidArgument, "routing aggregates have " + std::to_string(row.size()) +
+                                                           " experts per layer, the manifest has " + std::to_string(g.n_experts));
     in.routing_freq = options.routing_freq;
   } else {
     in.routing_freq.assign(g.n_layers, std::vector<double>(g.n_experts, static_cast<double>(g.n_active_experts) /
@@ -59,7 +66,8 @@ Result<placement::ModelCostInputs> cost_inputs_from_manifest(const objects::Mode
   // are only as strong as the weakest of the two.
   in.provenance = options.routing_freq.empty() ? placement::Provenance::kSynthetic : options.routing_provenance;
   in.source = "manifest " + m.root_hash().hex().substr(0, 16) +
-              (options.routing_freq.empty() ? " + synthetic uniform routing" : " + supplied routing aggregates");
+              (options.routing_freq.empty() ? " + synthetic uniform routing"
+                                              : " + routing aggregates" + (options.routing_source.empty() ? std::string() : " (" + options.routing_source + ")"));
   CLM_RETURN_IF_ERROR(placement::validate(in));
   return in;
 }

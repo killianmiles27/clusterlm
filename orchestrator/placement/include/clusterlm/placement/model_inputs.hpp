@@ -38,6 +38,9 @@ struct ModelCostInputs {
   // Sequence-state bytes per context token, indexed by LayerKind.
   std::array<std::uint64_t, 2> state_bytes_per_context_token{};
   std::uint64_t boundary_bytes_per_position = 0;
+  // Activation workspace one token of a local micro-batch needs on a GPU domain (0 = not modelled: batch
+  // never constrains the domain). Reserved from VRAM headroom before the expert fill.
+  std::uint64_t batch_scratch_bytes_per_token = 0;
   // Highest layer index that consumes the per-layer-embedding lookup and therefore must stay
   // Father-resident (-1 = none). Placement keeps layers [0, ple_layer] in the Father prefix.
   std::int32_t ple_layer = -1;

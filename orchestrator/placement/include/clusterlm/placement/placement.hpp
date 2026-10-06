@@ -1,8 +1,9 @@
 #pragma once
 // Placement search: admission -> cost model -> candidate ranking.
 //
-// Pipeline shape searched: Father prefix -> [Node A -> [Node B ->]] Father tail, cut at `granularity` layers,
-// plus the Father-only plan. Every decision is a function of measured profiles and model inputs; no device
+// Pipeline shape searched: Father prefix -> Node A -> ... -> Node K (K <= max_remote_nodes, every ordered
+// subset of the nodes) -> Father tail, with prefix sizes, node ranges and tail sizes swept on a layer grid,
+// plus the Father-only plan. Workload-level sweeps (context profiles x verify widths) are in workload.hpp. Every decision is a function of measured profiles and model inputs; no device
 // name is ever consulted. Every output states its provenance, which is the weakest of every input used.
 // The search does NOT claim optimality on real hardware: it ranks candidates under the stated cost model.
 #include <cstdint>
@@ -47,14 +48,29 @@ struct PlacementRequest {
   NetworkProfile network;
   ModelCostInputs model;
 
-  std::uint32_t context_tokens = 4096;  // also the prompt length to prefill
+  std::uint32_t context_tokens = 4096;  // sequence capacity the plan must hold state for
+  std::uint32_t prompt_tokens = 0;      // tokens to prefill; 0 = context_tokens
   std::uint32_t q = 1;                  // speculative verify width
   Quantity acceptance = Quantity::synthetic(1.0);  // A: mean emitted tokens per round
   std::uint32_t output_tokens = 256;    // tokens one request generates (for T_request and lease share)
   std::uint32_t prefill_chunk = 512;
-  std::uint32_t granularity = 4;        // cut points are multiples of this from the prefix end
+  std::uint32_t granularity = 4;        // layer grid for cut points (see search_placements)
   bool allow_node_orders = true;        // try all node permutations (false: request order only)
   std::vector<std::uint32_t> prefix_layers_options{4};
+  // Prefix sweep. When true, prefix sizes are ALSO taken from the smallest legal prefix (ple_layer + 1, at
+  // least 1) and every multiple of `granularity` up to that minimum + prefix_sweep_span.
+  bool sweep_prefix = false;
+  std::uint32_t prefix_sweep_span = 8;
+  std::uint32_t max_remote_nodes = 3;   // plans use at most this many Nodes (0 = Father-only)
+  // Drop candidates that are dominated on every quantity the objective and the frontier read (prepare_s,
+  // effective_prepare_s, lease_overrun_s, prefill_s, decode_tok_s). Safe: the recommended plan and the Pareto
+  // frontier are unchanged. Off by default so callers that look plans up by key see every feasible one.
+  bool prune_dominated = false;
+  // Per-domain micro-batch (see MemoryLedger::batch_workspace): at most this fraction of a GPU domain's VRAM
+  // headroom (after dense, state and scratch) may be reserved for batch workspace, and a batch below
+  // min_local_batch (or below q) makes the domain inadmissible.
+  double batch_headroom_fraction = 0.25;
+  std::uint32_t min_local_batch = 16;
   // Fraction of min(cpu, dense+gpu) time hidden by overlap. 0 = conservative serial execution.
   double overlap_factor = 0.0;
 
@@ -75,17 +91,21 @@ struct PlanStage {
   friend bool operator==(const PlanStage&, const PlanStage&) = default;
 };
 
-// Per-domain memory ledger (bytes). VRAM = dense + gpu_experts + state + scratch_vram (a domain without a
-// usable GPU keeps dense+state in RAM instead). RAM = cpu_experts + staging + os_reserve + father_only
+// Per-domain memory ledger (bytes). VRAM = dense + gpu_experts + state + scratch_vram + batch_workspace (a
+// domain without a usable GPU keeps dense+state in RAM instead). RAM = cpu_experts + staging + os_reserve + father_only
 // (+ dense + state when no GPU).
 struct MemoryLedger {
   std::string domain_id;
   std::uint64_t dense = 0, gpu_experts = 0, cpu_experts = 0, state = 0, scratch_vram = 0, staging_ram = 0;
   std::uint64_t os_reserve_ram = 0, father_only = 0;
+  // Activation workspace for this domain's local micro-batch (local_batch * batch_scratch_bytes_per_token),
+  // reserved before the expert fill so a small GPU shrinks ITS batch instead of the cluster's chunk.
+  std::uint64_t batch_workspace = 0;
+  std::uint32_t local_batch = 0;  // tokens per local micro-batch (prefill chunk is split into ceil(chunk/local_batch))
   bool dense_on_gpu = true;
   std::uint64_t vram_budget = 0, ram_safe_allowance = 0;  // limits the ledger was admitted against
 
-  std::uint64_t vram_used() const { return (dense_on_gpu ? dense + state : 0) + gpu_experts + scratch_vram; }
+  std::uint64_t vram_used() const { return (dense_on_gpu ? dense + state : 0) + gpu_experts + scratch_vram + batch_workspace; }
   std::uint64_t ram_used() const {
     return cpu_experts + staging_ram + os_reserve_ram + father_only + (dense_on_gpu ? 0 : dense + state);
   }
@@ -105,6 +125,7 @@ struct StageMetrics {
   double dense_ms = 0;                 // sum dense_ms(kind) * (1 + dense_q_scaling*(q-1))
   double cpu_ms = 0;                   // CPU-resident expert union bytes / (cpu_bw*sustained) * (1+q_scaling*(q-1))
   double gpu_ms = 0;                   // GPU-resident expert union bytes / gpu_bw
+  std::uint32_t local_batch = 0;       // this stage's domain micro-batch (tokens)
   double stage_ms = 0;                 // dense + cpu + gpu - overlap_factor*min(cpu, dense+gpu)
   double cpu_miss_bytes_expected = 0;  // expected CPU-served expert bytes per round (q-position union)
   double gpu_hit_bytes_expected = 0;
@@ -140,6 +161,8 @@ struct PredictedMetrics {
 
 struct PlacementPlan {
   std::string key;  // human-readable, e.g. "F[0,4)>Node-A[4,20)>F[20,48)"
+  // The workload point this plan was costed at.
+  std::uint32_t q = 1, context_tokens = 0, prompt_tokens = 0, output_tokens = 0;
   std::vector<PlanStage> stages;
   std::vector<MemoryLedger> ledgers;      // one per domain, pipeline order
   std::vector<ExpertResidency> residency; // one per domain, pipeline order
@@ -166,7 +189,11 @@ struct PlanEvaluation {
 struct PlacementResult {
   std::vector<PlacementPlan> candidates;  // feasible, sorted by objective (ties by plan_hash)
   std::vector<RejectedPlan> rejected;
-  std::vector<std::size_t> pareto;        // indices into candidates, prepare_s ascending (decode_tok_s ascending too)
+  // Indices into candidates of the 3-D Pareto frontier: minimise prepare_s, maximise decode_tok_s, minimise
+  // prefill_s. Ordered by prepare_s ascending, then decode_tok_s descending, then prefill_s ascending.
+  std::vector<std::size_t> pareto;
+  std::uint64_t enumerated = 0;           // stage assignments costed or rejected
+  std::uint64_t pruned_dominated = 0;     // feasible candidates dropped by prune_dominated
   std::optional<std::size_t> best_throughput, best_preparation, recommended;
   Provenance provenance = Provenance::kSynthetic;  // weakest over the request's inputs
 
@@ -177,8 +204,19 @@ struct PlacementResult {
 // Admits and costs one explicit stage assignment (tests, re-evaluation of a stored plan).
 PlanEvaluation evaluate_plan(const PlacementRequest& request, const std::vector<PlanStage>& stages);
 
-// Enumerates Father-only, single-node and two-node plans. Fails only for an invalid request.
+// Enumerates the Father-only plan and every ordered subset of up to max_remote_nodes Nodes.
+//
+// Grid: prefix sizes come from prefix_layers_options (+ the sweep); node range ends and therefore the Father
+// tail size are drawn from the cut set {c : prefix < c < N and ((c - prefix) % g == 0 or c % g == 0 or
+// (N - c) % g == 0)} plus N (empty tail), g = granularity. Complexity: O(P * K! * C(|cuts|, K) * C(N_nodes, K))
+// stage assignments (P prefixes, K remote nodes), each costed in O(layers) from memoised per-(domain, ranges)
+// admission and residency, so a 48-layer / 3-Node search at g = 4 costs a few thousand cheap evaluations.
+// Fails only for an invalid request.
 Result<PlacementResult> search_placements(const PlacementRequest& request);
+
+// 3-D Pareto frontier over (prepare_s min, decode_tok_s max, prefill_s min) of plans (indices, ordering as
+// PlacementResult::pareto). Equal-metric plans keep only the earliest index.
+std::vector<std::size_t> pareto_frontier(const std::vector<const PlacementPlan*>& plans);
 
 // Fails for any plan with a non-Qualified input. Synthetic or merely Measured plans must never be presented
 // as qualified decisions.

@@ -36,6 +36,7 @@ Windows pinned-memory behaviour.
 | [HQ-NUM-01](#hq-num-01) | Numerical correctness of distributed execution on the real artifact | Father, Node G14, Node 3060 | pending |
 | [HQ-MTP-01](#hq-mtp-01) | MTP acceptance and verification cost | Father, Node G14, Node 3060 | pending |
 | [HQ-PLACE-01](#hq-place-01) | Placement calibration: predicted versus measured | Father, Node G14, Node 3060 | pending |
+| [HQ-PLACE-02](#hq-place-02) | Placement model inputs: routing aggregates, batch workspace, per-q acceptance | Father, Node G14, Node 3060 | pending |
 | [HQ-P0A-01](#hq-p0a-01) | Stock/pinned llama.cpp RPC baseline | Father, Node G14, Node 3060 | pending |
 | [HQ-P0B-01](#hq-p0b-01) | Strata local hybrid baseline and partial-domain microbenchmarks | Father, Node G14, Node 3060 | pending |
 | [HQ-P0C-01](#hq-p0c-01) | Grouped expert-domain barrier cost | Father, Node G14, Node 3060 | pending |
@@ -273,8 +274,26 @@ Windows pinned-memory behaviour.
   - predicted vs measured decode/prefill/prepare per candidate
   - both node orders
   - Father prefix/tail sizes
+  - per-context-profile (4K..128K) prediction error and feasibility flips
+  - per-stage local micro-batch versus measured VRAM headroom
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PLACE-01"`; metrics `placement.prediction_error`, `placement.best_plan`
 - **Decision affected:** Optimal layer boundaries, expert residency, recommended plan.
+
+### HQ-PLACE-02
+
+**Placement model inputs: routing aggregates, batch workspace, per-q acceptance** — status: `pending`
+
+- **Purpose:** Replace the Synthetic model-side inputs of the placement search with measurements on the real artifact: aggregate per-layer expert selection frequencies (clusterlm.routing_aggregates.v1, aggregates only, never sequences), the per-token activation workspace a GPU domain needs per local micro-batch token (ModelCostInputs::batch_scratch_bytes_per_token), the Father per-round overhead, and acceptance (mean emitted tokens per round) for each verify width q = 1..4. Until these exist every plan built on them stays Synthetic.
+- **Command:** `clusterlm-bench placement-inputs --model <ultra-dir> --corpus <held-out-prompts> --q 1,2,3,4 --out results/placement-inputs.json`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Measurements:**
+  - per (layer, expert) selection frequency over held-out text, written as aggregate counts only
+  - peak activation workspace versus local micro-batch size on each GPU
+  - Father draft/embed/head/sampling milliseconds per round
+  - acceptance per q = 1..4 with its variance
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PLACE-02"`; metrics `routing.aggregates`, `batch.workspace_bytes_per_token`, `father.round_overhead_ms`, `mtp.acceptance_by_q`
+- **Decision affected:** Provenance of every plan Synthetic -> Measured on the model side; expert residency; chosen q and local batches.
 
 ### HQ-P0A-01
 
