@@ -485,7 +485,20 @@ struct Coordinator::Impl {
     CLM_ASSIGN_OR_RETURN(auto p, plan_message(n, s));
     CLM_RETURN_IF_ERROR(n.control->call<protocol::PlanAccepted>(p, cfg.request_timeout).status());
     CLM_ASSIGN_OR_RETURN(n.provision, open_channel(n, Channel::kProvision, true));
-    CLM_RETURN_IF_ERROR(provision_node(n, p));
+    if (Status pst = provision_node(n, p); !pst.is_ok()) {
+      // A Node that fails to prepare (e.g. a backend without its hardware) reports the real reason on the control
+      // channel and releases its lease; the provision channel then only sees a stale lease. Prefer the reported reason.
+      auto reported = n.control->inbox.wait(
+          [](const ReceivedMessage& r) {
+            return r.correlation == 0 && std::holds_alternative<protocol::ErrorMessage>(r.message);
+          },
+          std::chrono::milliseconds(500));
+      if (reported.is_ok()) {
+        const auto& e = std::get<protocol::ErrorMessage>(reported->message);
+        return make_error(e.code, e.message);
+      }
+      return pst;
+    }
     // PlanReady (or a prepare failure) arrives unsolicited on the control channel.
     CLM_ASSIGN_OR_RETURN(auto ready, n.control->inbox.wait(
                                          [](const ReceivedMessage& r) {

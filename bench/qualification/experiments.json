@@ -1180,7 +1180,7 @@
       "id": "HQ-P0D-01",
       "title": "Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail",
       "purpose": "Run the Ultra tier end to end through clusterlm-father with every domain on the Strata backend: the Father prefix (embedding, PLE), two token-free Node middle domains provisioned with only their converted objects, and the Father tail (head, sampling, MTP); compare tokens with the single-machine numerics reference and measure decode.",
-      "command": "build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && clusterlm-node --name g14 --listen <g14-ip>:7001 --staging <dir> --backend strata --identity <dir> & clusterlm-node --name n3060 --listen <3060-ip>:7001 --staging <dir> --backend strata --identity <dir> & clusterlm-father --model <ultra-dir> --backend strata --node g14=<g14-ip>:7001 --node n3060=<3060-ip>:7001 --plan 0-12@father,12-30@0,30-40@1,40-48@father --q 4 --max-new 512 --trust <fp> --out results/p0d.json",
+      "command": "build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && clusterlm-node --name g14 --listen <g14-ip>:7001 --staging <dir> --backend strata --identity <dir> --trust <father-fp> & clusterlm-node --name n3060 --listen <3060-ip>:7001 --staging <dir> --backend strata --identity <dir> --trust <father-fp> & clusterlm-father --model <ultra-dir> --backend strata --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --plan 0-12@father,12-30@0,30-40@1,40-48@father --q 4 --max-new 512 (record the printed tokens and timings with clusterlm-bench numerics --reference for the comparison)",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -1202,7 +1202,7 @@
           "node.staged_bytes_after_release"
         ]
       },
-      "acceptance": "Prerequisite: `--backend strata` in clusterlm-father / clusterlm-node (coordinator and Node integration of make_strata_backend; outside WP6). Then: identical greedy tokens to the single-machine reference and zero staged bytes after release.",
+      "acceptance": "`--backend strata` is wired into clusterlm-father and clusterlm-node (WP17; Father-only flags --strata-ple-gguf and --strata-mtp-dir, device flags --cuda-device, --vram-reserve-mib, --strata-cpu-threads; both sides must run the same build, the backend build hash is checked at PreparePlan). Needs the -DCLUSTERLM_ENABLE_STRATA=ON build on all three machines. Then: identical greedy tokens to the single-machine reference and zero staged bytes after release.",
       "decision_affected": "Ultra tier viability on the Strata stage design (P0-D).",
       "status": "pending"
     },

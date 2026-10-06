@@ -13,6 +13,8 @@
 
 using namespace clusterlm;
 using namespace clusterlm::placement;
+using clusterlm::bench::load_result_schema;
+using clusterlm::bench::validate_against_schema;
 using nlohmann::json;
 
 #ifdef CLUSTERLM_BENCH_RESULTS_DIR

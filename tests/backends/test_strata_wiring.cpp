@@ -386,7 +386,9 @@ TEST_CASE("a Strata backend without a device on a Node: PlanReady carries the re
   REQUIRE(c.connect().is_ok());
   auto prep = c.prepare(cl.plan());
   REQUIRE_FALSE(prep.is_ok());
+  CAPTURE(prep.status().to_string());
   CHECK(prep.status().code() == ErrorCode::kHardwareUnavailable);
+  CHECK(prep.status().message().find("CUDA") != std::string::npos);
   CHECK_FALSE(c.ready());
   // Father's own domains were released, the Nodes hold no objects.
   CHECK(cl.obs->get(StageRole::kPrefix).prepared == cl.obs->get(StageRole::kPrefix).released);
