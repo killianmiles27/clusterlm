@@ -1,4 +1,4 @@
-set(CLUSTERLM_PLATFORM_SOURCES src/mapped_file.cpp src/durable_file.cpp src/fs_safety.cpp)
+set(CLUSTERLM_PLATFORM_SOURCES src/mapped_file.cpp src/durable_file.cpp src/fs_safety.cpp src/process.cpp)
 set(CLUSTERLM_PLATFORM_PRIVATE_DEPS)
 if(WIN32)
   # Real Windows adapters (GetLastInputInfo, GetSystemPowerStatus, Job Objects, DXGI). Not buildable on Linux CI.
