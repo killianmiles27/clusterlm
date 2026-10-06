@@ -21,6 +21,14 @@
 #include "clusterlm/platform/process.hpp"
 #include "clusterlm/transport/transport.hpp"
 
+// Defined by CMake; the fallbacks only let the Windows syntax check (scripts/check_windows_compile.sh) compile this file.
+#ifndef CLUSTERLM_NODE_SERVICE_BINARY
+#define CLUSTERLM_NODE_SERVICE_BINARY "clusterlm-node-service.exe"
+#endif
+#ifndef CLUSTERLM_FATHER_AGENT_BINARY
+#define CLUSTERLM_FATHER_AGENT_BINARY "clusterlm-father-agent.exe"
+#endif
+
 using namespace clusterlm;
 using namespace std::chrono_literals;
 using nlohmann::json;
