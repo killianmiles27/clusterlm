@@ -83,6 +83,25 @@ jobs:
       - name: Compile every source for Windows (-fsyntax-only, warnings as errors)
         run: scripts/check_windows_compile.sh
 
+  linux-strata-cuda-build:
+    # The Strata backend against the pinned, patched upstream (docs/backends/strata-port.md). The runner has no GPU:
+    # everything compiles and links, the CPU kernel parity tests run, device cases report a skip.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev nvidia-cuda-toolkit g++-12
+      - name: Fetch upstream and apply the ClusterLM patches
+        run: python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+          -DCLUSTERLM_ENABLE_STRATA=ON -DCMAKE_CUDA_HOST_COMPILER=g++-12 "-DCMAKE_CUDA_ARCHITECTURES=86;89"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   qualification-doc:
     runs-on: ubuntu-24.04
     steps:

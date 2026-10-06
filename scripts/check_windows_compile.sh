@@ -18,7 +18,8 @@ done
 
 # CUDA/vendor-gated backends are not part of the Windows CPU build.
 # CUDA-gated adapters only; runtime/backends/strata-layout is plain C++ and always built.
-skip_re='^(runtime/backends/(strata|llama)/|bench/src/gpu_probe_cuda\.cpp$)'
+# Tests that compile against the fetched Strata sources (CUDA / Strata headers) are gated the same way.
+skip_re='^(runtime/backends/(strata|llama)/|bench/src/gpu_probe_cuda\.cpp$|tests/backends/test_strata_(cpu_kernels|convert|cuda)\.cpp$)'
 
 flags=(-std=c++20 -fsyntax-only -D_WIN32_WINNT=0x0A00 -DWIN32_LEAN_AND_MEAN -DNOMINMAX
        -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Werror)

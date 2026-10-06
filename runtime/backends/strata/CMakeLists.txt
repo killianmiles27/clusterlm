@@ -1,33 +1,31 @@
-# Strata backend adapter. Built only with -DCLUSTERLM_ENABLE_STRATA=ON; requires CUDA and the fetched
-# upstream checkout (python3 scripts/fetch_upstream.py). Not part of the default Linux CI build.
-if(NOT CLUSTERLM_ENABLE_STRATA)
+# Strata backend, the parts built against the pinned, patched Strata checkout (see runtime/backends/CMakeLists.txt):
+#   clusterlm_strata_cpu      CpuExpertKernel over Strata's CPU kernels, and the Father-side model conversion
+#                             (Strata pack + GGUF -> ClusterLM model directory)   CLUSTERLM_ENABLE_STRATA_CPU or _STRATA
+#   clusterlm_backend_strata  the CUDA engine + BackendAdapter                     CLUSTERLM_ENABLE_STRATA
+#   clusterlm-strata          probe / cpu-experts / convert, and with CUDA requirements / numerics
+if(NOT CLUSTERLM_ENABLE_STRATA AND NOT CLUSTERLM_ENABLE_STRATA_CPU)
   return()
 endif()
 
-set(_strata_src ${PROJECT_SOURCE_DIR}/third_party/upstream/strata)
-if(NOT EXISTS ${_strata_src}/CMakeLists.txt)
-  message(FATAL_ERROR "CLUSTERLM_ENABLE_STRATA=ON but the pinned Strata checkout is missing at ${_strata_src}. "
-                      "Run: python3 scripts/fetch_upstream.py strata")
+clusterlm_module(clusterlm_strata_cpu
+  SOURCES src/cpu_expert_kernel.cpp src/convert.cpp
+  DEPS clusterlm_strata_core clusterlm_objects
+  PRIVATE_DEPS clusterlm_platform strata_kernels_cpu strata_artifact)
+
+if(CLUSTERLM_ENABLE_STRATA)
+  clusterlm_module(clusterlm_backend_strata
+    SOURCES src/strata_backend.cpp
+    DEPS clusterlm_strata_core clusterlm_strata_cpu clusterlm_domain
+    PRIVATE_DEPS strata_engine CUDA::cudart)
+  target_compile_definitions(clusterlm_backend_strata PRIVATE CLUSTERLM_STRATA_PIN="${CLUSTERLM_STRATA_PIN}")
 endif()
-include(CheckLanguage)
-check_language(CUDA)
-if(NOT CMAKE_CUDA_COMPILER)
-  message(FATAL_ERROR "CLUSTERLM_ENABLE_STRATA=ON requires the CUDA toolkit (no CUDA compiler found). "
-                      "Strata's kernels cannot be built without it; use the reference backend instead.")
+
+add_executable(clusterlm-strata tools/clusterlm_strata.cpp)
+target_link_libraries(clusterlm-strata PRIVATE clusterlm_strata_cpu clusterlm_strata_core clusterlm_objects clusterlm_domain
+                      clusterlm_platform clusterlm_third_party)
+target_compile_definitions(clusterlm-strata PRIVATE CLUSTERLM_STRATA_PIN="${CLUSTERLM_STRATA_PIN}")
+if(CLUSTERLM_ENABLE_STRATA)
+  target_link_libraries(clusterlm-strata PRIVATE clusterlm_backend_strata CUDA::cudart)
+  target_compile_definitions(clusterlm-strata PRIVATE CLUSTERLM_STRATA_HAVE_CUDA=1)
 endif()
-
-file(READ ${PROJECT_SOURCE_DIR}/third_party/upstream.json _pins)
-string(JSON _strata_pin GET "${_pins}" pins strata commit)
-
-# Strata sets global compile definitions/standard in its top-level CMakeLists; its targets are built from a
-# subdirectory and excluded from `all` so only what the adapter links is compiled.
-set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
-set(STRATA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory(${_strata_src} ${CMAKE_BINARY_DIR}/third_party/strata EXCLUDE_FROM_ALL)
-
-clusterlm_module(clusterlm_backend_strata
-  SOURCES src/strata_backend.cpp
-  DEPS clusterlm_common clusterlm_domain
-  PRIVATE_DEPS strata_core strata_kernels CUDA::cudart)
-target_compile_definitions(clusterlm_backend_strata PRIVATE
-  CLUSTERLM_STRATA_HAVE_CUDA=1 CLUSTERLM_STRATA_PIN="${_strata_pin}")
+clusterlm_set_warnings(clusterlm-strata)

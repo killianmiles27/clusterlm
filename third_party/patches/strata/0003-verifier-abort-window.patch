@@ -1,0 +1,141 @@
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index 1df9241..05b6ae3 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -133,6 +133,27 @@ public:
+     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
+     bool commit(int n_keep, std::string& err);
+ 
++    /// ClusterLM patch 0003: DROP the last window and keep the session at its committed state, i.e. exactly where it
++    /// was before the window ran.  What a window changes, and how this undoes it:
++    ///   * GDN conv history and recurrent state: untouched by a window (commit replays the kept rows) - nothing to do,
++    ///     provided the one-token self-commit is off (`set_self_commit(false)` before `init`); with it on, a
++    ///     one-token window advanced the state itself and this refuses.
++    ///   * the QSA indexer key tail: restored from the window's own pre-window snapshot (`tail_snap_`), which is what
++    ///     commit does before it re-appends the kept keys - here none are re-appended.
++    ///   * the PLE history (the stage holding layer 1): restored from a pre-window snapshot taken by the window graph.
++    ///     `ss.ple_prev` only advances at commit, so it is already the committed one.
++    ///   * K/V cells at pos0..pos0+T-1: left as they are; they are rewritten when those positions run again, before
++    ///     any query reads them (the same rule a partial commit relies on).
++    /// Waits for the restore.  A no-op when no window is outstanding (after a commit or an earlier abort).  Continues
++    /// into the next stage when chained.  Solo windows (`run`) only; batch and pipelined windows are refused.
++    bool abort_window(std::string& err);
++    /// ClusterLM patch 0003: allow (default) or forbid the one-token window's self-commit (F7).  Off, a one-token
++    /// window leaves the GDN state alone like every other window and commits through the commit graph, so it can be
++    /// aborted.  Before `init` (the T = 1 graph bakes it in).
++    void set_self_commit(bool on) { self_commit_ok_ = on; }
++    /// Whether a window is outstanding (run, neither committed nor aborted).
++    bool window_outstanding() const { return window_open_; }
++
+     // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
+     //
+     // A batch window holds S INDEPENDENT sequences, one token each: row s is slot s, at slot s's own position,
+@@ -376,6 +397,9 @@ private:
+     float* ple_val_ = nullptr;
+     int last_t_ = 0;
+     int64_t last_pos0_ = 0;
++    bool self_commit_ok_ = true;   ///< ClusterLM patch 0003: set_self_commit
++    bool window_open_ = false;     ///< ClusterLM patch 0003: a solo window was launched and not yet committed/aborted
++    float* hist_pre_ = nullptr;    ///< ClusterLM patch 0003: the PLE history before the window (NG_HIST * NG_HC_DIM)
+     int32_t last_tokens_[8] = {};
+     int64_t n_vocab_ = 0;
+     cudaStream_t cs_ = nullptr;
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 08a2ffe..317261a 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -503,6 +503,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+         arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
+         one_ = b.take<int32_t>(4);
+         hist_snap_ = b.take<float>(T * HS);
++        hist_pre_ = b.take<float>(HS);   // ClusterLM patch 0003
+         ple_key_ = b.take<float>(T * (uint64_t) strata::kernels::NG_HC_DIM); ple_val_ = b.take<float>(T * N);
+     };
+     Bump count;
+@@ -648,7 +649,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+     const bool ple_on = ss.ple.ready() && ple_stage();
+     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
+     const int G = (split_ && T >= 2 && !batch_rec_) ? 2 : 1;   // a batch window is one group
+-    const bool self_commit = T == 1 && !batch_rec_ && !g_qfuse() && one_token_self_commit();   // see Verifier::commit
++    const bool self_commit = T == 1 && !batch_rec_ && !g_qfuse() && one_token_self_commit() && self_commit_ok_;   // see Verifier::commit
+     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
+     auto stamp = [&](int64_t l, int i, int grp) {
+         if (prof_on_ && grp == 0) gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
+@@ -778,6 +779,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+             // #783 PR-g (stuchapin909): the window's residual writes in one launch (STRATA_NO_MULTI_GR=1: per token)
+             const bool multi_write = dec_batch && !g_no_multi_gr && n > 1;
+             if (multi_write) gr_write_multi(Rt(tb), bo_ + tb * N, inj2_ + tb * HC, gs, Rt(tb), n, cs);
++            // ClusterLM patch 0003: the history as the window found it, for abort_window (a solo window's rows share
++            // one history; group A comes first)
++            if (grp == 0 && !batch_rec_) copy_from_mapped(hist_pre_, ss.ple.hist, HS, cs);
+             for (int t = tb; t < te; ++t) {
+                 if (batched) { pw.pre_key = ple_key_ + (size_t) t * NG_HC_DIM; pw.pre_value = ple_val_ + t * N; }
+                 if (!multi_write) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+@@ -1717,6 +1721,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
+     ms_host += ms_since(t0);
+     VDBG("staged; launching\n");
+     if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
++    window_open_ = true;   // ClusterLM patch 0003: from the launch on, the session holds this window's changes
+     const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[T] : exec_[T], cs_);
+     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
+     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
+@@ -2022,7 +2027,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
+     h_commit_[0] = n_keep;
+     h_commit_[1] = n_keep - 1;
+     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
+-    if (last_t_ == 1 && one_token_self_commit()) {
++    if (last_t_ == 1 && one_token_self_commit() && self_commit_ok_) {
+         // a one-token window has advanced the state itself (record_window): no commit graph
+     } else {
+         std::atomic_thread_fence(std::memory_order_seq_cst);
+@@ -2047,9 +2052,50 @@ bool Verifier::commit(int n_keep, std::string& err) {
+             ss_->ple_prev[1] = last_tokens_[t];
+         }
+     ms_commit += ms_since(t0);
++    window_open_ = false;   // ClusterLM patch 0003: the window is no longer outstanding (abort_window is a no-op)
+     return next_ == nullptr || next_->commit(n_keep, err);
+ }
+ 
++bool Verifier::abort_window(std::string& err) {   // ClusterLM patch 0003: see the header
++    const OnDevice on_device(device_);
++    if (g_ == nullptr || ss_ == nullptr) { err = "verify: abort_window before init"; return false; }
++    if (last_batch_) { err = "verify: abort_window is for solo windows (the last one was a batch window)"; return false; }
++    if (fl_active_) { err = "verify: abort_window with a pipelined window in flight"; return false; }
++    if (window_open_) {
++        if (last_t_ == 1 && one_token_self_commit() && self_commit_ok_) {
++            err = "verify: a one-token window advanced the state itself; it cannot be aborted (set_self_commit(false))";
++            return false;
++        }
++        using namespace strata::kernels;
++        const ModelGeometry& g = *g_;
++        SessionState& ss = *ss_;
++        const QsaShapes s = shapes_of(g);
++        const int64_t TS = (s.idx_block - 1) * g.idx_key_dim;
++        const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
++        int64_t qsa_index = 0;
++        for (int64_t l = 0; l < lb_; ++l) qsa_index += is_qsa_layer(g, l) ? 1 : 0;
++        bool ok = true;
++        for (int64_t l = lb_; l < le_ && ok; ++l) {
++            if (!is_qsa_layer(g, l)) continue;
++            const QsaState& st = ss.qsa_states[qsa_index];
++            ok = cudaMemcpyAsync(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, (size_t) TS * sizeof(float),
++                                 cudaMemcpyDeviceToDevice, cs_) == cudaSuccess;
++            ++qsa_index;
++        }
++        if (ok && ss.ple.ready() && ple_stage())
++            ok = cudaMemcpyAsync(ss.ple.hist, hist_pre_, (size_t) HS * sizeof(float), cudaMemcpyDeviceToDevice, cs_) ==
++                 cudaSuccess;
++        const cudaError_t se = cudaStreamSynchronize(cs_);
++        if (!ok || se != cudaSuccess) {
++            err = std::string("verify: abort_window restore failed: ") + cudaGetErrorString(ok ? se : cudaGetLastError());
++            return false;
++        }
++        window_open_ = false;
++        staged_ = false;
++    }
++    return next_ == nullptr || next_->abort_window(err);
++}
++
+ bool Verifier::wait_commit(std::string& err) {
+     if (commit_pending_) {
+         const OnDevice on_device(device_);

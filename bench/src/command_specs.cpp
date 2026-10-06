@@ -88,27 +88,55 @@ std::string validate_registry_command(const std::string& command_line) {
                                                             : "manual procedure must reference its docs/ section";
   }
   // Other shipped ClusterLM executables: their own tests own their flag surface.
-  static const std::vector<std::string> kOtherTools = {"clusterlm-expert-domain-bench", "clusterlm-model-inspect",
-                                                       "clusterlm-node-service", "clusterlm-father", "clusterlm-node",
-                                                       "clusterlm-father-agent", "clusterlm-node-helper"};
-  std::size_t start = 0;
-  while (start <= command_line.size()) {
-    const auto amp = command_line.find("&&", start);
-    const std::string segment = command_line.substr(start, amp == std::string::npos ? std::string::npos : amp - start);
+  static const std::vector<std::string> kOtherTools = {
+      "clusterlm-expert-domain-bench", "clusterlm-model-inspect", "clusterlm-node-service", "clusterlm-father",
+      "clusterlm-node", "clusterlm-father-agent", "clusterlm-node-helper", "clusterlm-strata", "clusterlm-llama-rpc"};
+  // A procedure may build the tools it needs first (pinned upstream checkout + CMake configure/build).
+  auto is_setup = [](const std::vector<std::string>& tok) {
+    if (tok[0] == "cmake") return true;
+    return tok[0] == "python3" && tok.size() >= 2 && tok[1].rfind("scripts/", 0) == 0;
+  };
+  // Segments are separated by "&&", ";" or a trailing "&" (background); "for ... ; do ... ; done" loops are
+  // accepted with each body command validated on its own.
+  std::vector<std::string> segments;
+  {
+    std::string cur;
+    for (std::size_t i = 0; i < command_line.size(); ++i) {
+      const char c = command_line[i];
+      if (c == '&' && i + 1 < command_line.size() && command_line[i + 1] == '&') {
+        segments.push_back(cur), cur.clear(), ++i;
+      } else if (c == ';' || c == '&') {
+        segments.push_back(cur), cur.clear();
+      } else {
+        cur.push_back(c);
+      }
+    }
+    segments.push_back(cur);
+  }
+  bool any = false;
+  for (const auto& segment : segments) {
     std::istringstream in(segment);
     std::vector<std::string> tok;
     for (std::string t; in >> t;) tok.push_back(t);
-    if (tok.empty()) return "empty command segment";
-    if (std::find(kOtherTools.begin(), kOtherTools.end(), tok[0]) == kOtherTools.end()) {
-      if (tok.size() < 2 || tok[0] != "clusterlm-bench") return "must start with 'clusterlm-bench <command>'";
-      const CommandSpec* spec = find_command_spec(tok[1]);
-      if (!spec) return "unknown command '" + tok[1] + "'";
-      auto err = check_command_tokens(*spec, std::vector<std::string>(tok.begin() + 2, tok.end()));
-      if (!err.empty()) return err;
+    if (!tok.empty() && tok[0] == "do") tok.erase(tok.begin());
+    if (tok.empty() || tok[0] == "done") continue;
+    if (tok[0] == "for") continue;  // loop header: "for <var> in <values...>"
+    while (!tok.empty() && tok[0].find('=') != std::string::npos && tok[0].find('/') == std::string::npos &&
+           tok[0][0] >= 'A' && tok[0][0] <= 'Z') {
+      tok.erase(tok.begin());  // NAME=value environment prefix
     }
-    if (amp == std::string::npos) break;
-    start = amp + 2;
+    if (tok.empty()) return "environment assignment without a command";
+    if (tok[0].rfind("build/bin/", 0) == 0) tok[0] = tok[0].substr(10);
+    any = true;
+    if (is_setup(tok)) continue;
+    if (std::find(kOtherTools.begin(), kOtherTools.end(), tok[0]) != kOtherTools.end()) continue;
+    if (tok.size() < 2 || tok[0] != "clusterlm-bench") return "must start with 'clusterlm-bench <command>'";
+    const CommandSpec* spec = find_command_spec(tok[1]);
+    if (!spec) return "unknown command '" + tok[1] + "'";
+    auto err = check_command_tokens(*spec, std::vector<std::string>(tok.begin() + 2, tok.end()));
+    if (!err.empty()) return err;
   }
+  if (!any) return "empty command segment";
   return {};
 }
 

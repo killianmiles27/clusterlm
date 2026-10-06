@@ -1,0 +1,555 @@
+diff --git a/include/strata/core/native_dense.hpp b/include/strata/core/native_dense.hpp
+index 5bd2b4c..3c30fd4 100644
+--- a/include/strata/core/native_dense.hpp
++++ b/include/strata/core/native_dense.hpp
+@@ -8,6 +8,15 @@
+ namespace strata::core {
+ class WeightTable;
+ 
++/// ClusterLM patch 0005: one GGUF-form tensor held in host memory by the caller (a provisioned object's bytes).
++struct NativeTensorView {
++    std::string name;              ///< the GGUF tensor name, e.g. "blk.12.attn_qkv.weight"
++    int type = -1;                 ///< ggml type
++    std::vector<uint64_t> shape;   ///< ne0 (contiguous) first
++    const void* data = nullptr;    ///< the tensor's blocks exactly as the GGUF stores them
++    uint64_t bytes = 0;
++};
++
+ // Experimental GDN/QSA/shared-expert projection overrides. Upload unchanged native GGUF
+ // blocks once, then attach them to the matching canonical WeightRef. Unsupported
+ // types retain their canonical paths. Owns one Q8_1 scratch vector shared by all
+@@ -27,6 +36,15 @@ public:
+     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
+     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,
+                              std::set<std::string>& out, std::string& err);
++    /// ClusterLM patch 0005: `load` from tensors the caller holds in memory instead of GGUF shards.  The same
++    /// eligibility (`served_names`' rule), shape checks against the canonical table, upload and publication; no
++    /// shard metadata to check, and the STRATA_HC_Q8 experiment is not offered here.  Tensors outside
++    /// [layer_lo, layer_hi) are refused (the caller passes only its own layers).
++    bool load_tensors(const std::vector<NativeTensorView>& tensors, WeightTable& table, std::string& err,
++                      bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1);
++    /// ClusterLM patch 0005: whether `load_tensors` would serve this tensor natively (eligible name, supported type,
++    /// 2-D) - the memory-backed form of `served_names`, so the canonical arena can skip it.
++    static bool serves(const std::string& name, int type, size_t dims, bool include_ple_key);
+     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
+     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
+     static void set_layer_range(int lb, int le);
+diff --git a/include/strata/core/native_head.hpp b/include/strata/core/native_head.hpp
+index ff45dd6..097fe13 100644
+--- a/include/strata/core/native_head.hpp
++++ b/include/strata/core/native_head.hpp
+@@ -20,6 +20,8 @@ public:
+     NativeHead& operator=(const NativeHead&) = delete;
+ 
+     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
++    /// ClusterLM patch 0005: the same from `output.weight`'s GGUF blocks held in host memory by the caller.
++    bool load_tensor(int type, const void* data, uint64_t bytes, int64_t n_in, int64_t n_out, std::string& err);
+     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
+     uint64_t weight_bytes() const { return bytes_; }
+     bool loaded() const { return weights_ != nullptr; }
+@@ -47,6 +49,9 @@ public:
+     NativeEmbed(const NativeEmbed&) = delete;
+     NativeEmbed& operator=(const NativeEmbed&) = delete;
+     bool load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err);
++    /// ClusterLM patch 0005: the same from `token_embd.weight`'s GGUF blocks held in host memory by the caller
++    /// (copied into mapped pinned memory, or VRAM when pinning is refused, exactly as `load` does).
++    bool load_tensor(int type, const void* data, uint64_t bytes, int64_t n_embd, int64_t n_vocab, std::string& err);
+     /// Rows for device token ids.
+     void gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const;
+     /// One row for a host token id.
+diff --git a/include/strata/core/weights.hpp b/include/strata/core/weights.hpp
+index a994912..0252afe 100644
+--- a/include/strata/core/weights.hpp
++++ b/include/strata/core/weights.hpp
+@@ -107,6 +107,23 @@ struct LoadReport {
+     double upload_ms = 0.0;
+ };
+ 
++/// ClusterLM patch 0005: WHERE THE LOADER'S BYTES COME FROM.  The pack directory (`index.txt` and the pack files
++/// beside it) is one source; a caller that already holds the tensors in memory - a ClusterLM lease's provisioned
++/// objects, a layer range's worth and nothing else - is another, so no pack directory has to exist on that machine.
++/// The loader's checks (row parse, plane segments against the recorded totals, arena bound) are the same for both.
++class WeightSource {
++public:
++    virtual ~WeightSource() = default;
++    /// What to call this source in an error message (the pack path, or the caller's own name).
++    virtual std::string name() const = 0;
++    /// The complete text of the index (`index.txt`'s format, written by tools/pack_index.py).
++    virtual bool index_text(std::string& out, std::string& err) const = 0;
++    /// `n` bytes at `off` of pack file `file_id` (0 dense.bin, 1 embd.bin, 2 experts.bin, 3 extra.bin) into `dst`.
++    virtual bool read(int file_id, uint64_t off, void* dst, size_t n, std::string& err) const = 0;
++    /// A hint that these bytes are read soon (a file-backed source asks the OS for them).  Default: nothing.
++    virtual void advise(int file_id, uint64_t off, uint64_t n) const { (void) file_id; (void) off; (void) n; }
++};
++
+ class WeightTable {
+ public:
+     /// The arena size the index asks for, readable WITHOUT loading anything - so a caller can size its
+@@ -131,6 +148,13 @@ public:
+     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
+               const std::set<std::string>* skip = nullptr);
+ 
++    /// ClusterLM patch 0005: `pool_bytes` and `load` over any `WeightSource` (the two above are these over the pack
++    /// directory).  Identical parsing, checks and arena layout.
++    static bool pool_bytes(const WeightSource& src, uint64_t& out, std::string& err,
++                           const std::set<std::string>* skip = nullptr);
++    bool load(const WeightSource& src, void* arena_base, uint64_t arena_bytes, std::string& err,
++              const std::set<std::string>* skip = nullptr);
++
+     const WeightRef* find(const std::string& name) const;
+     const std::map<std::string, WeightRef>& all() const { return table_; }
+     const LoadReport& report() const { return report_; }
+diff --git a/include/strata/kernels/cpu/expert_layout.hpp b/include/strata/kernels/cpu/expert_layout.hpp
+index 615afa1..713c919 100644
+--- a/include/strata/kernels/cpu/expert_layout.hpp
++++ b/include/strata/kernels/cpu/expert_layout.hpp
+@@ -88,6 +88,10 @@ void act_quant_any(const float* x, int n, ActQ& a);
+ 
+ /// The process-wide layout (canonical Q2_0 until `expert_layout_load` finds a native pack).
+ const ExpertLayout& expert_layout();
++/// ClusterLM patch 0005: install a layout built by the caller (from its own object manifest, without a pack
++/// directory).  Same checks as a loaded native_experts.txt: n_layers rows of fmt/offset/bytes for a native layout,
++/// each blob the size its formats give.  Process-wide like `expert_layout_load` (a process serves one model).
++bool expert_layout_set(const ExpertLayout& layout, std::string& err);
+ /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
+ /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
+ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+diff --git a/src/core/native_dense.cpp b/src/core/native_dense.cpp
+index 972f6bc..315ec7f 100644
+--- a/src/core/native_dense.cpp
++++ b/src/core/native_dense.cpp
+@@ -117,6 +117,75 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
+ }
+ 
+ void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le = le; }
++
++bool NativeDense::serves(const std::string& name, int type, size_t dims, bool include_ple_key) {   // ClusterLM 0005
++    strata::TensorInfo t;
++    t.name = name;
++    t.type = (decltype(t.type)) type;
++    return eligible(t, include_ple_key) && strata::kernels::native_mmvq_supported(type) && dims == 2;
++}
++
++bool NativeDense::load_tensors(const std::vector<NativeTensorView>& tensors, WeightTable& table, std::string& err,
++                               bool include_ple_key, int64_t layer_lo, int64_t layer_hi) {   // ClusterLM patch 0005
++    if (scratch_ || !weights_.empty()) { err = "native dense: already loaded"; return false; }
++    try {
++        std::vector<Pending> pending;
++        std::set<std::string> seen;
++        int max_in = 0;
++        uint64_t total = 0;
++        for (const NativeTensorView& v : tensors) {
++            if (!serves(v.name, v.type, v.shape.size(), include_ple_key)) continue;
++            if (layer_hi >= 0 && v.name.rfind("blk.", 0) == 0) {
++                const long l = std::strtol(v.name.c_str() + 4, nullptr, 10);
++                if (l < layer_lo || l >= layer_hi) { err = "native dense: " + v.name + " is outside the stage's layers"; return false; }
++            }
++            if (!seen.insert(v.name).second) { err = "native dense: duplicate tensor " + v.name; return false; }
++            auto found = table.table_.find(v.name);
++            if (found == table.table_.end()) { err = "native dense: tensor absent from canonical table: " + v.name; return false; }
++            auto& ref = found->second;
++            if (ref.native_data) { err = "native dense: override already attached"; return false; }
++            if (v.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
++            if (!ref.quantized() || ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
++                v.shape[0] != (uint64_t) ref.ne0 || v.shape[1] != (uint64_t) ref.ne1) {
++                err = "native dense: incompatible matrix " + v.name; return false;
++            }
++            const auto bytes = strata::kernels::native_mmvq_weight_bytes(v.type, (int) ref.ne0, (int) ref.ne1);
++            if (v.data == nullptr || v.bytes != bytes) {
++                err = "native dense: " + v.name + " holds " + std::to_string(v.bytes) + " B, its type needs " +
++                      std::to_string(bytes);
++                return false;
++            }
++            void* allocation = nullptr;
++            auto status = cudaMalloc(&allocation, bytes);
++            DevicePtr data(allocation);
++            if (status == cudaSuccess) status = cudaMemcpy(data.get(), v.data, bytes, cudaMemcpyHostToDevice);
++            if (status != cudaSuccess) {
++                err = "native dense upload " + v.name + ": " + cudaGetErrorString(status); return false;
++            }
++            max_in = (std::max)(max_in, (int) ref.ne0);
++            total += bytes;
++            pending.push_back(Pending{&ref, v.type, bytes, std::move(data), DevicePtr()});
++        }
++        if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices among the supplied tensors"; return false; }
++        void* allocation = nullptr;
++        const auto status = cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in));
++        DevicePtr scratch(allocation);
++        if (status != cudaSuccess) { err = std::string("native dense scratch: ") + cudaGetErrorString(status); return false; }
++        weights_.reserve(pending.size());
++        for (auto& item : pending) {   // all checks and allocations finished: publish
++            item.ref->native_data = item.data.get();
++            item.ref->native_type = item.type;
++            item.ref->native_q8_1 = scratch.get();
++            weights_.push_back(item.data.release());
++        }
++        scratch_ = scratch.release();
++        bytes_ = total;
++        return true;
++    } catch (const std::exception& error) {
++        err = std::string("native dense: ") + error.what();
++        return false;
++    }
++}
+ bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip,
+                                            std::string& err) {
+     const std::string key = "blk.1.ple_key.weight";
+diff --git a/src/core/native_head.cpp b/src/core/native_head.cpp
+index aee19df..e9b4d86 100644
+--- a/src/core/native_head.cpp
++++ b/src/core/native_head.cpp
+@@ -73,6 +73,40 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
+     }
+ }
+ 
++bool NativeHead::load_tensor(int type, const void* data, uint64_t bytes, int64_t n_in, int64_t n_out,
++                             std::string& err) {   // ClusterLM patch 0005: see the header
++    if (loaded()) { err = "native head is already loaded"; return false; }
++    if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
++        err = "native head requires positive int32 dimensions and whole 256-value rows";
++        return false;
++    }
++    if (!strata::kernels::native_mmvq_supported(type) || data == nullptr ||
++        bytes != strata::kernels::native_mmvq_weight_bytes(type, (int) n_in, (int) n_out)) {
++        err = "native head: output.weight is of an unsupported type or not the size its type and shape give";
++        return false;
++    }
++    void* weights = nullptr;
++    void* scratch = nullptr;
++    cudaError_t status = cudaMalloc(&weights, bytes);
++    if (status == cudaSuccess) status = cudaMalloc(&scratch, strata::kernels::native_q8_1_bytes((int) n_in, 1));
++    if (status == cudaSuccess) status = cudaMemcpy(weights, data, bytes, cudaMemcpyHostToDevice);
++    if (status != cudaSuccess) {
++        if (scratch) cudaFree(scratch);
++        if (weights) cudaFree(weights);
++        err = std::string("native head upload: ") + cudaGetErrorString(status);
++        return false;
++    }
++    weights_ = weights;
++    scratch_ = scratch;
++    bytes_ = bytes;
++    n_in_ = (int) n_in;
++    n_out_ = (int) n_out;
++    type_ = type;
++    if (type_ == 14 && strata::kernels::native_q6_k_packed_enabled())
++        strata::kernels::native_q6_k_pack(weights_, n_in_, n_out_, "output head");
++    return true;
++}
++
+ bool NativeHead::run(const float* mixed, float* logits, void* stream, std::string& err) const {
+     if (!loaded() || !mixed || !logits || !stream) {
+         err = "native head requires loaded weights, device buffers and an explicit stream";
+@@ -193,6 +227,48 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
+     }
+ }
+ 
++bool NativeEmbed::load_tensor(int type, const void* data, uint64_t bytes, int64_t n_embd, int64_t n_vocab,
++                              std::string& err) {   // ClusterLM patch 0005: see the header
++    if (host_ || dev_) { err = "native embedding: already loaded"; return false; }
++    if (!strata::kernels::embed_type_supported(type) || n_embd <= 0 || n_vocab <= 0 || n_embd % 256 || data == nullptr) {
++        err = "native embedding: token_embd.weight is of a type without a GPU dequantizer, or of another shape";
++        return false;
++    }
++    const size_t row = strata::kernels::iq_row_bytes(type, n_embd);
++    if ((uint64_t) row * (uint64_t) n_vocab != bytes) {
++        err = "native embedding: token_embd.weight is not " + std::to_string((uint64_t) row * (uint64_t) n_vocab) + " B";
++        return false;
++    }
++    if (cudaHostAlloc(&host_, bytes, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) {
++        std::memcpy(host_, data, bytes);
++        void* d = nullptr;
++        if (cudaHostGetDevicePointer(&d, host_, 0) != cudaSuccess) {
++            cudaFreeHost(host_);
++            host_ = nullptr;
++            err = "native embedding: no device alias for the mapped table";
++            return false;
++        }
++        dev_ = d;
++    } else {
++        cudaGetLastError();
++        host_ = nullptr;
++        void* d = nullptr;
++        if (cudaMalloc(&d, bytes) != cudaSuccess || cudaMemcpy(d, data, bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
++            if (d) cudaFree(d);
++            cudaGetLastError();
++            err = "native embedding: cannot pin " + std::to_string(bytes >> 20) + " MiB, nor place it in VRAM";
++            return false;
++        }
++        dev_ = d;
++    }
++    row_ = row;
++    bytes_ = bytes;
++    type_ = type;
++    n_embd_ = n_embd;
++    n_vocab_ = n_vocab;
++    return true;
++}
++
+ void NativeEmbed::gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const {
+     strata::kernels::iq_embed_rows(type_, dev_, row_, tokens, n_tok, n_embd_, out, stream);
+ }
+diff --git a/src/core/weights.cpp b/src/core/weights.cpp
+index 6409736..0ccfacb 100644
+--- a/src/core/weights.cpp
++++ b/src/core/weights.cpp
+@@ -11,6 +11,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <utility>
+ 
+ #if defined(_WIN32)
+ #include <io.h>
+@@ -85,35 +86,108 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err,
+     return true;
+ }
+ 
++/// ClusterLM patch 0005: the pack directory as a WeightSource - what `load(pack_dir, ...)` always read.
++class PackDirSource final : public WeightSource {
++public:
++    explicit PackDirSource(std::string dir) : dir_(std::move(dir)) {}
++    ~PackDirSource() override {
++        if (cur_) std::fclose(cur_);
++    }
++    std::string name() const override { return dir_ + "/index.txt"; }
++    bool index_text(std::string& out, std::string& err) const override {
++        const std::string path = dir_ + "/index.txt";
++        std::FILE* f = std::fopen(path.c_str(), "rb");
++        if (!f) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }
++        out.clear();
++        char buf[1 << 16];
++        size_t n = 0;
++        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
++        std::fclose(f);
++        return true;
++    }
++    bool read(int file_id, uint64_t off, void* dst, size_t n, std::string& err) const override {
++        if (!open_file(file_id, err)) return false;
++        return read_at(cur_, off, dst, n, err, file_name(file_id));
++    }
++    void advise(int file_id, uint64_t off, uint64_t n) const override {
++#if !defined(_WIN32)
++        std::string ignored;
++        if (open_file(file_id, ignored)) strata::platform::advise_willneed(fileno(cur_), off, n);
++#else
++        (void) file_id; (void) off; (void) n;
++#endif
++    }
++
++private:
++    bool open_file(int file_id, std::string& err) const {
++        if (file_id == cur_id_ && cur_) return true;
++        if (cur_) std::fclose(cur_);
++        cur_ = nullptr;
++        cur_id_ = -1;
++        const char* fn = file_name(file_id);
++        const std::string p = dir_ + "/" + (fn ? fn : "?");
++        cur_ = std::fopen(p.c_str(), "rb");
++        if (!cur_) { err = "cannot open " + p; return false; }
++        cur_id_ = file_id;
++        return true;
++    }
++    std::string dir_;
++    mutable std::FILE* cur_ = nullptr;
++    mutable int cur_id_ = -1;
++};
++
++/// Calls `f(line)` for every line of `text` (a NUL-terminated copy of at most 1023 characters, as fgets gave).
++template <class F> void for_each_line(const std::string& text, F&& f) {
++    char line[1024];
++    size_t at = 0;
++    while (at < text.size()) {
++        size_t end = text.find('\n', at);
++        if (end == std::string::npos) end = text.size();
++        const size_t n = std::min<size_t>(end + 1 - at, sizeof line - 1);
++        std::memcpy(line, text.data() + at, std::min(n, text.size() - at));
++        line[std::min(n, text.size() - at)] = 0;
++        f(line);
++        at = end + 1;
++    }
++}
++
+ }  // namespace
+ 
+ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
+                              const std::set<std::string>* skip) {
+-    const std::string path = pack_dir + "/index.txt";
+-    std::FILE* f = std::fopen(path.c_str(), "rb");
+-    if (!f) { err = "cannot open " + path; return false; }
+-    char line[1024];
++    return pool_bytes(PackDirSource(pack_dir), out, err, skip);
++}
++
++bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
++                       const std::set<std::string>* skip) {
++    return load(PackDirSource(pack_dir), arena_base, arena_bytes, err, skip);
++}
++
++bool WeightTable::pool_bytes(const WeightSource& src, uint64_t& out, std::string& err,
++                             const std::set<std::string>* skip) {
++    const std::string path = src.name();
++    std::string text;
++    if (!src.index_text(text, err)) return false;
+     out = 0;
+     uint64_t pool = 0, compact = 0;
+     int align = 0;
+-    while (std::fgets(line, sizeof line, f)) {
++    for_each_line(text, [&](const char* line) {
+         if (line[0] == '#') {
+             unsigned long long p = 0;
+             int a = 0, tensors = 0;
+             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &tensors) == 3) { pool = p; align = a; }
+-            continue;
++            return;
+         }
+-        if (skip == nullptr) continue;
++        if (skip == nullptr) return;
+         char name[256] = {0};
+         unsigned long long dst_bytes = 0, dummy = 0;
+         int i1 = 0, i2 = 0;
+         if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &i1, &i2, &dummy, &dummy, &dummy, &dst_bytes) != 7)
+-            continue;
+-        if (skip->count(name)) continue;
++            return;
++        if (skip->count(name)) return;
+         const uint64_t a = align > 0 ? (uint64_t) align : 256;
+         compact += (dst_bytes + a - 1) / a * a;
+-    }
+-    std::fclose(f);
++    });
+     if (pool == 0) { err = "no '# align ... pool ...' header in " + path; return false; }
+     out = skip ? compact : pool;
+     return true;
+@@ -142,23 +216,24 @@ bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string
+     return true;
+ }
+ 
+-bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
++bool WeightTable::load(const WeightSource& src, void* arena_base, uint64_t arena_bytes, std::string& err,
+                        const std::set<std::string>* skip) {
+-    const std::string path = pack_dir + "/index.txt";
+-    std::FILE* idx = std::fopen(path.c_str(), "rb");
+-    if (!idx) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }
++    std::string text;
++    if (!src.index_text(text, err)) return false;
+ 
+     uint64_t pool = 0;
+     int align = 0;
+     std::vector<IndexRow> rows;
+-    char line[1024];
+-    while (std::fgets(line, sizeof line, idx)) {
++    bool parse_failed = false;
++    for_each_line(text, [&](const char* line) {
++        if (parse_failed) return;
+         if (line[0] == '#') {
+             unsigned long long p = 0;
+             int a = 0, t = 0;
+             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &t) == 3) { pool = p; align = a; }
+-            continue;
++            return;
+         }
++        if (line[0] == 0 || line[0] == '\n' || line[0] == '\r') return;   // the text's last newline
+         IndexRow r;
+         char name[256] = {0};
+         int kind = 0;
+@@ -174,8 +249,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+             // A malformed index line is a WRONG BYTE OFFSET waiting to happen, and a wrong offset decodes to
+             // a plausible weight.  Refuse loudly instead of loading the rows that happened to parse.
+             err = "index.txt: could not parse a row (" + std::to_string(n) + " of 19 fields)";
+-            std::fclose(idx);
+-            return false;
++            parse_failed = true;
++            return;
+         }
+         r.name = name;
+         // plan v0.3 P6: a standalone native pack (tools/iq_pack.py) stores 16-bit floats as they are in the GGUF:
+@@ -186,8 +261,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+         }
+         r.kind = (WeightKind) kind;
+         rows.push_back(r);
+-    }
+-    std::fclose(idx);
++    });
++    if (parse_failed) return false;
+ 
+     if (pool == 0 || rows.empty()) { err = "index.txt has no header or no rows"; return false; }
+     // Plan v0.3 P1: a skip set compacts the arena.  Kept rows are re-placed in index order at the index's
+@@ -232,7 +307,6 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+     }
+ 
+     uint8_t* dst_base = (uint8_t*) arena_base;
+-    std::FILE* cur = nullptr;
+     int cur_file = -1;
+     table_.clear();
+     report_ = LoadReport{};
+@@ -274,18 +348,10 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+             return false;
+         }
+         if (r.file != cur_file) {
+-            if (cur) std::fclose(cur);
+-            const char* fn = file_name(r.file);
+-            const std::string p = pack_dir + "/" + (fn ? fn : "?");
+-            cur = std::fopen(p.c_str(), "rb");
+-            if (!cur) { err = "cannot open " + p; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+             cur_file = r.file;
+-#if !defined(_WIN32)
+             // ask for this file's remaining rows up front so their reads overlap
+             for (size_t j = row_i; j < rows.size(); ++j)
+-                if (rows[j].file == r.file && !skipped[j])
+-                    strata::platform::advise_willneed(fileno(cur), rows[j].src_off, rows[j].src_bytes);
+-#endif
++                if (rows[j].file == r.file && !skipped[j]) src.advise(r.file, rows[j].src_off, rows[j].src_bytes);
+         }
+ 
+         // ---- the segment list: what this tensor's bytes are, plane by plane, in both forms
+@@ -366,7 +432,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+                     if (n == 1) { err = r.name + ": an fp16 plane ending on a half element"; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+                     n -= 1;
+                 }
+-                if (!read_at(cur, r.src_off + s.src_off + done, stage_in, (size_t) n, err, r.name.c_str())) {
++                if (!src.read(r.file, r.src_off + s.src_off + done, stage_in, (size_t) n, err)) {
++                    if (err.find(r.name) == std::string::npos) err = r.name + ": " + err;
+                     cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+                     return false;
+                 }
+@@ -467,7 +534,6 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+             report_.bytes_saved += r.src_bytes - r.dst_bytes;
+         }
+     }
+-    if (cur) std::fclose(cur);
+     cudaFreeHost(stage_in);
+     cudaFreeHost(stage_out);
+ 
+diff --git a/src/kernels/cpu/expert_layout.cpp b/src/kernels/cpu/expert_layout.cpp
+index cc218f2..e7bc33b 100644
+--- a/src/kernels/cpu/expert_layout.cpp
++++ b/src/kernels/cpu/expert_layout.cpp
+@@ -21,6 +21,28 @@ ExpertLayout g_layout;
+ 
+ const ExpertLayout& expert_layout() { return g_layout; }
+ 
++bool expert_layout_set(const ExpertLayout& layout, std::string& err) {   // ClusterLM patch 0005: see the header
++    if (layout.n_layers <= 0 || layout.n_expert <= 0) { err = "expert layout: no layers or no experts"; return false; }
++    if (layout.native) {
++        const size_t L = (size_t) layout.n_layers;
++        if (layout.fmt.size() != L || layout.offset.size() != L || layout.bytes.size() != L) {
++            err = "expert layout: a native layout needs one format, offset and blob size per layer";
++            return false;
++        }
++        uint64_t max_blob = 0;
++        for (size_t l = 0; l < L; ++l) {
++            if (layout.fmt[l].bytes != 0 && layout.fmt[l].bytes != layout.bytes[l]) {
++                err = "expert layout: layer " + std::to_string(l) + "'s blob size disagrees with its formats";
++                return false;
++            }
++            max_blob = layout.bytes[l] > max_blob ? layout.bytes[l] : max_blob;
++        }
++        if (layout.max_blob < max_blob) { err = "expert layout: max_blob is smaller than a layer's blob"; return false; }
++    }
++    g_layout = layout;
++    return true;
++}
++
+ int cpu_isa_cap() {
+     // STRATA_FORCE_ISA (tests, the experimental older-CPU builds): the engine's own dispatch acts as if this CPU
+     // stopped at that level.  ggml-cpu is not affected: it runs what the build compiled it for.

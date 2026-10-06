@@ -265,6 +265,10 @@ TEST_CASE("every command line in the qualification registry parses against the i
   CHECK(validate_registry_command("clusterlm-bench domain wrong-sub --backend strata") != "");
   CHECK(validate_registry_command("other-tool cpu") != "");
   CHECK(validate_registry_command("clusterlm-bench cpu --provider strata-cpu --q 1,2,4 --out <path>") == "");
+  CHECK(validate_registry_command("python3 scripts/fetch_upstream.py --apply-patches strata && cmake --build build && build/bin/clusterlm-strata probe") == "");
+  CHECK(validate_registry_command("for t in 1 2; do STRATA_FORCE_AVX2=1 build/bin/clusterlm-bench cpu --threads $t; done") == "");
+  CHECK(validate_registry_command("python3 evil.py") != "");
+  CHECK(validate_registry_command("rm -rf / && clusterlm-bench cpu") != "");
 }
 
 TEST_CASE("results emitted by the smoke commands validate against the schema") {

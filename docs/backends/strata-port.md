@@ -1,11 +1,36 @@
-# Strata port analysis
+# Strata port
 
 Pin: `https://github.com/Niko1221/Strata` @ `1735d6471df29b42c26170efaac1f1446a58640f` (MIT, commit date
-2026-10-06, version 0.1.40). All `file:line` references are at this pin, relative to
-`third_party/upstream/strata/` (fetched by `scripts/fetch_upstream.py`, never committed).
+2026-10-06, version 0.1.40), plus the ClusterLM patch series in `third_party/patches/strata/` (§6). Strata's ggml
+dependency is pinned as `strata-ggml` (llama.cpp `3cf03257`, the commit `strata/third_party/ggml/VERSION.txt`
+names). All `file:line` references are at the unpatched pin, relative to `third_party/upstream/strata/`
+(fetched by `scripts/fetch_upstream.py`, never committed).
 
-## 1. Headline findings
+```sh
+python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml   # fetch the pins, apply the patches
+python3 scripts/fetch_upstream.py --check --apply-patches strata strata-ggml
+cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA=ON -DCMAKE_CUDA_HOST_COMPILER=g++-12  # Ubuntu nvcc 12.0
+cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA_CPU=ON       # CPU expert kernels only, no CUDA
+```
 
+## 0. Status (WP6)
+
+| Part | State | Where |
+|---|---|---|
+| `StrataDomain` (ExecutionDomain contract: roles, WindowLedger admission, idempotent commit, abort_window, abort_session, boundary transpose, local sub-batches, metrics) | Implemented; tested with a fake engine in every build | `runtime/backends/strata-core` (`strata_domain.hpp`), `tests/backends/test_strata_domain.cpp` |
+| CUDA engine (`CudaStrataEngine`: WeightTable from provisioned objects, NativeDense/Head/Embed, VRAM expert tier, CPU expert pool, per-session SessionState + Verifier + hand-offs, PLE, MTP) and `make_strata_backend` | Implemented; compiles and links with nvcc 12.0 + g++-12 (sm_86, sm_89). **Not run: no GPU here.** `prepare()` reports `kHardwareUnavailable` without a device | `runtime/backends/strata/src/strata_backend.cpp`, `tests/backends/test_strata_cuda.cpp` |
+| Sizing (`describe_requirements`) from Strata's own arithmetic (`session_bytes`, `Verifier::init_bytes`) | Implemented, runs without a device | same |
+| Object mapping (strata-dense container, experts as GGUF slices) and Father-side conversion | Implemented and tested on synthetic packs/GGUFs | `object_map.hpp`, `convert.hpp`, `test_strata_objects.cpp`, `test_strata_convert.cpp` |
+| CPU expert kernels (IQ3_S / IQ2_XS gate-up, IQ4_NL / Q2_0 down) | Implemented and **run here** against ggml-cpu and a scalar reference, AVX-512 and AVX-2 | `cpu_expert_kernel.hpp`, `test_strata_cpu_kernels.cpp` |
+| MTP drafter on the Father tail (`StrataMtpDrafter`) | Implemented (greedy drafts, one-hot Q; ADR 0203); adapter tested with a fake | `mtp_drafter.hpp` |
+| Patches 0001-0006 | Applied by `fetch_upstream.py`, verified by ctest | `third_party/patches/strata/` |
+| Tool `clusterlm-strata` (probe, cpu-experts, convert, requirements, numerics) | Implemented; probe/cpu-experts/convert run here, requirements/numerics need a GPU | `runtime/backends/strata/tools` |
+| Coordinator / Node use of the strata backend (`--backend strata`) | Not in WP6 (coordinator/node code); qualification HQ-P0D-01 | — |
+
+Decisions: ADR 0200 (memory-backed weights), 0201 (local sub-batches), 0202 (abort_window), 0203 (MTP on the
+Father tail), 0204 (patch series).
+
+## 1. Headline findings (pin analysis) and how they are resolved
 1. **Hand-off buffer layout differs from `boundary.hpp` (ABI mismatch, adapter must convert).**
    Strata's hand-off is `handoff_floats(g) = hc*n_embd + n_embd + hc` floats per token
    (`include/strata/core/verify.hpp:126`), which matches `BoundaryLayout::floats_per_position()`. The field
@@ -51,34 +76,39 @@ Pin: `https://github.com/Niko1221/Strata` @ `1735d6471df29b42c26170efaac1f1446a5
    **Verified: `Verifier::stage_inputs` copies tokens for intermediate stages** (it does not look at the stage
    range at all).
 
-## 2. Build and test record (Linux, CPU only)
+**Resolution of the findings:**
 
-Environment: Linux x86_64, 4 cores, GCC 13.3, CMake + Ninja, no CUDA toolkit installed, no GPU.
-Out-of-tree build dirs under the session scratchpad (the checkout stays clean).
+1. Layout: `StrataDomain` converts every window with `strata_handoff.hpp` (wire -> field-major before the engine,
+   field-major -> wire after it); tested bit-exact inside the domain path (`test_strata_domain.cpp`).
+2. PLE: role rules - the prefix holds layers `0 .. max(1, ple_layer)`, every other role starts after them and is
+   token-free (`token_free_first_layer`). The n-gram table is a Father file (`StrataBackendOptions::ple_table_gguf`).
+3. Abort: strata patch 0003, `Verifier::abort_window()` (ADR 0202).
+4. Idempotent commit: the WindowLedger's replay returns the cached `CommitAck`; the engine commits once.
+5. Token-free entry: strata patch 0002 - `Verifier::run(T, nullptr, ...)` on a stage that neither embeds nor runs the
+   PLE block; the domain passes exactly `verifier_tokens(caps, tokens)` (null on token-free stages), which a test
+   hook (`StrataBackendOptions::verifier_call_observer`) can observe at the call site.
 
-`cmake -S third_party/upstream/strata -B <dir> -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=OFF`
+## 2. Build and test record (Linux, no GPU)
 
-* Default configuration: `STRATA_BUILD_TESTS` defaults OFF because the published tree has no
-  `tests/CMakeLists.txt` and no `bench/micro` (`CMakeLists.txt:95-99`). Targets available: `strata-gguf`,
-  `strata-dequant`, `strata-plan`, `router_dot_parity`, `iq_avx2_parity` (plus ggml-base/ggml-cpu,
-  `strata_kernels_cpu`). All built, 0 compiler warnings in the log. `router_dot_parity`: 0 failures;
-  `iq_avx2_parity`: 0 failures; `strata-plan` ran and printed a memory plan; `strata-gguf`/`strata-dequant`
-  print usage (need a GGUF).
-* With `-DSTRATA_BUILD_TESTS=ON` (forced): 23 ctest tests configured and built (91 ninja steps); **21 passed, 2
-  failed**. Failures: `expert_parity` and `pool_test`, both with
-  `cannot read expert 0 (layer 0) from pack/full/experts.bin` — they need the ~34 GB model pack, which is
-  absent here. They are environment failures, not code failures; not investigated further.
-  Passing: gguf_reader_test, gguf_split_test, tuning_header_arch_family_test, arch_defaults_test,
-  suffix_drafter_test, controller_test, draft_policy_test, message_boundary_test, conv_cache_test,
-  coupled_draft_test, bf16_bits_test, dequant_q5_1_test, router_dot_parity(+_avx), iq_avx2_parity(+_iq3s_mt1),
-  pool_affinity_test, expert_multi_test, q2_bitplane_parity, pool_stress, direct_file_async_test.
-* **Not built, cannot be built here:** everything under `if(STRATA_ENABLE_CUDA ...)` — `strata_core`
-  (device.cu, pinned.cu, verify.cpp, session.cpp, layer.cpp, ...), `strata_kernels`, the prefill library,
-  `generate.cpp` (the `strata` executable), the Verifier, and all CUDA parity tests. verify.cpp et al. include
-  `<cuda_runtime.h>`; the Verifier/session seams below were therefore analysed by reading only, not by running.
-* Nothing about GPU performance or correctness of the CUDA path was measured.
+Environment: Linux x86_64, 4 cores (AVX-512), GCC 13.3, CMake 3.28 + Ninja, Ubuntu `nvidia-cuda-toolkit` (nvcc 12.0)
+with g++-12 as the CUDA host compiler, **no GPU**.
 
-## 3. Seam table
+* `-DCLUSTERLM_ENABLE_STRATA=ON -DCMAKE_CUDA_HOST_COMPILER=g++-12`, architectures `86;89`: the patched Strata
+  `strata_engine` (with `strata_core`, `strata_kernels`, `strata_kernels_cpu`, ggml) and the ClusterLM backend,
+  tool and tests compile and link. Without patch 0001 `src/core/vmm.cpp:28` fails (`cudaGetDriverEntryPointByVersion`
+  is CUDA >= 12.5); everything else in the engine builds unchanged under CUDA 12.0.
+* ctest in that build: the whole ClusterLM suite plus `test_strata_core`, `test_strata_cpu_kernels` (+ the AVX-2
+  variant), `test_strata_convert`, `test_strata_cuda` (device cases print SKIP), `test_fetch_upstream_patches`,
+  `strata_checkout_is_pin_plus_patches`, the tool smoke tests, and Strata's own `iq_avx2_parity` and
+  `router_dot_parity`. Strata's other upstream ctest registrations need a GPU or the model pack; they are
+  registered as disabled.
+* CPU expert kernels measured here (synthetic blobs, H 2560, ff 640): gate/up rows of Strata's AVX-512 and AVX-2
+  multi-token kernels match ggml-cpu's `vec_dot` to < 2e-7 relative L2 and are bit-identical for one token
+  (ggml's own dot); full expert outputs match within 4e-4 (re-quantization of the hidden activation can flip a Q8
+  rounding, Strata issue 152). No timing from this host is a target-machine number.
+* Nothing about GPU performance or correctness of the CUDA path was measured (no device).
+
+## 3. Seam table (pin analysis)
 
 | Seam | Where (pin) | What it does | Change needed for ClusterLM domain extraction |
 |---|---|---|---|
@@ -94,7 +124,17 @@ Out-of-tree build dirs under the session scratchpad (the checkout stays clean).
 | **generate.cpp: `GpuStage`** | `src/program/generate.cpp:990-1010` | One later layer-split stage on its own CUDA device: own `WeightTable`, `NativeDense`, `NativeHead`, `SessionState`, stream, `ExpertCache`, `Verifier ver` (+`ver_b` for pipelined windows), `Prefill sp`. This is the closest existing analogue to a ClusterLM domain. | Lift this struct (minus global `Drive`/CLI coupling) into the `strata` backend's `StrataDomain`. Stage construction order matters: weights before the host arena is mapped, session after layer range is known (comments at `generate.cpp:2543`, `2960-2965`, `3003`). Prefill (`Prefill sp`) is a separate path from `Verifier`; ClusterLM prefill chunks need to go through whichever is used, and the hand-off format for prefill must be checked separately (not verified here). |
 | **generate.cpp: `SplitDrive`** | `src/program/generate.cpp:964-987` (`SplitDrive`, `drive_pool_split`) | Selects, per layer, which stage's GPU plan, cache base and PCIe share the (single, shared) CPU expert pool uses; all stages share one `Drive` (counters, failure flags) and one process-wide CPU pool. Hand-offs are `cudaHostAlloc(Mapped|Portable)` buffers, `kVerifyMaxT * handoff_floats` floats each (`generate.cpp:6040-6052`). | Cross-machine: no shared pool/`Drive`; each domain needs its own `Drive`-equivalent (CPU pool, counters). The stage chaining (`set_stage`/`set_next`, `generate.cpp:6055-6087`) is replaced by the ClusterLM transport; hand-off buffers stay local per domain (mapped pinned memory is device-visible). `drive_pool_split`'s layer->stage lookup becomes trivial (one stage per domain). |
 
-## 4. Window state commit and rollback (verified by reading)
+
+What WP6 did at each seam: **session** - one `SessionState` per ClusterLM session, carved for the domain's
+layers only, priced by `session_bytes`; **verify** - one `Verifier` per session, `set_stage` with mapped
+hand-offs, no `set_next` (the transport chains stages), patches 0002/0003/0004/0006; **expert_source** -
+`ResolverExpertSource` reads the CPU complement in place from provisioned objects; **expert_cache** - GPU-resident
+experts (by the resolver's AllocationTarget) uploaded into slots of an `ExpertCache` sized for them only;
+**weights** - `WeightTable::load(WeightSource)` over strata-dense objects (patch 0005); **mtp** - on the tail, bound
+to the tail's verifier (ADR 0203); **GpuStage** - became `CudaStrataEngine`; **SplitDrive** - gone: each domain
+has its own `ExpertDispatch` and CPU `ExpertPool`, nothing process-wide but the model-derived expert layout.
+
+## 4. Window state commit and rollback (verified by reading; abort added by patch 0003)
 
 Contract (`verify.hpp:3-20`, `verify.cpp:2010-2042`, `capture_commit` `verify.cpp:1543-1612`):
 
@@ -123,13 +163,68 @@ Mapping to ClusterLM `ExecutionDomain` contract (`execution_domain.hpp`): one un
 (matches Strata's single `last_t_`/staged state), `window_id` and `StateVersion` are adapter-level bookkeeping
 (Strata has no such concepts), stale-epoch rejection is adapter-level.
 
-## 5. Open items / not verified
+**Abort (patch 0003, ADR 0202).** `Verifier::abort_window()` restores the indexer tails from `tail_snap_` and the
+PLE history from a new pre-window snapshot (`hist_pre_`, captured by the window graph), re-appends nothing, and
+leaves GDN state (untouched by a window), `ple_prev` (advanced only at commit) and K/V cells (rewritten before
+read) alone. ClusterLM turns the one-token self-commit off (`set_self_commit(false)`), so every window is abortable,
+and makes every commit synchronous for its domain (`set_commit_sync(true)`, patch 0004) so a `CommitAck` is sent
+only after the commit graph ran.
 
-* CUDA-only code was read, not compiled or run. Layout statements (finding 1) are from source; a GPU-side
-  round-trip test of the hand-off conversion is required before any claim of bit-exactness across a machine
-  boundary.
-* Prefill path (`src/prefill/prefill.cpp`, `generate.cpp` prompt chunking) uses a different code path than
-  `Verifier::run`; its stage hand-off, if any, was not analysed here.
-* `init_slots`/batch windows (`verify.cpp:2058-2477`) were skimmed only.
-* Strata packs weights in its own "pack" format (`index.txt` + `experts.bin`), produced by `tools/` scripts;
-  how ClusterLM model objects map to pack files was not analysed (belongs to the objects module).
+## 5. Implementation
+
+**Object mapping (ADR 0200).** Routed expert = Strata's native blob `[gate | up | down]` = the manifest's three
+source ranges unchanged (`quant_type` `"<gate/up>+<down>"`, e.g. `iq3_s+iq4_nl`, conversion_version 0). Layer
+dense, shared expert, embedding and head = *strata-dense* containers (conversion_version 1): magic `CLMSTRD1`,
+the object's pack-index rows (19 fields of `tools/pack_index.py`, offsets relative to the payload), the
+canonical planes and, for tensors Strata serves in GGUF form (mixer/attention/shared projections, `output.weight`,
+`token_embd.weight`), the GGUF blocks; 64-byte aligned segments, bounds-checked parse. `convert_model` (Father)
+builds them from Strata's pack + the model GGUF byte for byte and writes a ClusterLM model directory
+(`strata-dense.bin` + `manifest.json`; experts reference the pack's `experts.bin` when it lives under the model
+directory, else the GGUF slices in place). The canonical store serves these pre-converted objects
+(`source_digest == object_digest`). PLE table and MTP runtime stay Father files.
+
+**Engine (`CudaStrataEngine`).** `prepare`: resolve the domain's objects (never fetch elsewhere), install the CPU
+expert layout from the manifest (`expert_layout_set`), build a `WeightSource` over the strata-dense payloads
+(rows served natively and metadata-only rows - e.g. `output.weight`'s shape on a domain without the head - in the
+skip set), load one device arena, check every owned layer (`check_layer`), upload the native tensors, build the
+VRAM expert tier for GPU-resident experts (at least one slot: the Verifier requires a tier), start the CPU
+`ExpertPool`, open the PLE table (prefix). `open_session`: carve a `SessionState` for `[begin, end)`, wire the PLE
+(prefix), allocate mapped hand-offs, `Verifier::set_stage/init`. `run`: copy the field-major input into the
+mapped hand-off, `Verifier::run(T, verifier_tokens(...), pos0, pool)`, copy the hand-off out or the logits
+(`copy_logits`). `commit`/`abort`: `Verifier::commit` + `wait_commit` / `abort_window`. `release`: verifiers,
+sessions (`session_release`), pool, cache, arenas, native tensors, stream.
+
+**Sizing.** `state_bytes = session_bytes(g, max_context, k, begin, end) * max_sessions`; `window_bytes` =
+`Verifier::init_bytes` device arena (patch 0006, with this model's largest expert blob as staging slot) per
+session; `staging_bytes` = the Verifier's mapped staging + two hand-offs per session + the weight loader's 24 MiB
+pinned staging; GPU weights = strata-dense objects (container size; the exact engine-form arena after prepare),
+CPU weights = CPU-resident experts and the embedding (mapped host memory).
+
+**Sub-batches (ADR 0201).** `local_batch = min(max_local_batch or max_window, 8)`; a larger window runs as
+provisionally committed sub-batches and can only be committed whole.
+
+## 6. Patch series (`third_party/patches/strata`, ADR 0204)
+
+| Patch | Files | What |
+|---|---|---|
+| 0001-cuda-12.0-vmm-entry-point | `src/core/vmm.cpp` | `cudaGetDriverEntryPoint` when `CUDART_VERSION < 12050` |
+| 0002-verifier-token-free-stages | `verify.hpp/.cpp` | `run`/`prestage`/`pl_launch` accept `tokens == nullptr` on a stage that neither embeds nor runs the PLE (`needs_tokens()`); no token array is fabricated |
+| 0003-verifier-abort-window | `verify.hpp/.cpp` | `abort_window()`, pre-window PLE history snapshot, `set_self_commit`, `window_outstanding()` |
+| 0004-domain-local-state | `verify`, `mtp`, `native_dense` | per-verifier `set_commit_sync` and `set_embed`, per-drafter `set_embed`; an explicit NativeDense layer range wins over the process-wide one |
+| 0005-memory-backed-weights | `weights`, `native_dense`, `native_head`, `expert_layout` | `WeightSource` (+ pack-directory source), `NativeDense::load_tensors`, `NativeHead/NativeEmbed::load_tensor`, `expert_layout_set` |
+| 0006-verifier-init-bytes | `verify.hpp/.cpp` | `Verifier::init_bytes` (the init carve, counted without allocating) |
+
+Remaining process-wide Strata state a domain relies on: the CPU expert layout (model-derived, identical for every
+domain of a process), the diagnostic verifier registry (`g_live`, 16 entries), kernel feature probes and
+environment switches. None of them holds a pointer into a domain's memory.
+
+## 7. What still needs a GPU (qualification)
+
+* Every numeric property of the CUDA path: split vs reference logits and greedy agreement for every rejection
+  length (HQ-NUM-01), abort_window restoring the state bit for bit on the device (HQ-GPU-05), the VRAM ledger vs
+  `describe_requirements` (HQ-GPU-02), MTP acceptance on the Father tail (HQ-MTP-02), CPU kernel throughput on the
+  target CPUs (HQ-CPU-01) and the full prefix -> G14 -> 3060 -> tail run (HQ-P0D-01, which also needs the
+  coordinator/Node `--backend strata` integration). Commands: `HARDWARE-QUALIFICATION.md`.
+* Prefill through the Verifier (8-position engine windows) is correct but not Strata's fast prompt path
+  (`strata::prefill::Prefill`); a batched-prefill engine path is future work behind the same contract.
+* Sampled MTP drafts with full draft distributions (ADR 0203).
