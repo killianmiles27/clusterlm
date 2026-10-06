@@ -1,0 +1,121 @@
+{
+  "cpu": {
+    "arch": "zen4",
+    "expert_bytes_per_s": {
+      "q4_k": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 18000000000.0
+      }
+    },
+    "features": [
+      "avx2",
+      "avx512f",
+      "avx512_vnni"
+    ],
+    "q_scaling": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 0.05
+    },
+    "sustained_factor": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 0.95
+    },
+    "usable_threads": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 10
+    }
+  },
+  "gpu": {
+    "dense_layer_ms": {
+      "attention": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.5
+      },
+      "recurrent": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.35
+      }
+    },
+    "dense_q_scaling": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 0.05
+    },
+    "gpu_expert_bytes_per_s": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 180000000000.0
+    },
+    "name": "RTX 4060 Ti 16GB",
+    "pcie_h2d_bytes_per_s": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 12000000000.0
+    },
+    "prefill_tokens_per_s": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 600
+    },
+    "vram_budget": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 15032385536
+    },
+    "vram_total": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 17179869184
+    }
+  },
+  "id": "Father-4060Ti-7600",
+  "memory": {
+    "pinned_limit": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 4294967296
+    },
+    "ram_bandwidth": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 60000000000.0
+    },
+    "ram_safe_allowance": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 25769803776
+    },
+    "ram_total": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 34359738368
+    }
+  },
+  "note": "development estimate, not a measurement",
+  "overheads": {
+    "os_reserve_ram": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 4294967296
+    },
+    "scratch_vram": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 1073741824.0
+    },
+    "staging_ram": {
+      "provenance": "synthetic",
+      "source": "synthetic: development estimate",
+      "value": 1073741824.0
+    }
+  },
+  "role": "father",
+  "schema": "clusterlm.hardware_profile.v1",
+  "synthetic": true
+}
