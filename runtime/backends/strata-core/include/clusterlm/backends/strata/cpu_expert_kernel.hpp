@@ -39,15 +39,22 @@ class CpuExpertKernel {
 
   // x: tokens * hidden floats; y: tokens * hidden floats.
   virtual Status run(ByteSpan blob, std::span<const float> x, std::uint32_t tokens, std::span<float> y) const = 0;
+  // The first half alone: ff[t] = silu(gate . q_x(x_t)) * (up . q_x(x_t)) (tokens * ff floats) - where Strata's
+  // multi-token i-quant kernels do their work, before the hidden activation is re-quantized for the down rows.
+  virtual Status gate_up(ByteSpan blob, std::span<const float> x, std::uint32_t tokens, std::span<float> ff) const = 0;
 
   // References for verification (tests, ClusterLM Bench):
   //   * kExactGgml: ggml-cpu's own per-token vec_dot on the same quantized activations - the arithmetic llama.cpp's
-  //     CPU backend performs. Strata's kernels claim bit-exactness against it for the types they implement.
+  //     CPU backend performs. One token takes ggml's own dot (bit-exact); Strata's multi-token AVX kernels compute
+  //     the same integer block dots and differ only in float summation order - which can flip the re-quantization
+  //     of a hidden value for the down rows (Strata pin issue 152), so full outputs are compared with a tolerance.
   //   * kScalarDequant: the weights dequantized with ggml's reference (to_float) and the quantized activations
   //     dequantized, accumulated in double - an implementation-independent check of the arithmetic.
   enum class Reference { kExactGgml, kScalarDequant };
   virtual Status reference(Reference kind, ByteSpan blob, std::span<const float> x, std::uint32_t tokens,
                            std::span<float> y) const = 0;
+  virtual Status gate_up_reference(Reference kind, ByteSpan blob, std::span<const float> x, std::uint32_t tokens,
+                                   std::span<float> ff) const = 0;
 };
 
 // Whether this build contains the Strata CPU kernels (false: make_cpu_expert_kernel returns kHardwareUnavailable).

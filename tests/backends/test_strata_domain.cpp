@@ -73,6 +73,7 @@ TEST_CASE("role rules: the prefix holds every token-dependent layer, other roles
   CHECK(make(spec_of(StageRole::kPrefix, 0, 3)).is_ok());
   CHECK(make(spec_of(StageRole::kPrefix, 0, 2)).code() == ErrorCode::kInvalidArgument);  // PLE layer outside
   CHECK(make(spec_of(StageRole::kPrefix, 1, 4)).code() == ErrorCode::kInvalidArgument);
+  CHECK(make(spec_of(StageRole::kPrefix, 0, 8)).code() == ErrorCode::kInvalidArgument);   // the head is the tail's
   CHECK(make(spec_of(StageRole::kMiddle, 3, 6)).is_ok());
   CHECK(make(spec_of(StageRole::kMiddle, 2, 6)).code() == ErrorCode::kInvalidArgument);   // would need tokens
   CHECK(make(spec_of(StageRole::kMiddle, 1, 6)).code() == ErrorCode::kInvalidArgument);   // Strata's PLE block

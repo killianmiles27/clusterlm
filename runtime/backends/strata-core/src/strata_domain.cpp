@@ -65,6 +65,7 @@ Status StrataDomain::init() {
       if (r.begin != 0 || r.end < first_free)
         return invalid("strata domain: the prefix must start at layer 0 and hold layers 0.." + std::to_string(first_free - 1) +
                        " (embedding and the token-dependent PLE block)");
+      if (r.end >= g.n_layers) return invalid("strata domain: the prefix cannot hold the last layer (the head is the tail's)");
       break;
     case StageRole::kMiddle:
       if (r.empty()) return invalid("strata domain: a middle domain needs at least one layer");
