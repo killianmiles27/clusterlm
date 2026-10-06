@@ -209,6 +209,7 @@ struct TlsContext::Impl {
   SSL_CTX* ctx = nullptr;
   bool server = false;
   std::unordered_set<std::string> trusted;
+  std::shared_ptr<TrustStore> dynamic_trust;
   ~Impl() { SSL_CTX_free(ctx); }
 };
 
@@ -223,6 +224,7 @@ Result<std::shared_ptr<TlsContext>> TlsContext::create(const SecurityConfig& sec
   auto impl = std::make_unique<Impl>();
   impl->server = server;
   for (const auto& id : security.trusted_peers) impl->trusted.insert(lower(id));
+  impl->dynamic_trust = security.dynamic_trust;
   impl->ctx = SSL_CTX_new(server ? TLS_server_method() : TLS_client_method());
   if (impl->ctx == nullptr) return make_error(ErrorCode::kInternal, "SSL_CTX_new: " + openssl_errors());
   SSL_CTX* ctx = impl->ctx;
@@ -245,6 +247,8 @@ Result<TlsEstablished> TlsContext::establish(net::Socket socket, const std::stri
                                              const std::atomic<bool>* cancel) {
   auto policy = std::make_shared<PinPolicy>();
   policy->trusted = impl_->trusted;
+  if (impl_->dynamic_trust)
+    for (const auto& id : impl_->dynamic_trust->snapshot()) policy->trusted.insert(lower(id));
   if (expected_peer) policy->expected = lower(*expected_peer);
   auto stream = std::make_unique<TlsStream>(std::move(socket), impl_->ctx, policy);
   CLM_RETURN_IF_ERROR(stream->init(impl_->server));

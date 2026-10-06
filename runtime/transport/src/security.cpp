@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <openssl/bn.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -162,5 +163,38 @@ Status DeviceIdentity::save(const std::filesystem::path& dir) const {
 
 const std::string& DeviceIdentity::fingerprint() const { return impl_->fingerprint; }
 const std::string& DeviceIdentity::common_name() const { return impl_->common_name; }
+
+}  // namespace clusterlm::transport
+
+namespace clusterlm::transport {
+
+Result<DeviceIdentity> DeviceIdentity::load_or_generate(const std::filesystem::path& dir,
+                                                        std::string_view common_name) {
+  std::error_code ec;
+  if (std::filesystem::exists(dir / "device_cert.pem", ec)) return load(dir);
+  CLM_ASSIGN_OR_RETURN(DeviceIdentity id, generate(common_name));
+  CLM_RETURN_IF_ERROR(id.save(dir));
+  return id;
+}
+
+void TrustStore::add(std::string fingerprint) {
+  std::lock_guard lock(mu_);
+  if (std::find(ids_.begin(), ids_.end(), fingerprint) == ids_.end()) ids_.push_back(std::move(fingerprint));
+}
+
+void TrustStore::remove(const std::string& fingerprint) {
+  std::lock_guard lock(mu_);
+  ids_.erase(std::remove(ids_.begin(), ids_.end(), fingerprint), ids_.end());
+}
+
+bool TrustStore::contains(const std::string& fingerprint) const {
+  std::lock_guard lock(mu_);
+  return std::find(ids_.begin(), ids_.end(), fingerprint) != ids_.end();
+}
+
+std::vector<std::string> TrustStore::snapshot() const {
+  std::lock_guard lock(mu_);
+  return ids_;
+}
 
 }  // namespace clusterlm::transport

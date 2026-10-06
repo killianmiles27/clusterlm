@@ -339,6 +339,8 @@ struct NodeWorker::Impl {
     auto owns = [&](StageId s) {
       return std::any_of(plan->stages.begin(), plan->stages.end(), [&](const auto& st) { return st.stage == s; });
     };
+    // The peer's paired identity is trusted only for this lease; release() revokes it.
+    if (cfg.security.mode == transport::SecurityConfig::Mode::kMutualTls) cfg.security.trust(a.peer_device_id);
     if (owns(a.from_stage)) {
       downstream = a;
       downstream_stream.reset();
@@ -689,6 +691,8 @@ struct NodeWorker::Impl {
       father_activation.reset();
       downstream_stream.reset();
       peer_inbound.clear();
+      if (downstream) cfg.security.revoke(downstream->peer_device_id);
+      for (const auto& auth : inbound_allowed) cfg.security.revoke(auth.peer_device_id);
       downstream.reset();
       inbound_allowed.clear();
     }
