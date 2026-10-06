@@ -35,6 +35,7 @@ struct TierRow {
   std::vector<std::string> notes;
   std::optional<double> progress_percent;  // Preparing only
   std::string eta;                         // "about 3 min (estimate)"; empty when unknown
+  std::vector<std::string> progress_lines; // Preparing only: per machine "G14: 1.2 GB of 4.5 GB (3 of 12 parts)" 
   std::vector<std::string> participants;   // machines that take part ("This PC", "G14")
   bool selected = false;
   bool can_prepare = false;                // Available, and nothing else is running
@@ -65,6 +66,7 @@ struct PrepareView {
   std::optional<double> percent;
   std::string eta;      // "... (estimate)"
   std::string message;  // what is happening, from the service
+  std::vector<std::string> lines;  // per machine: bytes sent of total, parts sealed of total, or what it is doing now
 };
 
 struct StatsView {

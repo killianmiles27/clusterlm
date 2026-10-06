@@ -25,17 +25,24 @@ carry the user's text because this is IPC between the user's own processes; the 
 | `diagnostics.get` | `include_text?` | redacted counters and tier lines; conversation text only when `include_text` |
 | `pairing.start` | `address` (`host:pairport`), `code`, `name?` | `device` {fingerprint, short, name, address, ...}; blocks up to 20 s |
 | `pairing.list` | | `devices[]`, `assignments` |
-| `pairing.unpair` | `fingerprint` | removes the device and its assignments; releases the session |
+| `pairing.unpair` | `fingerprint` | removes the device and its assignments; releases the session; then tells the Node (docs/pairing.md). Result: `node_notified` (bool), `notify_outcome` (`delivered` / `unreachable` / `refused`), and a `note` when the Node could not be told (it keeps trusting this Father until unpaired locally) |
 | `assign.set` | `assignments` {role: fingerprint} | refused while a session is active |
 | `model.confirm` | `tier_id` | records the inspected manifest root as the user's confirmation |
 | `settings.get` / `settings.set` | `patch` over `selected_tier`, `context_tokens`, `keep_ready`, `model_dirs`, `advanced` | the document |
 
 ## Events
 
-`tier_selected`, `prepare_progress` {`percent?`, `eta_seconds?` (an estimate), `message`}, `tier_ready`,
+`tier_selected`, `prepare_progress` {`percent?`, `eta_seconds?` (an estimate), `message`, `detail?`}, `tier_ready`,
 `tokens` {`request_id`, `tier_id`, `model_name` (the model that produced exactly these tokens), `token_count`, `text`},
 `fallback` {`kind` retry/downgrade, `from_*`, `to_*`, `message` naming both models}, `finished` {`reason`,
 `stats` incl. `answered_by[]`; numbers are observed on that run}, `error`, `released`. Token IDs are not sent.
+
+`prepare_progress.detail` (present on events that come from the Coordinator's own progress): `phase` (overall:
+`father-domains`, `provisioning`, `authorizing` or `done`), `bytes_sent`, `bytes_total`, `objects_sealed`,
+`objects_total` and `nodes[]` {`name`, `phase` (`provisioning`, `node-preparing` or `node-ready`), `bytes_sent`,
+`bytes_total`, `objects_sealed`, `objects_total`}. Counts and machine names only: no object names, no content. Events with a detail
+come at phase changes and whenever an object is sealed, and at most every `progress_poll` (100 ms) otherwise; the
+smooth `percent` events carry no detail, so a client keeps the last detail until a new one arrives.
 
 ## Behaviour notes
 

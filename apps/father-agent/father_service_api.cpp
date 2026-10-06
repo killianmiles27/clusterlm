@@ -67,6 +67,15 @@ json event_json(const Event& event) {
           json j = {{"event", "prepare_progress"}, {"tier_id", e.tier_id}, {"model_name", e.model_name}, {"message", e.message}};
           j["percent"] = e.percent ? json(*e.percent) : json(nullptr);
           j["eta_seconds"] = e.eta_seconds ? json(*e.eta_seconds) : json(nullptr);  // an estimate
+          if (e.detail) {
+            // Counts and machine names only (no object names, no content).
+            json nodes = json::array();
+            for (const auto& n : e.detail->nodes)
+              nodes.push_back({{"name", n.name}, {"phase", n.phase}, {"bytes_sent", n.bytes_sent}, {"bytes_total", n.bytes_total},
+                               {"objects_sealed", n.objects_sealed}, {"objects_total", n.objects_total}});
+            j["detail"] = {{"phase", e.detail->phase}, {"bytes_sent", e.detail->bytes_sent}, {"bytes_total", e.detail->bytes_total},
+                           {"objects_sealed", e.detail->objects_sealed}, {"objects_total", e.detail->objects_total}, {"nodes", nodes}};
+          }
           return j;
         } else if constexpr (std::is_same_v<T, TierReadyEvent>) return {{"event", "tier_ready"}, {"tier_id", e.tier_id}, {"model_name", e.model_name}};
         else if constexpr (std::is_same_v<T, TokensEvent>)
@@ -97,6 +106,10 @@ Result<std::unique_ptr<FatherServiceApi>> FatherServiceApi::create(FatherApiConf
   if (!config.settings || !config.identity || !config.readiness || !config.deployments)
     return make_error(ErrorCode::kInvalidArgument, "FatherServiceApi needs settings, identity, readiness and deployments");
   if (!config.tokenizer) config.tokenizer = std::make_shared<NoTokenizer>();
+  if (!config.notify_unpair)
+    config.notify_unpair = [identity = config.identity](const config::PairedDevice& node) {
+      return notify_node_unpaired(identity, node);
+    };
   std::unique_ptr<FatherServiceApi> api(new FatherServiceApi(std::move(config)));
   CLM_RETURN_IF_ERROR(api->rebuild_service());
   api->touch();
@@ -185,6 +198,7 @@ Status FatherServiceApi::rebuild_service() {
   deps.readiness = cfg_.readiness;
   deps.deployments = cfg_.deployments;
   deps.options = cfg_.options;
+  deps.prepare_observer = cfg_.prepare_observer;
   deps.options.default_context_tokens = s.context_tokens;
   CLM_ASSIGN_OR_RETURN(auto svc, make_father_service(std::move(deps)));
   std::shared_ptr<FatherService> shared(std::move(svc));
@@ -379,13 +393,30 @@ Result<ipc::Envelope> FatherServiceApi::handle(const ipc::Envelope& request, con
     if (auto st = need_string(req, "fingerprint", fp); !st.is_ok()) { fail(st); }
     else {
       bool removed = false;
+      std::optional<config::PairedDevice> device;
+      {
+        const auto before = cfg_.settings->get();  // a copy: keep it alive while the pointer is used
+        if (const auto* d = before.find_node(fp)) device = *d;
+      }
       auto ust = cfg_.settings->update([&](config::FatherSettings& s) {
         removed = s.remove_node(fp);
         return removed ? Status::ok() : make_error(ErrorCode::kNotFound, "no such paired device");
       });
       if (!ust.is_ok()) fail(ust);
       else if (auto rb = rebuild_service(); !rb.is_ok()) fail(rb);  // releases any lease that used the device
-      else succeed();
+      else {
+        // The session is gone, so the Node's control channel is free: ask it to drop trust in this Father too. Best
+        // effort; an unreachable Node keeps trusting us until it is unpaired locally (docs/pairing.md).
+        json result = json::object();
+        if (device) {
+          const auto n = cfg_.notify_unpair(*device);
+          result["node_notified"] = n.delivered();
+          result["notify_outcome"] = std::string(to_string(n.outcome));
+          if (!n.delivered())
+            result["note"] = "The Node could not be told. It keeps trusting this Father until it is unpaired on the Node itself.";
+        }
+        succeed(std::move(result));
+      }
     }
   } else if (op == "assign.set") {
     if (!req.contains("assignments") || !req["assignments"].is_object()) {

@@ -10,7 +10,7 @@ real Windows hardware: see `HARDWARE-QUALIFICATION.md` (`HQ-WIN-01`..`HQ-WIN-04`
 |---|---|---|---|
 | `clusterlm-node-service.exe` | `NT AUTHORITY\LocalService` (service SID `NT SERVICE\ClusterLMNode`) | 0 | SCM service. `ServiceCore`: helper pipe server, helper-fed activity, `NodeSupervisor`, power/session events |
 | `clusterlm-node.exe` (worker) | same as the service (inherits the token) | 0 | Inference worker inside Job Object `ClusterLM-Node-Worker` (kill-on-close, memory limit). Listens on the Node data port |
-| `clusterlm-node-helper.exe` | the logged-on user | each interactive session | Reports idle seconds + lock state at 1 Hz and immediately on lock/unlock/resume; no UI yet (tray later) |
+| `clusterlm-node-helper.exe` | the logged-on user | each interactive session | Reports idle seconds + lock state at 1 Hz and immediately on lock/unlock/resume; it has no UI (the Node UI, `clusterlm-node-ui.exe`, is a separate user process that talks to the same pipe, `docs/ui.md`) |
 | `clusterlm-father-agent.exe` | the logged-on user | the user's session | Hosts the Coordinator configuration, serves the Father UI over a per-user pipe |
 
 ```
@@ -40,9 +40,16 @@ Source map: `runtime/platform` (`ipc`, `ipc_messages`, `ipc_server_loop`, `helpe
 
 Both: byte mode, `PIPE_REJECT_REMOTE_CLIENTS`, first-instance flag, client `SECURITY_IDENTIFICATION`, frames <= 1 MiB.
 POSIX development uses `<ipc-dir>/<name>.sock` (dir 0700, socket 0600, `SO_PEERCRED` uid check).
-Messages: helper to service `ActivityReport`, `PauseRequest`, `ResumeRequest`, `StatusRequest`; service to helper
-`StatusReply`, `Ack`; Father UI `kFatherRequest`/`kFatherReply`/`kFatherEvent` with opaque payloads. No message can carry tokens,
-text, logits or prompts.
+Messages (helper protocol version 2): helper or Node UI to service `ActivityReport`, `PauseRequest`, `ResumeRequest`,
+`StatusRequest`, `SettingsRequest`, `SettingsUpdate`, `PairingModeRequest`; service to client `StatusReply`
+(state, paired Father short id, staged bytes, helper freshness, and the worker's lease state with parts sealed / planned),
+`SettingsReply`, `PairingModeReply`, `Ack`; Father UI `kFatherRequest`/`kFatherReply`/`kFatherEvent` with opaque
+payloads. No message can carry tokens, text, logits or prompts. `SettingsUpdate` and `PairingModeRequest` are accepted
+only from a peer in an interactive session (a session-0 peer is refused, on top of the pipe DACL) and rate limited;
+`SettingsUpdate` carries only the user-safe subset of `config::NodeSettings` (idle policy, AC only, storage limit, start
+with system, RAM/VRAM/thread caps): no name, trust, path or command can be sent. The lease state comes from the
+supervisor polling the worker (`SupervisorConfig::lease_poll_interval`, 250 ms) and is cached, so a status request never
+waits on the worker.
 
 ## Startup
 
@@ -117,4 +124,6 @@ Firewall rule scope across Father, a Node and a third machine. See `HARDWARE-QUA
 - Real Win32 code is type-checked only (MinGW syntax check on Linux; MSVC in CI). Nothing here has run on Windows yet.
 - `OpenProcess` on the pipe server by a standard-user client (server-user pinning) may be denied; the helper does not pin by default.
 - Modern standby and hibernate event sequences are not characterised.
-- The tray icon, installer, pairing UX and the Father service API are other workstreams.
+- The Windows behaviour of the new pipe messages (interactive-session check for settings and pairing mode, a settings
+  save that restarts the worker, the LocalService pairing listener) is covered by `HQ-WIN-02`, `HQ-PAIR-01` and
+  `HQ-UI-01`, not yet run.

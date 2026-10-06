@@ -20,6 +20,7 @@
 
 #include "clusterlm/config/store.hpp"
 #include "clusterlm/father/father_agent.hpp"
+#include "clusterlm/father/node_notify.hpp"
 #include "clusterlm/father/production.hpp"
 #include "clusterlm/father/service.hpp"
 
@@ -37,6 +38,10 @@ struct FatherApiConfig {
   std::shared_ptr<DetailsBoard> details = std::make_shared<DetailsBoard>();
   std::string father_name = "Father";
   bool dev_fixture_model = false;  // reported to the UI so it can label the development override
+  // Tells a just-unpaired Node to drop trust in this Father (docs/pairing.md). Null = the real notifier over mutual
+  // TLS (notify_node_unpaired). Tests inject a recorder.
+  std::function<UnpairNotifyResult(const config::PairedDevice&)> notify_unpair;
+  PrepareObserver prepare_observer;  // Coordinator preparation progress (ProvisioningBoard::observer() in production)
   ServiceOptions options;
 };
 

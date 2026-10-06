@@ -188,6 +188,7 @@ std::map<MessageType, Shape> build_registry() {
   }
   r[MessageType::kPing] = fixed_shape<Ping>(8);
   r[MessageType::kPong] = fixed_shape<Pong>(8);
+  r[MessageType::kUnpairNotice] = fixed_shape<UnpairNotice>(8);
   r[MessageType::kAbortWindow] = fixed_shape<AbortWindow>(8 + 8 + 8 + 4);
   r[MessageType::kWindowAborted] = fixed_shape<WindowAborted>(4 + 8 + 8 + 8 + 8);
   {

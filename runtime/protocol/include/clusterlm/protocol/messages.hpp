@@ -55,6 +55,7 @@ enum class MessageType : std::uint16_t {
   kWindowAborted = 28,
   kReleaseLease = 30,
   kReleaseComplete = 31,
+  kUnpairNotice = 32,
   kError = 40,
   kPing = 41,
   kPong = 42,
@@ -262,6 +263,13 @@ struct ReleaseComplete {
   std::string errors;
 };
 
+// Father -> Node, control channel: "I am unpairing you; stop trusting me." Accepted by a Node only on a channel
+// whose TLS identity is one of its pinned (paired) Fathers; the Node then releases its lease, drops that trust and
+// the service clears its paired-Father setting. Carries no data, only a nonce echoed in the Pong reply.
+struct UnpairNotice {
+  std::uint64_t nonce = 0;
+};
+
 struct ErrorMessage {
   ErrorCode code = ErrorCode::kInternal;
   std::string message;
@@ -278,7 +286,7 @@ struct Pong {
 using Message = std::variant<Hello, HelloAck, OfferResources, PreparePlan, PlanAccepted, ProvisionChunk, SealObject,
                              ObjectSealed, PlanReady, AuthorizePeer, OpenSession, SessionOpened, RunWindow, StageResult,
                              CommitWindow, CommitAckMessage, AbortSession, ReleaseLease, ReleaseComplete, ErrorMessage,
-                             Ping, Pong, AbortWindow, WindowAborted, ProvisionStatus>;
+                             Ping, Pong, AbortWindow, WindowAborted, ProvisionStatus, UnpairNotice>;
 
 MessageType type_of(const Message& m);
 Channel channel_of(MessageType t);

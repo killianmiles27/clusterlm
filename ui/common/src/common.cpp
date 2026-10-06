@@ -1,4 +1,5 @@
 // Shared UI definitions: display helpers, state naming, settings validation.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -132,6 +133,50 @@ NodeUiState from_ipc(ipc::NodeState s) noexcept {
   return NodeUiState::kUnreachable;
 }
 
+NodeUiState from_ipc(ipc::NodeState s, ipc::LeaseState lease) noexcept {
+  if (s == ipc::NodeState::kOffering) {
+    switch (lease) {
+      case ipc::LeaseState::kNone: break;
+      case ipc::LeaseState::kPreparing: return NodeUiState::kPreparing;
+      case ipc::LeaseState::kReady: return NodeUiState::kReady;
+      case ipc::LeaseState::kInferencing: return NodeUiState::kInUse;
+      case ipc::LeaseState::kReleasing:
+      case ipc::LeaseState::kCleanupPending: return NodeUiState::kCleanupNeeded;
+    }
+  }
+  return from_ipc(s);
+}
+
+NodeSettings from_view(const ipc::NodeSettingsView& v, std::uint32_t logical_processors) {
+  NodeSettings s;
+  s.allow_when_idle = v.allow_when_idle;
+  s.ac_power_only = v.ac_only;
+  s.start_with_windows = v.start_with_system;
+  s.temp_storage_limit_gb = v.temp_storage_limit_gib;
+  s.ram_gb = v.ram_gib;
+  s.gpu_memory_gb = v.vram_gib;
+  const std::uint32_t procs = std::max<std::uint32_t>(logical_processors, 1);
+  if (v.threads == 0 || v.threads >= procs) {
+    s.cpu_cap_percent = 100;
+  } else {
+    s.cpu_cap_percent = std::clamp<std::uint32_t>((v.threads * 100u + procs / 2) / procs, 10, 100);
+  }
+  return s;
+}
+
+ipc::NodeSettingsView to_view(const NodeSettings& s, const ipc::NodeSettingsView& base, std::uint32_t logical_processors) {
+  ipc::NodeSettingsView v = base;
+  v.allow_when_idle = s.allow_when_idle;
+  v.ac_only = s.ac_power_only;
+  v.start_with_system = s.start_with_windows;
+  v.temp_storage_limit_gib = s.temp_storage_limit_gb;
+  v.ram_gib = s.ram_gb;
+  v.vram_gib = s.gpu_memory_gb;
+  const std::uint32_t procs = std::max<std::uint32_t>(logical_processors, 1);
+  v.threads = s.cpu_cap_percent >= 100 ? 0 : std::max<std::uint32_t>(1, (s.cpu_cap_percent * procs + 50) / 100);
+  return v;
+}
+
 NodeUiState from_machine_state(catalog::MachineState s) noexcept {
   using M = catalog::MachineState;
   switch (s) {
@@ -148,14 +193,14 @@ NodeUiState from_machine_state(catalog::MachineState s) noexcept {
 }
 
 Status validate(const NodeSettings& s) {
-  if (s.temp_storage_limit_gb < 1 || s.temp_storage_limit_gb > 4096)
-    return make_error(ErrorCode::kInvalidArgument, "Temporary storage limit must be between 1 and 4096 GB.");
+  if (s.temp_storage_limit_gb > 4096)
+    return make_error(ErrorCode::kInvalidArgument, "Temporary storage limit must be 0 (no limit) or between 1 and 4096 GB.");
   if (s.cpu_cap_percent < 10 || s.cpu_cap_percent > 100)
     return make_error(ErrorCode::kInvalidArgument, "CPU limit must be between 10% and 100%.");
-  if (s.gpu_memory_cap_percent < 10 || s.gpu_memory_cap_percent > 100)
-    return make_error(ErrorCode::kInvalidArgument, "Graphics memory limit must be between 10% and 100%.");
-  if (s.ram_cap_gb > 1024)
-    return make_error(ErrorCode::kInvalidArgument, "Memory limit must be 0 (no limit) or between 1 and 1024 GB.");
+  if (s.gpu_memory_gb > 1024)
+    return make_error(ErrorCode::kInvalidArgument, "Graphics memory limit must be 0 (do not use it) or between 1 and 1024 GB.");
+  if (s.ram_gb < 1 || s.ram_gb > 1024)
+    return make_error(ErrorCode::kInvalidArgument, "Memory limit must be between 1 and 1024 GB.");
   return Status::ok();
 }
 

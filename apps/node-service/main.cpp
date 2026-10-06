@@ -12,6 +12,8 @@
 //                                                              --purge also deletes the Node identity, logs and root)
 //   clusterlm-node-service --pair [--pair-port N] [--pair-window-seconds S]   enter pairing mode at startup
 //   clusterlm-node-service --unpair                           forget the paired Father (service stopped)
+// While running, the service also answers the helper pipe's settings and pairing-mode messages (the Node UI: docs/ui.md)
+// and honours an UnpairNotice from its paired Father (docs/pairing.md): lease released, trust dropped, setting cleared.
 //   [--settings FILE]   Node settings document (default: <node_root>/node-settings.json)
 //   [--helper-pipe NAME] helper pipe name for side-by-side dev/test instances (default: the product name)
 //
@@ -142,18 +144,19 @@ class NodeServiceApp final : public platform::ServiceApp {
                 core_.worker_device_id().c_str());
     std::fflush(stdout);
     if (start_paused_) core_.helper_activity().pause(std::nullopt);  // settings: paused / not allowed when idle
+    core_.set_pairing_starter([this] { return start_pairing(); });
     if (simulate_) {
       core_.helper_activity().submit({0, false, 0});  // starts in use; stdin drives the rest
       input_ = std::thread([this] { simulate_input(); });
     }
     if (pairing_.start_now) {
-      if (auto st = start_pairing(); !st.is_ok()) std::fprintf(stderr, "pairing: %s\n", st.to_string().c_str());
+      if (auto st = start_pairing(); !st.is_ok()) std::fprintf(stderr, "pairing: %s\n", st.status().to_string().c_str());
     }
     return Status::ok();
   }
 
   // ---- pairing -----------------------------------------------------------------------------------------
-  Status start_pairing() {
+  Result<ipc::PairingModeReply> start_pairing() {
     std::lock_guard lk(pair_mu_);
     stop_pairing_locked();
     pairing::ResponderOptions o;
@@ -168,15 +171,16 @@ class NodeServiceApp final : public platform::ServiceApp {
     std::fflush(stdout);
     auto* raw = responder_.get();
     pair_thread_ = std::thread([this, raw, window = pairing_.window] { await_pairing(raw, window); });
-    return Status::ok();
+    ipc::PairingModeReply offer;
+    offer.code = responder_->code();
+    offer.endpoint = responder_->endpoint().str();
+    offer.fingerprint = pairing::short_fingerprint(pairing_.identity->fingerprint());
+    offer.window_seconds = static_cast<std::uint32_t>(pairing_.window.count());
+    return offer;
   }
 
   Status unpair() {
-    CLM_RETURN_IF_ERROR(pairing_.settings->update([](config::NodeSettings& s) {
-      s.paired_father.reset();
-      return Status::ok();
-    }));
-    CLM_RETURN_IF_ERROR(core_.set_trusted_fathers({}, ""));
+    CLM_RETURN_IF_ERROR(core_.unpair_father());
     std::printf("CLUSTERLM_NODE_UNPAIRED\n");
     std::fflush(stdout);
     return Status::ok();
@@ -212,7 +216,7 @@ class NodeServiceApp final : public platform::ServiceApp {
       if (line == "lock") locked = true;
       if (line == "unlock") locked = false;
       if (line == "pair") {
-        if (auto st = start_pairing(); !st.is_ok()) std::fprintf(stderr, "pairing: %s\n", st.to_string().c_str());
+        if (auto st = start_pairing(); !st.is_ok()) std::fprintf(stderr, "pairing: %s\n", st.status().to_string().c_str());
       }
       if (line == "unpair") {
         if (auto st = unpair(); !st.is_ok()) std::fprintf(stderr, "unpair: %s\n", st.to_string().c_str());
@@ -359,6 +363,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   const config::NodeSettings settings = settings_store.value()->get();
+  std::shared_ptr<config::NodeSettingsStore> settings_shared = std::move(settings_store).value();
 
   node::ServiceCoreConfig cfg;
   cfg.supervisor.worker_binary = args.get("worker", (platform::executable_dir() / "clusterlm-node").string());
@@ -381,6 +386,10 @@ int main(int argc, char** argv) {
       cfg.supervisor.worker_args.push_back("--disk-gib");
       cfg.supervisor.worker_args.push_back(std::to_string(settings.temp_storage_limit_gib));
     }
+    if (const auto threads = args.integer("threads", settings.caps.threads); threads > 0) {  // thread cap (0 = automatic)
+      cfg.supervisor.worker_args.push_back("--threads");
+      cfg.supervisor.worker_args.push_back(std::to_string(threads));
+    }
   }
   // The identity pairing presents must be the worker's: take it from the worker arguments when they name one.
   std::filesystem::path pairing_identity_dir = identity;
@@ -395,6 +404,7 @@ int main(int argc, char** argv) {
     cfg.paired_father = pairing::short_fingerprint(settings.paired_father->fingerprint);
   }
   cfg.staging_root = staging;
+  cfg.settings = settings_shared;
   const auto idle_seconds = static_cast<std::uint32_t>(args.integer("idle-seconds", settings.idle_seconds));
   cfg.supervisor.policy.idle_seconds_required = idle_seconds;
   cfg.supervisor.policy.require_ac_power = !args.has("allow-battery") && settings.ac_only;
@@ -434,7 +444,7 @@ int main(int argc, char** argv) {
     if (!ident.is_ok()) return fail(ident.status());
     pairing_setup.identity = std::make_shared<const transport::DeviceIdentity>(std::move(ident).value());
   }
-  pairing_setup.settings = settings_store.value().get();
+  pairing_setup.settings = settings_shared.get();
   pairing_setup.name = pairing_name;
   pairing_setup.listen = {"0.0.0.0", static_cast<std::uint16_t>(args.integer("pair-port", port + 1u))};
   pairing_setup.window = std::chrono::seconds(static_cast<std::int64_t>(args.integer("pair-window-seconds", 300)));

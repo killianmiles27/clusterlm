@@ -133,7 +133,8 @@ TEST_CASE("node window draws in every state") {
     Status pause() override { return Status::ok(); }
     Status resume() override { return Status::ok(); }
     Result<NodeSettings> get_settings() override { return NodeSettings{}; }
-    Status set_settings(const NodeSettings&) override { return make_error(ErrorCode::kUnimplemented, "not saved"); }
+    Status set_settings(const NodeSettings&) override { return make_error(ErrorCode::kUnavailable, "not saved"); }
+    Result<NodePairingInfo> enter_pairing_mode() override { return NodePairingInfo{"ABCD-EFGH", "192.168.1.20:47601", "ab12-cd34-ef56", 300}; }
   } fake;
   NodeViewModel vm(fake);
   NodeDrawState ui;
@@ -144,10 +145,17 @@ TEST_CASE("node window draws in every state") {
                   NodeUiState::kCleanupNeeded, NodeUiState::kStopping}) {
     fake.s.state = st;
     fake.s.paired_father = st == NodeUiState::kUnreachable ? "" : "ab12";
+    fake.s.lease = st == NodeUiState::kPreparing ? ipc::LeaseState::kPreparing : ipc::LeaseState::kNone;
+    fake.s.lease_parts_done = 3;
+    fake.s.lease_parts_total = 12;
     vm.tick(true);
     CHECK(h.frame(440, 560, draw) > 0);
   }
-  ui.edit.temp_storage_limit_gb = 0;  // an invalid edit still draws (the Save button is what reports it)
+  fake.s.state = NodeUiState::kAvailable;
+  vm.tick(true);
+  (void)vm.enter_pairing_mode();  // the pairing line is drawn too
+  CHECK(h.frame(440, 560, draw) > 0);
+  ui.edit.ram_gb = 0;  // an invalid edit still draws (the Save button is what reports it)
   CHECK(h.frame(440, 560, draw) > 0);
   CHECK(h.frame(200, 150, draw) > 0);
 }

@@ -30,6 +30,18 @@ using protocol::Message;
 using protocol::MessageStream;
 using protocol::ReceivedMessage;
 
+std::string_view to_string(PreparePhase p) {
+  switch (p) {
+    case PreparePhase::kFatherDomains: return "father-domains";
+    case PreparePhase::kProvisioning: return "provisioning";
+    case PreparePhase::kNodePreparing: return "node-preparing";
+    case PreparePhase::kNodeReady: return "node-ready";
+    case PreparePhase::kAuthorizing: return "authorizing";
+    case PreparePhase::kDone: return "done";
+  }
+  return "?";
+}
+
 std::int32_t argmax(std::span<const float> logits) {
   std::size_t best = 0;
   for (std::size_t i = 1; i < logits.size(); ++i)
@@ -287,6 +299,70 @@ struct RemoteNode {
   std::optional<protocol::ReleaseComplete> self_released;
 };
 
+// Collects per-Node progress from the (concurrent) provisioning workers and hands consistent snapshots to the sink.
+class ProgressTracker {
+ public:
+  void begin(PrepareProgressSink sink, const std::vector<std::pair<const RemoteNode*, std::string>>& nodes) {
+    std::lock_guard lk(mu_);
+    sink_ = std::move(sink);
+    slots_.clear();
+    state_ = PrepareProgress{};
+    for (const auto& [ptr, name] : nodes) {
+      slots_[ptr] = state_.nodes.size();
+      NodePrepareProgress np;
+      np.node = name;
+      state_.nodes.push_back(std::move(np));
+    }
+    last_emit_ = {};
+  }
+  void end() {
+    std::lock_guard lk(mu_);
+    sink_ = nullptr;
+  }
+  bool active() const {
+    std::lock_guard lk(mu_);
+    return static_cast<bool>(sink_);
+  }
+  void set_overall(PreparePhase p) {
+    std::lock_guard lk(mu_);
+    if (!sink_) return;
+    state_.phase = p;
+    emit_locked(true);
+  }
+  // `change` edits one Node's entry; `force` = a phase change or a sealed object (never throttled).
+  template <typename F>
+  void update(const RemoteNode* node, F&& change, bool force) {
+    std::lock_guard lk(mu_);
+    if (!sink_) return;
+    auto it = slots_.find(node);
+    if (it == slots_.end()) return;
+    change(state_.nodes[it->second]);
+    emit_locked(force);
+  }
+
+ private:
+  void emit_locked(bool force) {
+    const auto now = SteadyClock::now();
+    if (!force && last_emit_ != SteadyClock::time_point{} && now - last_emit_ < std::chrono::milliseconds(50)) return;
+    last_emit_ = now;
+    state_.bytes_sent = state_.bytes_total = 0;
+    state_.objects_sealed = state_.objects_total = 0;
+    for (const auto& n : state_.nodes) {
+      state_.bytes_sent += n.bytes_sent;
+      state_.bytes_total += n.bytes_total;
+      state_.objects_sealed += n.objects_sealed;
+      state_.objects_total += n.objects_total;
+    }
+    sink_(state_);
+  }
+
+  mutable std::mutex mu_;
+  PrepareProgressSink sink_;
+  std::map<const RemoteNode*, std::size_t> slots_;
+  PrepareProgress state_;
+  SteadyClock::time_point last_emit_{};
+};
+
 struct Coordinator::Impl {
   // Declared first so it outlives every Node stream whose reader thread pushes into it.
   Inbox results;  // StageResults from every Node's activation channel
@@ -443,6 +519,20 @@ struct Coordinator::Impl {
   }
 
   Status provision_pass(RemoteNode& n, const protocol::PreparePlan& p, std::vector<bool>& sealed) {
+    {
+      // Objects the Node already holds (a resumed transfer) count as sent; the rest are streamed again, whole.
+      std::uint64_t done_bytes = 0;
+      std::uint32_t done_objects = 0;
+      for (const auto& a : p.assignments)
+        if (sealed[a.object_index]) {
+          done_bytes += p.manifest.objects[a.object_index].byte_size;
+          ++done_objects;
+        }
+      progress.update(&n, [&](NodePrepareProgress& np) {
+        np.bytes_sent = done_bytes;
+        np.objects_sealed = done_objects;
+      }, true);
+    }
     std::size_t outstanding = 0;
     for (const auto& a : p.assignments) {
       if (sealed[a.object_index]) continue;
@@ -457,7 +547,9 @@ struct Coordinator::Impl {
             chunk.offset = offset;
             chunk.data.assign(data.begin(), data.end());
             chunk.chunk_digest = Sha256::of(chunk.data);
-            return n.provision->stream->send(chunk);
+            if (Status sent = n.provision->stream->send(chunk); !sent.is_ok()) return sent;
+            progress.update(&n, [&](NodePrepareProgress& np) { np.bytes_sent += data.size(); }, false);
+            return Status::ok();
           }));
       protocol::SealObject seal{n.lease, a.object_index, obj.byte_size, obj.object_digest};
       CLM_RETURN_IF_ERROR(n.provision->stream->send(seal, n.provision->stream->next_correlation()));
@@ -472,7 +564,10 @@ struct Coordinator::Impl {
       if (auto* e = std::get_if<protocol::ErrorMessage>(&reply.message)) return make_error(e->code, e->message);
       auto* ok = std::get_if<protocol::ObjectSealed>(&reply.message);
       if (ok == nullptr) return make_error(ErrorCode::kProtocolError, "unexpected message on provision channel");
-      if (ok->object_index < sealed.size()) sealed[ok->object_index] = true;
+      if (ok->object_index < sealed.size() && !sealed[ok->object_index]) {
+        sealed[ok->object_index] = true;
+        progress.update(&n, [&](NodePrepareProgress& np) { ++np.objects_sealed; }, true);
+      }
     }
     return Status::ok();
   }
@@ -483,6 +578,17 @@ struct Coordinator::Impl {
     n.provision_report = {};
     n.provision_report.node = n.endpoint.name;
     CLM_ASSIGN_OR_RETURN(auto p, plan_message(n, s));
+    {
+      std::uint64_t total = 0;
+      for (const auto& a : p.assignments) total += p.manifest.objects[a.object_index].byte_size;
+      progress.update(&n, [&](NodePrepareProgress& np) {
+        np.phase = PreparePhase::kProvisioning;
+        np.bytes_total = total;
+        np.bytes_sent = 0;
+        np.objects_total = static_cast<std::uint32_t>(p.assignments.size());
+        np.objects_sealed = 0;
+      }, true);
+    }
     CLM_RETURN_IF_ERROR(n.control->call<protocol::PlanAccepted>(p, cfg.request_timeout).status());
     CLM_ASSIGN_OR_RETURN(n.provision, open_channel(n, Channel::kProvision, true));
     if (Status pst = provision_node(n, p); !pst.is_ok()) {
@@ -499,6 +605,11 @@ struct Coordinator::Impl {
       }
       return pst;
     }
+    progress.update(&n, [&](NodePrepareProgress& np) {
+      np.phase = PreparePhase::kNodePreparing;
+      np.bytes_sent = np.bytes_total;
+      np.objects_sealed = np.objects_total;
+    }, true);
     // PlanReady (or a prepare failure) arrives unsolicited on the control channel.
     CLM_ASSIGN_OR_RETURN(auto ready, n.control->inbox.wait(
                                          [](const ReceivedMessage& r) {
@@ -512,6 +623,7 @@ struct Coordinator::Impl {
     if (pr.plan_hash != plan_hash || pr.lease != n.lease)
       return make_error(ErrorCode::kStaleEpoch, "PlanReady for a different plan or lease");
     n.provision_report.node_prepare_ns = pr.prepare_ns;
+    progress.update(&n, [](NodePrepareProgress& np) { np.phase = PreparePhase::kNodeReady; }, true);
     // Provisioning is over; the bulk channel is not kept open during inference.
     n.provision->shutdown();
     n.provision.reset();
@@ -553,6 +665,7 @@ struct Coordinator::Impl {
   // (bounded); decode has exactly one window in flight.
 
   std::atomic<bool> cancel_prepare{false};
+  ProgressTracker progress;
 
   struct Flight {
     domain::WindowRequest req;
@@ -860,7 +973,7 @@ Status Coordinator::connect() {
   return Status::ok();
 }
 
-Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
+Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan, PrepareProgressSink progress_sink) {
   auto& im = *impl_;
   const auto& m = im.store->manifest();
   CLM_RETURN_IF_ERROR(plan.validate(m.geometry, im.nodes.size()));
@@ -874,6 +987,18 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
   im.plan = plan;
   im.plan_hash = plan.hash(m.root_hash());
   log::info("prepare_plan", {{"plan", plan.describe()}, {"plan_hash", im.plan_hash.hex().substr(0, 16)}});
+
+  {
+    std::vector<std::pair<const RemoteNode*, std::string>> remote;
+    for (const auto& s : plan.stages)
+      if (s.domain != kFatherDomain) remote.emplace_back(&im.node_for(s), im.node_for(s).endpoint.name);
+    im.progress.begin(std::move(progress_sink), remote);
+  }
+  struct EndProgress {
+    ProgressTracker& t;
+    ~EndProgress() { t.end(); }
+  } end_progress{im.progress};
+  im.progress.set_overall(PreparePhase::kFatherDomains);
 
   // Father-local prefix and tail domains, bound to the canonical store (which loads only their objects).
   for (const auto& s : plan.stages) {
@@ -896,6 +1021,7 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
 
   // Provision Nodes concurrently. Their transfers share Father's single egress link, so concurrency overlaps
   // per-Node hashing/loading rather than multiplying bandwidth.
+  im.progress.set_overall(PreparePhase::kProvisioning);
   std::vector<Status> results(plan.stages.size());
   std::vector<std::thread> workers;
   for (std::size_t i = 0; i < plan.stages.size(); ++i) {
@@ -913,6 +1039,7 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
     }
   }
   if (im.cfg.direct_peer) {
+    im.progress.set_overall(PreparePhase::kAuthorizing);
     if (Status st = im.authorize_peers(); !st.is_ok()) {
       im.prepared = true;  // so release() cleans up the provisioned Nodes and local domains
       (void)release();
@@ -920,6 +1047,7 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
     }
   }
   im.prepared = true;
+  im.progress.set_overall(PreparePhase::kDone);
 
   PrepareReport report;
   report.plan_hash = im.plan_hash;

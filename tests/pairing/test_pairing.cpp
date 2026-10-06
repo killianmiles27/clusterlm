@@ -348,7 +348,9 @@ TEST_CASE("pairing mode expires after its window; a stalled client does not bloc
     sec.pairing_channel = true;
     auto idle = transport::connect(responder.value()->endpoint(), sec, std::nullopt, 5s);
     REQUIRE(idle.is_ok());
-    std::this_thread::sleep_for(700ms);
+    // The responder drops the silent client after its step timeout; wait for that instead of sleeping a fixed time
+    // (a loaded machine stretches the 400 ms arbitrarily).
+    CHECK_FALSE(idle.value()->receive(30s).is_ok());
     auto peer = pair_with(responder.value()->endpoint(), father_id, kCode, kFatherInfo, 5s);
     REQUIRE_MESSAGE(peer.is_ok(), peer.status().to_string());
     CHECK(responder.value()->failures() == 0);  // stalling is not a guess

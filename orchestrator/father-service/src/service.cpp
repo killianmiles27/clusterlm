@@ -373,11 +373,43 @@ class ServiceImpl final : public FatherService {
       poller.join();
     };
 
+    // Coordinator progress -> observer (readiness board) and discrete UI events (phase changes, sealed objects); the
+    // poller above supplies the smooth percentage between them.
+    std::string last_signature;
+    auto last_event = std::chrono::steady_clock::time_point{};
+    auto on_progress = [&](const coordinator::PrepareProgress& p) {
+      if (deps_.prepare_observer.on_progress) deps_.prepare_observer.on_progress(tier->id, p);
+      PrepareDetail d;
+      d.phase = std::string(coordinator::to_string(p.phase));
+      d.bytes_sent = p.bytes_sent;
+      d.bytes_total = p.bytes_total;
+      d.objects_sealed = p.objects_sealed;
+      d.objects_total = p.objects_total;
+      std::string sig = d.phase;
+      for (const auto& n : p.nodes) {
+        d.nodes.push_back({n.node, std::string(coordinator::to_string(n.phase)), n.bytes_sent, n.bytes_total,
+                           n.objects_sealed, n.objects_total});
+        sig += "|" + std::to_string(static_cast<int>(n.phase)) + ":" + std::to_string(n.objects_sealed);
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (sig == last_signature && now - last_event < deps_.options.progress_poll) return;
+      last_signature = std::move(sig);
+      last_event = now;
+      std::optional<double> pct;
+      if (d.bytes_total > 0) pct = 100.0 * static_cast<double>(d.bytes_sent) / static_cast<double>(d.bytes_total);
+      std::string msg = "Preparing " + tier->display_name;
+      if (d.phase == "node-preparing") msg += ": machines are loading what they received";
+      else if (d.phase == "authorizing") msg += ": connecting machines to each other";
+      else if (d.bytes_total > 0)
+        msg += ": sent " + std::to_string(d.objects_sealed) + " of " + std::to_string(d.objects_total) + " parts";
+      emit(PrepareProgressEvent{tier->id, tier->model.display_name, pct, std::nullopt, std::move(msg), std::move(d)});
+    };
     Status st = coord.value()->connect();
     if (st.is_ok()) {
-      auto rep = coord.value()->prepare(dep->plan);
+      auto rep = coord.value()->prepare(dep->plan, on_progress);
       if (!rep.is_ok()) st = rep.status();
     }
+    if (deps_.prepare_observer.on_finished) deps_.prepare_observer.on_finished(tier->id);
     stop();
     if (!st.is_ok()) {
       (void)coord.value()->release();

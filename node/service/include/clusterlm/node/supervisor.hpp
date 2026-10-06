@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,28 @@ struct SupervisorConfig {
   std::chrono::milliseconds cooperative_deadline{2000};
   std::chrono::milliseconds status_poll{20};
   std::uint64_t worker_memory_limit_bytes = 0;  // Job Object per-process limit (0 = none)
+  // How often tick() asks the worker for its lease state (cached for status replies). 0 = every tick.
+  std::chrono::milliseconds lease_poll_interval{250};
+};
+
+// Resource caps that are worker launch arguments (--ram-gib, --vram-gib, --disk-gib, --threads).
+struct WorkerCaps {
+  std::uint32_t ram_gib = 0;
+  std::uint32_t vram_gib = 0;
+  std::uint32_t disk_gib = 0;  // 0 = flag removed (no explicit cap)
+  std::uint32_t threads = 0;   // 0 = flag removed (automatic)
+  friend bool operator==(const WorkerCaps&, const WorkerCaps&) = default;
+};
+// Returns `args` with the cap flags replaced (or appended, or removed for 0 disk/threads). Other arguments keep
+// their order. Values are plain decimal numbers; nothing from the caller is passed through as text.
+std::vector<std::string> with_worker_caps(std::vector<std::string> args, const WorkerCaps& caps);
+
+// What the worker last reported about its lease (states and counts only; never model, prompt or object names).
+struct WorkerLeaseView {
+  bool known = false;               // false until the first successful poll, or when the worker is unresponsive
+  std::string state;                // the worker's NodeState name: Busy, Available, Preparing, Ready, ...
+  std::uint32_t sealed_objects = 0;
+  std::uint32_t planned_objects = 0;
 };
 
 enum class SupervisorEventKind {
@@ -82,6 +105,20 @@ class NodeSupervisor {
   Result<std::vector<SupervisorEvent>> set_trusted_peers(std::vector<std::string> fingerprints);
   const std::vector<std::string>& trusted_peers() const { return cfg_.trusted_peers; }
 
+  // Applies a changed participation policy (immediately; the next tick re-evaluates) and/or worker arguments. A
+  // changed argument list restarts the worker like set_trusted_peers does: revoked cooperatively first, so a lease
+  // never survives a cap change. Unchanged inputs do nothing.
+  Result<std::vector<SupervisorEvent>> reconfigure(std::optional<std::vector<std::string>> worker_args,
+                                                   std::optional<IdlePolicy> policy);
+  const std::vector<std::string>& worker_args() const { return cfg_.worker_args; }
+  const IdlePolicy& policy() const { return cfg_.policy; }
+
+  // The lease state the worker reported at the last poll (see SupervisorConfig::lease_poll_interval).
+  WorkerLeaseView worker_lease() const { return lease_view_; }
+  // Set when the worker reported an accepted UnpairNotice from its paired Father; returns the notifying device id
+  // (possibly empty in insecure loopback mode) once, then clears it.
+  std::optional<std::string> take_unpair_notice();
+
   bool eligible() const { return eligible_; }
   bool suspended() const { return suspended_; }
   platform::ChildProcess* worker() { return worker_.get(); }
@@ -94,7 +131,12 @@ class NodeSupervisor {
   struct WorkerStatus {
     std::string state;
     std::uint64_t census_bytes = 0;
+    std::uint32_t sealed = 0, planned = 0;
   };
+  // read_until on the worker's stdout that also notices unsolicited UnpairNotice lines.
+  Result<std::string> read_worker(const std::string& prefix, std::chrono::milliseconds timeout);
+  void poll_lease();
+  Status restart_worker();
   Result<WorkerStatus> worker_status(std::chrono::milliseconds timeout);
   Result<SupervisorEvent> revoke();
   Result<SupervisorEvent> force_and_relaunch(const std::string& why);
@@ -107,6 +149,9 @@ class NodeSupervisor {
   std::string endpoint_, device_id_;
   bool eligible_ = false;
   bool suspended_ = false;
+  WorkerLeaseView lease_view_;
+  std::chrono::steady_clock::time_point last_lease_poll_{};
+  std::optional<std::string> unpair_notice_;
 };
 
 }  // namespace clusterlm::node

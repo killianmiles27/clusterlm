@@ -48,7 +48,7 @@ Father, G14 or 3060 machines.
 | Windows service host, session helper, named-pipe IPC, power/session notifications, firewall rules, key/staging ACLs | Implemented against Win32/COM (SCM host, `\\.\pipe` IPC with DACL and peer checks, WTS/power notifications, `INetFwPolicy2`, owner-only DACLs); logic tested on Linux with mocks and Unix sockets, Win32 code type-checked with MinGW/MSVC only. Real behaviour is pending `HQ-WIN-01`..`HQ-WIN-04`. See `docs/windows-architecture.md` |
 | Installer | Two WiX MSI packages, signing script and CI install smoke test: `docs/packaging.md` (CI job `windows-packaging`, not yet run on a runner; `HQ-INSTALL-01` pending) |
 | Pairing, persistent settings, Father agent API, production providers | Implemented and tested on Linux (SPAKE2 pairing with TLS channel binding, versioned owner-only settings, JSON IPC, config-driven placement, live readiness; dev end-to-end on the fixture model). No real inference backend is built, so tiers are never Ready without `--dev-fixture-model`. Real LAN behaviour pending `HQ-PAIR-01`; see `docs/pairing.md`, `docs/father-ipc.md` |
-| Tray icon, pairing UI | Not yet implemented — the Node pairing CLI trigger exists, a tray/helper-pipe trigger does not |
+| Node product glue (WP18) | Implemented and tested on Linux: Node settings read/saved through the service over the helper pipe (validated, persisted, applied; caps restart the worker), the worker's lease state and counts in `StatusReply` and in `NodeViewModel`, a rate-limited pairing-mode request behind the Node UI's Pair button, `caps.threads` passed to the worker (offer + `DomainSpec::cpu_threads`; the reference backend is single-threaded), Father-side unpair that notifies a reachable Node (`UnpairNotice`, accepted only from the pinned Father), Coordinator prepare progress (bytes, objects, phases) through the service, the agent API and the Father UI, and the installed-layout catalog default. Real Windows behaviour pending `HQ-UI-01`, `HQ-PAIR-01`, `HQ-WIN-02`. `start_with_system` is persisted only |
 
 ## Known gaps / next engineering steps (no hardware required)
 
@@ -61,7 +61,7 @@ Father, G14 or 3060 machines.
 6. **A runtime-reported allocation ledger from the real backend** (`describe_requirements`) feeding placement
    admission.
 7. ~~Windows key-file ACL~~ — done: the key is written owner-only (owner account + SYSTEM, protected DACL) via `platform::write_owner_only_file`; ADR 0133. Real ACL inspection pending `HQ-WIN-04`. Further checks: HQ-SEC-01, `docs/security/threat-model.md`.
-8. **Product surfaces** (Father UI, tray, installer, pairing UX) after the lifecycle above is exercised on hardware.
+8. **Product surfaces** (Father UI, Node UI and tray, installer, pairing UX): built and tested on Linux (WP13, WP14, WP18); exercising them on Windows hardware is `HQ-UI-01`, `HQ-PAIR-01`, `HQ-WIN-02`, `HQ-INSTALL-01`.
 
 ## Pending hardware qualification
 
@@ -74,6 +74,6 @@ Every item in [HARDWARE-QUALIFICATION.md](../HARDWARE-QUALIFICATION.md) is pendi
 - VRAM margins.
 - Laptop thermals.
 - Real network latency.
-- Provisioning speed.
+- Provisioning speed (the progress counters of WP18 only observe a transfer; they are not a measurement of it).
 - Release latency under real drivers.
 - Windows pinned-memory behaviour.

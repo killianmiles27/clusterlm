@@ -56,6 +56,7 @@ void draw_tiers(FatherViewModel& vm, const FatherViewState& st) {
     if (t.progress_percent) {
       ImGui::ProgressBar(static_cast<float>(std::clamp(*t.progress_percent, 0.0, 100.0) / 100.0), ImVec2(-1.0f, 0.0f));
     }
+    for (const auto& line : t.progress_lines) text_wrapped(line, &kGrey);
     if (!t.eta.empty()) ImGui::TextDisabled("Time left: %s", t.eta.c_str());
     if (!t.participants.empty()) {
       std::string m = "Machines: ";

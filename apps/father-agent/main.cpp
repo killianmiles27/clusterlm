@@ -5,6 +5,8 @@
 // protocol is documented in docs/father-ipc.md.
 //
 //   clusterlm-father-agent [--settings FILE] [--identity DIR] [--catalog FILE] [--profiles-dir DIR]
+//                          (--catalog default: <exe dir>/../catalog/clusterlm-catalog.json when installed, else
+//                           <exe dir>/clusterlm-catalog.json)
 //                          [--user-tag TAG] [--ipc-dir DIR] [--exit-on-stdin-eof]
 //                          [--dev-fixture-model]
 //
@@ -88,7 +90,9 @@ int main(int argc, char** argv) {
   if (!ident.is_ok()) return fail(ident.status());
   auto identity = std::make_shared<const transport::DeviceIdentity>(std::move(ident).value());
 
-  const std::filesystem::path catalog_path = args.get("catalog", (platform::executable_dir() / "clusterlm-catalog.json").string());
+  // Installed layout first (<exe dir>/../catalog/), then the development copy next to the executable.
+  const std::filesystem::path catalog_path =
+      args.has("catalog") ? std::filesystem::path(args.get("catalog")) : father::default_catalog_path(platform::executable_dir());
   auto cat = catalog::Catalog::load(catalog_path.string());
   if (!cat.is_ok()) return fail(cat.status());
 
@@ -99,6 +103,9 @@ int main(int argc, char** argv) {
   po.identity = identity;
   po.profiles_dir = args.get("profiles-dir", (platform::executable_dir() / "profiles").string());
   po.dev_fixture_model = dev;
+  // Preparation progress (bytes, objects, phase) from the Coordinator reaches readiness observation and the UI.
+  auto provisioning_board = std::make_shared<father::ProvisioningBoard>();
+  po.provisioning = provisioning_board->provider();
   po.session_phase = [api_slot] {
     auto* a = api_slot->load();
     return a ? a->session_phase() : father::SessionPhase::kNone;
@@ -125,6 +132,7 @@ int main(int argc, char** argv) {
   ac.readiness = std::make_shared<father::LiveReadinessSource>(po);
   ac.deployments = std::make_shared<father::ConfigDeploymentProvider>(po);
   ac.details = po.details;
+  ac.prepare_observer = provisioning_board->observer();
   ac.dev_fixture_model = dev;
   if (dev) {
     auto tok = father::FixtureByteTokenizer::create(256);

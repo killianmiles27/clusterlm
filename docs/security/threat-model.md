@@ -161,3 +161,16 @@ Companion documents: [security-review.md](security-review.md) (findings and fixe
 | Command-line quoting for `CreateProcessW` | Yes: the exact quoting function is tested against a reference CRT parser | **HQ-SEC-03**: real round trip through `CommandLineToArgvW` |
 | No shell anywhere | Yes (source audit) | - |
 | No content in traffic, logs, diagnostics, error replies | Yes (`tests/privacy`) | Real backend (Strata/llama.cpp) must be re-audited when integrated: its logging is not ours |
+
+## Addendum: unpair notice and Node settings over the helper pipe (WP18)
+
+* `UnpairNotice` (Father to Node, control channel, one nonce, answered with `Pong`) is the 26th protocol message. The
+  Node accepts it only on a TLS-pinned channel whose peer is one of the Fathers it was started trusting; peers
+  authorized for a lease (direct Node links) are refused the Father role, so they cannot send it. The consequence of a
+  forged notice would be denial of service (a Node dropping its Father), so the pin is the whole control; the service
+  additionally checks that the notifier is the Father recorded as paired. A Father that cannot reach the Node simply
+  leaves it trusting that Father until a local unpair.
+* The helper pipe's `SettingsUpdate` and `PairingModeRequest` are limited to peers in an interactive session, rate
+  limited, and carry no path, command, name or trust field. The pairing code returned to the interactive user is the
+  same secret `--pair` prints; any interactive user of that PC can see it, which matches the physical-presence model
+  of pairing (docs/pairing.md).

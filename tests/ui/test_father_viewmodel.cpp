@@ -94,6 +94,30 @@ TEST_CASE("Ready is never claimed from an event: only the service's tier list sa
   CHECK(e.st().tiers[1].state_label == "Ready");
 }
 
+TEST_CASE("prepare progress shows per-machine bytes and parts, and keeps them between percentage-only events") {
+  Env e;
+  father::PrepareDetail d;
+  d.phase = "provisioning";
+  d.nodes = {{"G14", "provisioning", 1'200'000'000ull, 4'500'000'000ull, 3, 12},
+             {"3060", "node-preparing", 2'000'000'000ull, 2'000'000'000ull, 5, 5}};
+  father::PrepareProgressEvent ev{"strong", "Strong Model", 35.0, std::nullopt, "Preparing", d};
+  e.emit(ev);
+  auto s = e.st();
+  REQUIRE(s.tiers[1].progress_lines.size() == 2);
+  CHECK(s.tiers[1].progress_lines[0] == "G14: 1.2 GB of 4.5 GB (3 of 12 parts)");
+  CHECK(s.tiers[1].progress_lines[1] == "3060: received everything, loading it");
+  // The service's smooth percentage events carry no detail: the lines stay until new ones arrive.
+  e.emit(father::PrepareProgressEvent{"strong", "Strong Model", 40.0, std::nullopt, "Preparing"});
+  s = e.st();
+  CHECK(s.tiers[1].progress_lines.size() == 2);
+  CHECK(s.tiers[1].state_label == "Preparing 40%");
+  d.nodes[1].phase = "node-ready";
+  e.emit(father::PrepareProgressEvent{"strong", "Strong Model", 100.0, std::nullopt, "Preparing", d});
+  CHECK(e.st().tiers[1].progress_lines[1] == "3060: ready");
+  e.emit(father::TierReadyEvent{"strong", "Strong Model"});
+  CHECK(e.st().tiers[1].progress_lines.empty());
+}
+
 TEST_CASE("prepare progress without a rate shows no ETA rather than a guess") {
   Env e;
   e.emit(father::PrepareProgressEvent{"strong", "Strong Model", std::nullopt, std::nullopt, "starting"});

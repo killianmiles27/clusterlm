@@ -39,6 +39,10 @@ void draw_node_ui(NodeViewModel& vm, NodeDrawState& ui, float display_w, float d
   if (!ui.edit_loaded) {
     ui.edit = st.settings;
     ui.edit_loaded = true;
+    ui.seen_revision = st.settings_revision;
+  } else if (ui.seen_revision != st.settings_revision) {
+    ui.edit = st.settings;  // the service's stored values arrived (first read, reconnect or after a save)
+    ui.seen_revision = st.settings_revision;
   }
 
   ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -52,6 +56,7 @@ void draw_node_ui(NodeViewModel& vm, NodeDrawState& ui, float display_w, float d
   ImGui::Spacing();
   ImGui::TextWrapped("%s", st.father_label.c_str());
   ImGui::TextWrapped("%s", st.storage_label.c_str());
+  if (!st.lease_label.empty()) ImGui::TextWrapped("%s", st.lease_label.c_str());
   if (!st.banner.empty()) {
     ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.40f, 1.0f), "%s", st.banner.c_str());
     ImGui::SameLine();
@@ -66,17 +71,24 @@ void draw_node_ui(NodeViewModel& vm, NodeDrawState& ui, float display_w, float d
   }
   ImGui::EndDisabled();
 
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!st.can_pair);
+  if (ImGui::Button("Pair with a Father...")) (void)vm.enter_pairing_mode();
+  ImGui::EndDisabled();
+  if (!st.pairing_line.empty()) ImGui::TextWrapped("%s", st.pairing_line.c_str());
+  if (!st.pairing_error.empty()) ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.40f, 1.0f), "%s", st.pairing_error.c_str());
+
   ImGui::SeparatorText("Settings");
   ImGui::Checkbox("Help only when this PC is idle", &ui.edit.allow_when_idle);
   ImGui::Checkbox("Only on AC power", &ui.edit.ac_power_only);
   ImGui::Checkbox("Start with Windows", &ui.edit.start_with_windows);
-  input_u32("Temporary storage limit (GB)", &ui.edit.temp_storage_limit_gb, 1);
+  input_u32("Temporary storage limit (GB, 0 = no limit)", &ui.edit.temp_storage_limit_gb, 1);
   if (ui.force_sections_open) ImGui::SetNextItemOpen(true);
   if (ImGui::CollapsingHeader("Advanced resource limits")) {
-    int cpu = static_cast<int>(ui.edit.cpu_cap_percent), gpu = static_cast<int>(ui.edit.gpu_memory_cap_percent);
+    int cpu = static_cast<int>(ui.edit.cpu_cap_percent);
     if (ImGui::SliderInt("CPU limit (%)", &cpu, 10, 100)) ui.edit.cpu_cap_percent = static_cast<std::uint32_t>(cpu);
-    if (ImGui::SliderInt("Graphics memory limit (%)", &gpu, 10, 100)) ui.edit.gpu_memory_cap_percent = static_cast<std::uint32_t>(gpu);
-    input_u32("Memory limit (GB, 0 = none)", &ui.edit.ram_cap_gb, 1);
+    input_u32("Graphics memory limit (GB, 0 = do not use)", &ui.edit.gpu_memory_gb, 1);
+    input_u32("Memory limit (GB)", &ui.edit.ram_gb, 1);
   }
   if (ImGui::Button("Save settings")) (void)vm.apply_settings(ui.edit);
   if (!st.settings_error.empty()) ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.40f, 1.0f), "%s", st.settings_error.c_str());

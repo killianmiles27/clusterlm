@@ -235,6 +235,7 @@ void FatherViewModel::reload_tiers() {
     for (const auto& n : t.notes) r.notes.push_back(ascii_display(n));
     r.selected = (t.tier_id == sel);
     if (t.state == catalog::TierState::kPreparing) {
+      if (st_.prepare.active && st_.prepare.tier_id == t.tier_id) r.progress_lines = st_.prepare.lines;
       if (st_.prepare.active && st_.prepare.tier_id == t.tier_id && st_.prepare.percent) {
         r.progress_percent = st_.prepare.percent;
         r.eta = st_.prepare.eta;
@@ -297,6 +298,25 @@ void FatherViewModel::tick(bool force) {
 
 // ---- events --------------------------------------------------------------------------------------------------
 
+// Plain words per machine from the Coordinator's counts (no object names exist in the detail to leak).
+static std::vector<std::string> prepare_lines(const father::PrepareDetail& d) {
+  std::vector<std::string> out;
+  for (const auto& n : d.nodes) {
+    std::string line = ascii_display(n.name) + ": ";
+    if (n.phase == "node-ready") {
+      line += "ready";
+    } else if (n.phase == "node-preparing") {
+      line += "received everything, loading it";
+    } else {
+      line += format_bytes(n.bytes_sent) + " of " + format_bytes(n.bytes_total) + " (" + std::to_string(n.objects_sealed) +
+              " of " + std::to_string(n.objects_total) + " parts)";
+    }
+    out.push_back(std::move(line));
+  }
+  if (out.empty() && d.phase == "father-domains") out.push_back("This PC: loading its part of the model");
+  return out;
+}
+
 void FatherViewModel::on_event(const father::Event& ev) {
   std::lock_guard lk(mu_);
   struct V {
@@ -317,10 +337,13 @@ void FatherViewModel::on_event(const father::Event& ev) {
       p.percent = e.percent;
       p.eta = format_eta(e.eta_seconds);
       p.message = ascii_display(e.message);
+      // The service's smooth percentage events carry no detail: keep the last per-machine lines until new ones arrive.
+      if (e.detail) p.lines = prepare_lines(*e.detail);
       for (auto& r : st.tiers)
         if (r.id == e.tier_id && r.state != catalog::TierState::kReady) {
           r.state = catalog::TierState::kPreparing;
           r.progress_percent = e.percent;
+          r.progress_lines = p.lines;
           r.eta = p.eta;
           r.state_label = state_label(r.state, r.progress_percent);
           r.can_prepare = false;
@@ -329,6 +352,7 @@ void FatherViewModel::on_event(const father::Event& ev) {
     }
     void operator()(const father::TierReadyEvent& e) {
       st.prepare = PrepareView{};
+      for (auto& r : st.tiers) r.progress_lines.clear();
       vm.set_banner(Banner::Kind::kInfo, capitalise(e.tier_id) + " finished preparing (" + ascii_display(e.model_name) + ").");
       vm.refresh_pending_ = true;
       vm.recompute_send_state();

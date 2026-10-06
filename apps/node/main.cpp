@@ -5,6 +5,7 @@
 // for a remote Node execution domain ("localhost today, LAN tomorrow"). Local activity can be simulated on stdin.
 //
 // stdout protocol (for harnesses): one line "CLUSTERLM_NODE_LISTENING endpoint=<host:port> device_id=<id>".
+// stdout also: "CLUSTERLM_NODE_UNPAIR_NOTICE peer=<device id>" after an accepted Father UnpairNotice.
 // stdin commands: "activity", "idle", "status", "quit". EOF on stdin = quit (the parent harness went away).
 #include <cstdio>
 #include <iostream>
@@ -22,7 +23,7 @@ namespace {
 int usage() {
   std::fprintf(stderr,
                "usage: clusterlm-node --staging DIR [--name NAME] [--listen HOST:PORT] [--ram-gib N] [--vram-gib N]\n"
-               "                      [--disk-gib N] (--insecure-loopback | --identity DIR --trust FINGERPRINT...)\n"
+               "                      [--disk-gib N] [--threads N] (--insecure-loopback | --identity DIR --trust FINGERPRINT...)\n"
                "                      [--impair PRESET] [--fault RULE]... [--start-busy] [--log debug|info|warn]\n"
                "                      [--backend reference|strata] [--cuda-device N] [--vram-reserve-mib N]\n"
                "                      [--strata-cpu-threads N]\n");
@@ -49,12 +50,19 @@ int main(int argc, char** argv) {
   cfg.ram_allowance = static_cast<std::uint64_t>(args.number("ram-gib", 4) * static_cast<double>(cli::kGiB));
   cfg.vram_allowance = static_cast<std::uint64_t>(args.number("vram-gib", 0) * static_cast<double>(cli::kGiB));
   cfg.disk_allowance = static_cast<std::uint64_t>(args.number("disk-gib", 0) * static_cast<double>(cli::kGiB));
+  cfg.cpu_threads = static_cast<std::uint32_t>(args.integer("threads", 0));
   cfg.start_busy = args.has("start-busy");
   // Backend of the middle-stage domains. An unknown or unbuilt backend refuses to start (NodeWorker::start).
   cfg.backend = args.get("backend", "reference");
   cfg.strata.cuda_device = static_cast<int>(args.integer("cuda-device", 0));
   cfg.strata.vram_reserve_mib = static_cast<std::uint32_t>(args.integer("vram-reserve-mib", 1024));
-  cfg.strata.cpu_threads = static_cast<std::uint32_t>(args.integer("strata-cpu-threads", 0));
+  // The user's thread cap bounds the Strata CPU kernels unless overridden.
+  cfg.strata.cpu_threads = static_cast<std::uint32_t>(args.integer("strata-cpu-threads", cfg.cpu_threads));
+  // The paired Father asked to unpair this Node: tell the supervising service (which owns the settings document).
+  cfg.on_unpair_notice = [](const std::string& peer) {
+    std::printf("CLUSTERLM_NODE_UNPAIR_NOTICE peer=%s\n", peer.c_str());
+    std::fflush(stdout);
+  };
 
   if (args.has("insecure-loopback")) {
     cfg.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;
@@ -118,12 +126,13 @@ int main(int argc, char** argv) {
     } else if (line == "status") {
       auto s = w.status();
       std::printf("CLUSTERLM_NODE_STATUS state=%s lease=%llu windows=%llu forwarded=%llu stale=%llu census_bytes=%llu "
-                  "storage_cleaned=%d\n",
+                  "storage_cleaned=%d sealed=%u planned=%u\n",
                   std::string(node::to_string(s.state)).c_str(), static_cast<unsigned long long>(s.lease_generation),
                   static_cast<unsigned long long>(s.windows_executed),
                   static_cast<unsigned long long>(s.windows_forwarded),
                   static_cast<unsigned long long>(s.stale_rejections),
-                  static_cast<unsigned long long>(s.staging_census_bytes), s.last_storage_cleaned ? 1 : 0);
+                  static_cast<unsigned long long>(s.staging_census_bytes), s.last_storage_cleaned ? 1 : 0, s.sealed_objects,
+                  s.planned_objects);
       std::fflush(stdout);
     } else if (line == "quit") {
       break;
