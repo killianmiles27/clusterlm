@@ -41,6 +41,10 @@ Status NodeSupervisor::launch() {
   auto args = cfg_.worker_args;
   // The worker always starts Busy: no resources are offered until local policy says so.
   args.push_back("--start-busy");
+  for (const auto& fp : cfg_.trusted_peers) {
+    args.push_back("--trust");
+    args.push_back(fp);
+  }
   CLM_ASSIGN_OR_RETURN(worker_, platform::ChildProcess::spawn(cfg_.worker_binary, args));
   if (job_) {
     platform::JobLimits limits;
@@ -135,6 +139,21 @@ Result<std::vector<SupervisorEvent>> NodeSupervisor::tick() {
     CLM_ASSIGN_OR_RETURN(auto ev, revoke());
     events.push_back(std::move(ev));
   }
+  return events;
+}
+
+Result<std::vector<SupervisorEvent>> NodeSupervisor::set_trusted_peers(std::vector<std::string> fingerprints) {
+  std::vector<SupervisorEvent> events;
+  cfg_.trusted_peers = std::move(fingerprints);
+  if (!worker_) return events;  // not started yet: the list applies at launch
+  if (worker_->running() && eligible_) {
+    eligible_ = false;
+    CLM_ASSIGN_OR_RETURN(auto ev, revoke());
+    events.push_back(std::move(ev));
+  }
+  stop();
+  CLM_RETURN_IF_ERROR(launch());
+  events.push_back({SupervisorEventKind::kWorkerRestarted, 0, 0, "paired device list changed"});
   return events;
 }
 

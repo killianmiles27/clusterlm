@@ -41,7 +41,7 @@ struct ServiceCoreConfig {
   std::chrono::milliseconds helper_report_stale_after{5000};
   std::chrono::milliseconds tick_interval{100};
   std::filesystem::path staging_root;         // storage census for StatusReply (may be empty)
-  std::string paired_father;                  // short device-id prefix shown in status; empty = unpaired
+  std::string paired_father;                  // short device-id prefix shown in status; empty = unpaired (see set_trusted_fathers)
   // Optional: session enumeration and helper launch (Windows: WindowsHelperHost). Null = no helper management.
   std::shared_ptr<platform::HelperHost> helper_host;
   platform::HelperStartupConfig helper_startup;
@@ -69,6 +69,11 @@ class ServiceCore {
   void stop();
 
   // Thread-safe notifications from the SCM / tests.
+  // Pairing hook: the Fathers this Node trusts changed (a pairing completed or a Father was unpaired).
+  // Revokes any lease and restarts the worker with the new `--trust` list; `paired_father_short` is what status
+  // replies show ("" = unpaired).
+  Status set_trusted_fathers(std::vector<std::string> fingerprints, std::string paired_father_short);
+
   void handle_power_event(const platform::PowerEvent& event);
   void handle_session_event(const platform::SessionEvent& event);
 
@@ -90,7 +95,7 @@ class ServiceCore {
   platform::HelperStartupState helper_state_;
   std::unique_ptr<ipc::ServerLoop> ipc_loop_;
 
-  mutable std::mutex mu_;  // guards supervisor_ and helper_state_
+  mutable std::mutex mu_;  // guards supervisor_, helper_state_ and cfg_.paired_father
   std::mutex sink_mu_;
   EventSink sink_;
   std::atomic<bool> started_{false};

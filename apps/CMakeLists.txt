@@ -10,7 +10,7 @@ target_link_libraries(clusterlm-father PRIVATE clusterlm_coordinator clusterlm_d
 clusterlm_set_warnings(clusterlm-father)
 
 add_executable(clusterlm-node-service node-service/main.cpp)
-target_link_libraries(clusterlm-node-service PRIVATE clusterlm_node_service clusterlm_cli)
+target_link_libraries(clusterlm-node-service PRIVATE clusterlm_node_service clusterlm_config clusterlm_pairing clusterlm_cli)
 clusterlm_set_warnings(clusterlm-node-service)
 
 # Per-user session helper of the Node (activity + lock reports over a local pipe).
