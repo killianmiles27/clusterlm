@@ -2,7 +2,9 @@
 // Internal byte-stream abstraction under the framing layer: plain TCP or TLS over a non-blocking socket.
 #include <cstddef>
 #include <memory>
+#include <string_view>
 
+#include "clusterlm/common/bytes.hpp"
 #include "clusterlm/common/status.hpp"
 #include "socket.hpp"
 
@@ -19,6 +21,10 @@ class Stream {
   // Idempotent, any thread: wakes blocked I/O, which then fails with kUnavailable. The handle itself is only
   // closed on destruction.
   virtual void shutdown() = 0;
+  // TLS exporter (see transport::Connection::export_keying_material).
+  virtual Result<Bytes> export_keying_material(std::string_view /*label*/, std::size_t /*length*/) const {
+    return make_error(ErrorCode::kUnimplemented, "not a TLS stream");
+  }
 };
 
 std::unique_ptr<Stream> make_plain_stream(net::Socket socket);

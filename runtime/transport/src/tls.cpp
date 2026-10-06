@@ -19,10 +19,12 @@ namespace {
 struct PinPolicy {
   std::unordered_set<std::string> trusted;
   std::optional<std::string> expected;
+  bool accept_any = false;  // pairing channel: identity is established by the pairing exchange, not by a pin
   bool rejected = false;
   std::string reject_reason;
 
   bool accept(const std::string& fingerprint) {
+    if (accept_any) return !fingerprint.empty();
     if (trusted.find(fingerprint) == trusted.end()) {
       rejected = true;
       reject_reason = "peer certificate is not in the trusted set";
@@ -139,6 +141,17 @@ class TlsStream final : public Stream {
   }
 
   X509* peer_cert() { return SSL_get1_peer_certificate(ssl_); }
+
+  Result<Bytes> export_keying_material(std::string_view label, std::size_t length) const override {
+    if (length == 0 || length > 1024) return make_error(ErrorCode::kInvalidArgument, "bad exporter length");
+    Bytes out(length);
+    std::lock_guard<std::mutex> lk(mu_);
+    if (SSL_export_keying_material(ssl_, out.data(), out.size(), label.data(), label.size(), nullptr, 0, 0) != 1) {
+      ERR_clear_error();
+      return make_error(ErrorCode::kInternal, "SSL_export_keying_material failed");
+    }
+    return out;
+  }
   const PinPolicy& policy() const { return *policy_; }
 
  private:
@@ -193,7 +206,7 @@ class TlsStream final : public Stream {
   net::Socket sock_;
   std::shared_ptr<PinPolicy> policy_;
   SSL* ssl_ = nullptr;
-  std::mutex mu_;
+  mutable std::mutex mu_;
   std::atomic<bool> closed_{false};
   const std::atomic<bool>* cancel_ = &closed_;
 };
@@ -208,6 +221,7 @@ std::string lower(std::string s) {
 struct TlsContext::Impl {
   SSL_CTX* ctx = nullptr;
   bool server = false;
+  bool pairing_channel = false;
   std::unordered_set<std::string> trusted;
   std::shared_ptr<TrustStore> dynamic_trust;
   ~Impl() { SSL_CTX_free(ctx); }
@@ -223,6 +237,7 @@ Result<std::shared_ptr<TlsContext>> TlsContext::create(const SecurityConfig& sec
 
   auto impl = std::make_unique<Impl>();
   impl->server = server;
+  impl->pairing_channel = security.pairing_channel;
   for (const auto& id : security.trusted_peers) impl->trusted.insert(lower(id));
   impl->dynamic_trust = security.dynamic_trust;
   impl->ctx = SSL_CTX_new(server ? TLS_server_method() : TLS_client_method());
@@ -247,6 +262,7 @@ Result<TlsEstablished> TlsContext::establish(net::Socket socket, const std::stri
                                              const std::atomic<bool>* cancel) {
   auto policy = std::make_shared<PinPolicy>();
   policy->trusted = impl_->trusted;
+  policy->accept_any = impl_->pairing_channel;
   if (impl_->dynamic_trust)
     for (const auto& id : impl_->dynamic_trust->snapshot()) policy->trusted.insert(lower(id));
   if (expected_peer) policy->expected = lower(*expected_peer);

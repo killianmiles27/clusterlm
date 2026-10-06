@@ -47,7 +47,8 @@ Father, G14 or 3060 machines.
 | Node service supervisor | `node/service`: policy (idle, lock, AC, power saver), cooperative revocation with 2 s deadline, Job Object termination + relaunch with orphan recovery |
 | Windows service host, session helper, named-pipe IPC, power/session notifications, firewall rules, key/staging ACLs | Implemented against Win32/COM (SCM host, `\\.\pipe` IPC with DACL and peer checks, WTS/power notifications, `INetFwPolicy2`, owner-only DACLs); logic tested on Linux with mocks and Unix sockets, Win32 code type-checked with MinGW/MSVC only. Real behaviour is pending `HQ-WIN-01`..`HQ-WIN-04`. See `docs/windows-architecture.md` |
 | Installer | Two WiX MSI packages, signing script and CI install smoke test: `docs/packaging.md` (CI job `windows-packaging`, not yet run on a runner; `HQ-INSTALL-01` pending) |
-| Tray icon, pairing UX | Not yet implemented — product surfaces after the runtime lifecycle |
+| Pairing, persistent settings, Father agent API, production providers | Implemented and tested on Linux (SPAKE2 pairing with TLS channel binding, versioned owner-only settings, JSON IPC, config-driven placement, live readiness; dev end-to-end on the fixture model). No real inference backend is built, so tiers are never Ready without `--dev-fixture-model`. Real LAN behaviour pending `HQ-PAIR-01`; see `docs/pairing.md`, `docs/father-ipc.md` |
+| Tray icon, pairing UI | Not yet implemented — the Node pairing CLI trigger exists, a tray/helper-pipe trigger does not |
 
 ## Known gaps / next engineering steps (no hardware required)
 
