@@ -745,7 +745,11 @@ int cmd_baseline_llama(const cli::Args& args) {
   return emit(args, r, total.elapsed_ms() / 1000.0);
 }
 
+}  // namespace clusterlm::bench
+
 #else  // !CLUSTERLM_BENCH_HAS_LLAMA
+
+namespace clusterlm::bench {
 
 int cmd_baseline_llama(const cli::Args& args) {
   BenchmarkResult r("dev-baseline-llama-rpc", probe_host());
@@ -757,6 +761,7 @@ int cmd_baseline_llama(const cli::Args& args) {
   return 3;
 }
 
+}  // namespace clusterlm::bench
+
 #endif
 
-}  // namespace clusterlm::bench
