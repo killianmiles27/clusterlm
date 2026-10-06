@@ -27,6 +27,7 @@ Windows pinned-memory behaviour.
 | [HQ-CPU-02](#hq-cpu-02) | Laptop sustained CPU/GPU performance at thermal equilibrium | Node G14 | pending |
 | [HQ-GPU-01](#hq-gpu-01) | GPU dense, attention, hot-expert and prefill timings | Father, Node G14, Node 3060 | pending |
 | [HQ-GPU-02](#hq-gpu-02) | Safe VRAM margins under WDDM | Father, Node G14, Node 3060 | pending |
+| [HQ-GPU-05](#hq-gpu-05) | Strata abort_window restores the committed state on the GPU | Father, Node G14, Node 3060 | pending |
 | [HQ-PCIE-01](#hq-pcie-01) | Local PCIe staging and Windows pinned-memory limits | Father, Node G14, Node 3060 | pending |
 | [HQ-NET-01](#hq-net-01) | Pairwise application-payload bandwidth, RTT and jitter | Father, Node G14, Node 3060 | pending |
 | [HQ-NET-02](#hq-net-02) | Direct Node-to-Node forwarding versus Father relay | Father, Node G14, Node 3060 | pending |
@@ -35,10 +36,12 @@ Windows pinned-memory behaviour.
 | [HQ-STORE-01](#hq-store-01) | Filesystem census including backend caches and native packs | Node G14, Node 3060 | pending |
 | [HQ-NUM-01](#hq-num-01) | Numerical correctness of distributed execution on the real artifact | Father, Node G14, Node 3060 | pending |
 | [HQ-MTP-01](#hq-mtp-01) | MTP acceptance and verification cost | Father, Node G14, Node 3060 | pending |
+| [HQ-MTP-02](#hq-mtp-02) | Strata MTP drafter on the Father tail | Father | pending |
 | [HQ-PLACE-01](#hq-place-01) | Placement calibration: predicted versus measured | Father, Node G14, Node 3060 | pending |
 | [HQ-P0A-01](#hq-p0a-01) | Stock/pinned llama.cpp RPC baseline | Father, Node G14, Node 3060 | pending |
 | [HQ-P0B-01](#hq-p0b-01) | Strata local hybrid baseline and partial-domain microbenchmarks | Father, Node G14, Node 3060 | pending |
 | [HQ-P0C-01](#hq-p0c-01) | Grouped expert-domain barrier cost | Father, Node G14, Node 3060 | pending |
+| [HQ-P0D-01](#hq-p0d-01) | Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail | Father, Node G14, Node 3060 | pending |
 | [HQ-PERF-01](#hq-perf-01) | Ultra decode throughput at 4K/8K | Father, Node G14, Node 3060 | pending |
 | [HQ-PERF-02](#hq-perf-02) | Long-context behaviour (16K/32K, 64K/128K reported separately) | Father, Node G14, Node 3060 | pending |
 | [HQ-PERF-03](#hq-perf-03) | Cold preparation, cold TTFT and warm TTFT | Father, Node G14, Node 3060 | pending |
@@ -70,8 +73,8 @@ Windows pinned-memory behaviour.
 
 **CPU routed-expert throughput by quant and verification width** — status: `pending`
 
-- **Purpose:** Measure effective CPU expert bytes/s including unpacking and GEMV for the exact tensor representations.
-- **Command:** `clusterlm-bench domain cpu-experts --backend strata --model <ultra-dir> --layers 4,20,40 --q 1,2,4 --threads sweep --isa avx2,avx512 --out results/cpu-experts-<machine>.json`
+- **Purpose:** Measure effective CPU expert bytes/s including activation quantization and the GEMV rows for the exact tensor representations, with ClusterLM's CpuExpertKernel over the pinned Strata CPU kernels (AVX-512 and AVX-2 multi-token i-quant kernels, ggml-cpu otherwise).
+- **Command:** `python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml && cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA=ON && cmake --build build && for t in 1 2 4 6; do build/bin/clusterlm-strata cpu-experts --types iq3_s+iq4_nl,iq2_xs+iq4_nl --tokens 1,2,4,8 --threads $t --reps 20 --out results/cpu-experts-<machine>-t$t.json; done && STRATA_NO_IQ512=1 STRATA_FORCE_AVX2=1 build/bin/clusterlm-strata cpu-experts --types iq3_s+iq4_nl --tokens 1,2,4,8 --threads 1 --out results/cpu-experts-<machine>-avx2.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -82,6 +85,7 @@ Windows pinned-memory behaviour.
   - miss-union multiplier on held-out routing traces
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-CPU-01"`; metrics `cpu.expert_bytes_per_s.<quant>`, `cpu.q_scaling`, `cpu.best_threads`, `cpu.isa_selected`
 - **Decision affected:** CPU/GPU miss crossover, per-domain expert residency, viability of the stage architecture vs grouped expert domains.
+- **Acceptance:** Results carry provenance Measured and the CPU's kernel path per q (strata-iq512 / strata-iq256 / ggml-cpu); the kernels' numerics are already verified in CI (test_strata_cpu_kernels).
 
 ### HQ-CPU-02
 
@@ -119,16 +123,34 @@ Windows pinned-memory behaviour.
 
 **Safe VRAM margins under WDDM** — status: `pending`
 
-- **Purpose:** Find the usable VRAM budget per GPU with the desktop/display active, including allocation peaks during preparation, prefill and q>1 verification.
-- **Command:** `clusterlm-bench domain vram-ledger --backend strata --model <ultra-dir> --plan <plan.json> --out results/vram-<machine>.json`
+- **Purpose:** Find the usable VRAM budget per GPU with the desktop/display active and check the Strata domain's describe_requirements (Strata session_bytes, Verifier::init_bytes, weights) against what prepare + open_session actually take on the device, per stage of a plan.
+- **Command:** `python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml && cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA=ON && cmake --build build && build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && build/bin/clusterlm-strata requirements --model <ultra-dir> --plan <plan> --context 32768 --ple-gguf <ultra-dir>/<first-shard>.gguf --gpu-experts-per-layer <n> --measure --out results/vram-<machine>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
   - DXGI budget and current usage over time
   - allocator ledger peaks per phase
   - eviction/paging events
+  - describe_requirements vs measured device bytes per stage
+  - device bytes left after release (must be ~0)
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-GPU-02"`; metrics `gpu.vram_budget`, `gpu.peak_prepare`, `gpu.peak_prefill`, `gpu.peak_verify`
 - **Decision affected:** MEM-01 admission margins; maximum GPU expert residency per domain.
+- **Acceptance:** Measured device usage after prepare+open is <= gpu_weight_bytes + state_bytes + window_bytes + scratch_bytes per stage (within the CUDA context overhead), and release returns it.
+
+### HQ-GPU-05
+
+**Strata abort_window restores the committed state on the GPU** — status: `pending`
+
+- **Purpose:** Verify ClusterLM patch 0003 (Verifier::abort_window) on the device: after a window is aborted, re-running the same window gives bit-identical logits, for every stage role and for windows of 1..8 positions, including one-token windows (self-commit off).
+- **Command:** `python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml && cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA=ON && cmake --build build && build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && build/bin/clusterlm-strata numerics --model <ultra-dir> --plan 0-12,12-24,24-36,36-48 --tokens <ids.txt> --q 1,2,3,8 --ple-gguf <ultra-dir>/<first-shard>.gguf --out results/abort-<machine>.json`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Measurements:**
+  - abort_window_restores / abort_window_checked per q
+  - logits after abort + rerun vs first run (bitwise)
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-GPU-05"`; metrics `strata.abort_window_restores`, `strata.abort_window_checked`
+- **Decision affected:** Whether a dropped window keeps the conversation (ADR 0202) or must fall back to abort_session.
+- **Acceptance:** abort_window_restores == abort_window_checked for every q on every GPU.
 
 ### HQ-PCIE-01
 
@@ -231,17 +253,18 @@ Windows pinned-memory behaviour.
 
 **Numerical correctness of distributed execution on the real artifact** — status: `pending`
 
-- **Purpose:** Teacher-forced layer/logit comparisons of split versus unsplit execution, all speculative rejection lengths, CPU vs GPU expert paths.
-- **Command:** `clusterlm-bench numerics --backend strata --model <ultra-dir> --plan <plan> --reference unsplit --q 1,2,3,4 --out results/numerics.json`
+- **Purpose:** Teacher-forced logit comparison of the Strata domain split (prefix -> middles -> tail) against the smallest legal split (prefix + tail, Strata's own stage-split path) for every speculative rejection length, with CPU-only and partly GPU-resident experts; plus greedy agreement with Strata's own unsplit engine on the same token ids.
+- **Command:** `python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml && cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA=ON && cmake --build build && build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && for p in 0-12,12-24,24-36,36-48 0-16,16-32,32-48 0-8,8-40,40-48; do for g in 0 64; do build/bin/clusterlm-strata numerics --model <ultra-dir> --plan $p --tokens <ids.txt> --q 1,2,4,8 --ple-gguf <ultra-dir>/<first-shard>.gguf --gpu-experts-per-layer $g --out results/numerics-$p-g$g.json; done; done`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
-  - max/mean abs logit difference per layer boundary
-  - greedy agreement
-  - state equality after every rejection position
-  - stochastic sampling validation
+  - max abs logit difference split vs reference per q (expected 0: Strata's split is bit-exact)
+  - greedy agreement per q
+  - state equality after every rejection length (accepted 1..q in turn)
+  - greedy agreement with Strata's own `strata` executable on the same ids (unsplit reference)
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-NUM-01"`; metrics `numerics.max_abs_logit_diff`, `numerics.greedy_agreement`, `numerics.rollback_ok`
 - **Decision affected:** NUM-01; tolerances for CPU/GPU kernel choice and boundary precision.
+- **Acceptance:** max_abs_logit_diff == 0 for every plan, q and expert residency; greedy_agreement == 1.
 
 ### HQ-MTP-01
 
@@ -258,6 +281,22 @@ Windows pinned-memory behaviour.
   - p95/p99 inter-token gaps
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-MTP-01"`; metrics `mtp.acceptance_mean`, `mtp.draft_ms`, `round.total_ms`
 - **Decision affected:** Production q; whether MTP is enabled (SHOULD HAVE).
+
+### HQ-MTP-02
+
+**Strata MTP drafter on the Father tail** — status: `pending`
+
+- **Purpose:** Measure the acceptance of Strata's MTP drafter bound to the Father tail domain (make_strata_mtp_drafter, ADR 0203) in greedy generation over the domain pipeline, and its draft cost; compare with HQ-MTP-01's cluster numbers.
+- **Command:** `python3 scripts/fetch_upstream.py --apply-patches strata strata-ggml && cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA=ON && cmake --build build && build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && build/bin/clusterlm-strata numerics --model <ultra-dir> --plan 0-12,12-36,36-48 --tokens <prompt-ids.txt> --q 2,4,8 --ple-gguf <ultra-dir>/<first-shard>.gguf --mtp <ultra-dir>/<mtp-rt-dir> --generate 512 --out results/mtp-strata-father.json`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)
+- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Measurements:**
+  - drafts proposed / accepted (greedy)
+  - acceptance per q
+  - draft time per round (tail engine)
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-MTP-02"`; metrics `mtp.acceptance`, `mtp.drafts_proposed`, `mtp.drafts_accepted`
+- **Decision affected:** Production q with the Strata backend; whether sampled-chain MTP (full Q) is worth adding.
+- **Acceptance:** Recorded; MTP stays enabled for Ultra only if acceptance makes q > 1 net positive (HQ-MTP-01).
 
 ### HQ-PLACE-01
 
@@ -320,6 +359,23 @@ Windows pinned-memory behaviour.
   - aggregation cost
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0C-01"`; metrics `grouped.layer_barrier_ms`, `grouped.net_gain_ms`
 - **Decision affected:** Whether the grouped expert-domain or mixed variant proceeds to P0-D.
+
+### HQ-P0D-01
+
+**Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail** — status: `pending`
+
+- **Purpose:** Run the Ultra tier end to end through clusterlm-father with every domain on the Strata backend: the Father prefix (embedding, PLE), two token-free Node middle domains provisioned with only their converted objects, and the Father tail (head, sampling, MTP); compare tokens with the single-machine numerics reference and measure decode.
+- **Command:** `build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && clusterlm-node --name g14 --listen <g14-ip>:7001 --staging <dir> --backend strata --identity <dir> & clusterlm-node --name n3060 --listen <3060-ip>:7001 --staging <dir> --backend strata --identity <dir> & clusterlm-father --model <ultra-dir> --backend strata --node g14=<g14-ip>:7001 --node n3060=<3060-ip>:7001 --plan 0-12@father,12-30@0,30-40@1,40-48@father --q 4 --max-new 512 --trust <fp> --out results/p0d.json`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Measurements:**
+  - token agreement with HQ-NUM-01's reference (greedy)
+  - decode tok/s and per-stage compute/transfer ms
+  - per-Node staged bytes before release and 0 after
+  - abort/commit behaviour under a forced stale epoch
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0D-01"`; metrics `cluster.decode_tok_s`, `cluster.token_agreement`, `node.staged_bytes_after_release`
+- **Decision affected:** Ultra tier viability on the Strata stage design (P0-D).
+- **Acceptance:** Prerequisite: `--backend strata` in clusterlm-father / clusterlm-node (coordinator and Node integration of make_strata_backend; outside WP6). Then: identical greedy tokens to the single-machine reference and zero staged bytes after release.
 
 ### HQ-PERF-01
 

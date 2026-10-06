@@ -10,7 +10,7 @@ endif()
 clusterlm_module(clusterlm_strata_cpu
   SOURCES src/cpu_expert_kernel.cpp src/convert.cpp
   DEPS clusterlm_strata_core clusterlm_objects
-  PRIVATE_DEPS strata_kernels_cpu strata_artifact)
+  PRIVATE_DEPS clusterlm_platform strata_kernels_cpu strata_artifact)
 
 if(CLUSTERLM_ENABLE_STRATA)
   clusterlm_module(clusterlm_backend_strata
@@ -22,7 +22,7 @@ endif()
 
 add_executable(clusterlm-strata tools/clusterlm_strata.cpp)
 target_link_libraries(clusterlm-strata PRIVATE clusterlm_strata_cpu clusterlm_strata_core clusterlm_objects clusterlm_domain
-                      clusterlm_third_party)
+                      clusterlm_platform clusterlm_third_party)
 target_compile_definitions(clusterlm-strata PRIVATE CLUSTERLM_STRATA_PIN="${CLUSTERLM_STRATA_PIN}")
 if(CLUSTERLM_ENABLE_STRATA)
   target_link_libraries(clusterlm-strata PRIVATE clusterlm_backend_strata CUDA::cudart)

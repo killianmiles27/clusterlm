@@ -1,3 +1,6 @@
+#if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS  // std::sscanf reads Strata's index.txt rows exactly as Strata's loader does
+#endif
 #include "clusterlm/backends/strata/object_map.hpp"
 
 #include <algorithm>

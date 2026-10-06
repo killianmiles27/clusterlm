@@ -168,3 +168,40 @@ TEST_CASE("convert refuses an output directory the GGUF is not in, and a missing
   CHECK(bs::convert_model({mdl.pack, mdl.gguf, elsewhere}).status().code() == ErrorCode::kInvalidArgument);
   CHECK(bs::convert_model({mdl.dir / "nopack", mdl.gguf, {}}).status().code() == ErrorCode::kNotFound);
 }
+
+TEST_CASE("convert: a pack with experts.bin under the model directory gives one contiguous range per expert") {
+  Model mdl;
+  const std::uint64_t gu_row = 110, d_row = 36, blob = 2 * kFF * gu_row + kH * d_row;
+  // experts.bin as tools/iq_pack.py lays it out: per layer, kE blobs of [gate | up | down]
+  Bytes bin;
+  std::string txt = "# strata native experts v3: layer gate_up_type down_type offset blob (n_expert 4)\n";
+  for (std::uint64_t L = 0; L < kLayers; ++L) {
+    txt += std::to_string(L) + " 21 20 " + std::to_string(bin.size()) + " " + std::to_string(blob) + "\n";
+    const std::string b = "blk." + std::to_string(L) + ".";
+    for (std::uint64_t e = 0; e < kE; ++e) {
+      for (const Bytes& part : {mdl.payload(b + "ffn_gate_exps.weight", e * kFF * gu_row, kFF * gu_row),
+                                mdl.payload(b + "ffn_up_exps.weight", e * kFF * gu_row, kFF * gu_row),
+                                mdl.payload(b + "ffn_down_exps.weight", e * kH * d_row, kH * d_row)})
+        bin.insert(bin.end(), part.begin(), part.end());
+    }
+  }
+  std::ofstream(mdl.pack / "experts.bin", std::ios::binary)
+      .write(reinterpret_cast<const char*>(bin.data()), static_cast<std::streamsize>(bin.size()));
+  std::ofstream(mdl.pack / "native_experts.txt") << txt;
+
+  auto m = bs::convert_model({mdl.pack, mdl.gguf, {}});
+  REQUIRE_MESSAGE(m.is_ok(), m.status().to_string());
+  REQUIRE(m->shards.size() == 3);
+  CHECK(m->shards[2].file_name == "pack/experts.bin");
+  const auto* o = m->find(objects::expert_object_name(3, 2));
+  REQUIRE(o != nullptr);
+  REQUIRE(o->source_ranges.size() == 1);
+  CHECK(o->source_ranges[0].shard == 2);
+  CHECK(o->source_ranges[0].offset == 3 * kE * blob + 2 * blob);
+  auto store = objects::CanonicalModelStore::open(mdl.dir);
+  REQUIRE(store.is_ok());
+  auto p = (*store)->resolve(o->name);
+  REQUIRE(p.is_ok());
+  const auto first = bin.begin() + static_cast<std::ptrdiff_t>(3 * kE * blob + 2 * blob);
+  CHECK(Bytes(p->bytes.begin(), p->bytes.end()) == Bytes(first, first + static_cast<std::ptrdiff_t>(blob)));
+}

@@ -1,5 +1,8 @@
 // Object mapping for the Strata backend: ggml type sizes, expert formats, the strata-dense container, tensor
 // placement, and Father-side conversion from a synthetic Strata pack (index.txt + pack files) - no real weights.
+#if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS  // std::sscanf reads Strata's index.txt rows exactly as Strata's loader does
+#endif
 #include <doctest/doctest.h>
 
 #include <cstdio>

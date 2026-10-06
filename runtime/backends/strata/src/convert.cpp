@@ -3,13 +3,17 @@
 
 #include <algorithm>
 #include <fstream>
+#include <map>
 #include <optional>
+#include <sstream>
+#include <tuple>
 #include <string>
 #include <vector>
 
 #include "clusterlm/backends/strata/object_map.hpp"
 #include "clusterlm/common/digest.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
+#include "clusterlm/platform/mapped_file.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/artifact/gguf_split.hpp"
 
@@ -36,6 +40,32 @@ struct ShardWriter {
     return f ? Status::ok() : make_error(ErrorCode::kDataLoss, "strata convert: write failed");
   }
 };
+
+// The pack's contiguous expert blobs, when it has them: native_experts.txt lines "layer gate_up_type down_type
+// offset blob ..." (strata expert_layout.cpp) over experts.bin. Expert e of layer l is [offset + e*blob, +blob).
+struct PackExperts {
+  std::string shard_name;  // relative to the model directory
+  std::map<std::uint32_t, std::tuple<int, int, std::uint64_t, std::uint64_t>> layers;  // gu, down, offset, blob
+};
+std::optional<PackExperts> pack_experts(const fs::path& pack, const fs::path& out) {
+  const fs::path txt = pack / "native_experts.txt", bin = pack / "experts.bin";
+  if (!fs::exists(txt) || !fs::exists(bin)) return std::nullopt;
+  const fs::path rel = fs::relative(fs::weakly_canonical(bin), fs::weakly_canonical(out));
+  if (rel.empty() || rel.is_absolute() || rel.string().find("..") != std::string::npos) return std::nullopt;
+  PackExperts pe;
+  pe.shard_name = rel.generic_string();
+  std::ifstream in(txt);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    std::istringstream ss(line);
+    long long l = -1, gt = -1, dt = -1;
+    unsigned long long off = 0, blob = 0;
+    if (!(ss >> l >> gt >> dt >> off >> blob) || l < 0) return std::nullopt;
+    pe.layers[static_cast<std::uint32_t>(l)] = {static_cast<int>(gt), static_cast<int>(dt), off, blob};
+  }
+  return pe;
+}
 
 std::uint32_t meta_u32(const ::strata::GgufModel& model, const std::string& key, std::uint32_t def) {
   const ::strata::MetaValue* v = model.meta().get(key);
@@ -93,6 +123,17 @@ Result<objects::ModelManifest> convert_model(const ConvertOptions& options,
     if (!w.f) return make_error(ErrorCode::kPermissionDenied, "strata convert: cannot write " + dense_path.string());
     m.shards.push_back({"strata-dense.bin", 0, {}});
     for (const std::string& p : paths) m.shards.push_back({fs::path(p).filename().string(), fs::file_size(p), {}});
+    // Routed experts: the pack's contiguous experts.bin when the pack lives under the model directory (one source
+    // range per expert, mappable without assembly), otherwise the GGUF's three role slices in place.
+    const std::optional<PackExperts> pe = pack_experts(options.pack_dir, out);
+    std::uint32_t pe_shard = 0;
+    std::optional<platform::MappedFile> pe_map;
+    if (pe) {
+      pe_shard = static_cast<std::uint32_t>(m.shards.size());
+      m.shards.push_back({pe->shard_name, fs::file_size(out / pe->shard_name), {}});
+      CLM_ASSIGN_OR_RETURN(platform::MappedFile mf, platform::MappedFile::open(out / pe->shard_name, platform::MapMode::kReadOnly));
+      pe_map = std::move(mf);
+    }
 
     const NativeTensorProvider native = [&](std::string_view name) -> Result<std::optional<NativeTensor>> {
       std::size_t at = 0;
@@ -145,6 +186,14 @@ Result<objects::ModelManifest> convert_model(const ConvertOptions& options,
       for (int i = 0; i < 3; ++i)
         if (::strata::tensor_payload_bytes(*t[i]) != per[i] * g.n_experts)
           return invalid("layer " + std::to_string(L) + ": " + kRoles[i] + " experts are not n_experts slices");
+      const auto pl = pe ? pe->layers.find(L) : decltype(pe->layers)::const_iterator{};
+      const bool from_pack = pe && pl != pe->layers.end();
+      if (from_pack) {
+        const auto& [pgt, pdt, poff, pblob] = pl->second;
+        if (pgt != gu->id || pdt != dn->id || pblob != f.total() ||
+            poff + pblob * g.n_experts > pe_map->size())
+          return invalid("layer " + std::to_string(L) + ": native_experts.txt disagrees with the GGUF or experts.bin");
+      }
       for (std::uint32_t e = 0; e < g.n_experts; ++e) {
         ManifestObject o;
         o.name = objects::expert_object_name(L, e);
@@ -153,6 +202,15 @@ Result<objects::ModelManifest> convert_model(const ConvertOptions& options,
         o.expert = e;
         o.representation = rep;
         Sha256 d;
+        if (from_pack) {
+          const std::uint64_t off = std::get<2>(pl->second) + f.total() * e;
+          o.source_ranges.push_back({pe_shard, off, f.total()});
+          d.update(pe_map->span().subspan(static_cast<std::size_t>(off), static_cast<std::size_t>(f.total())));
+          o.byte_size = f.total();
+          o.object_digest = o.source_digest = d.finish();
+          m.objects.push_back(std::move(o));
+          continue;
+        }
         for (int i = 0; i < 3; ++i) {
           const ::strata::GgufFile& file = model.shard(sh[i]);
           o.source_ranges.push_back(

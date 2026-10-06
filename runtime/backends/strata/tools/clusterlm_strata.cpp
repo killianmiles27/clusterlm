@@ -18,7 +18,9 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -31,6 +33,7 @@
 #include "clusterlm/backends/strata/object_map.hpp"
 #include "clusterlm/common/digest.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
+#include "clusterlm/platform/mapped_file.hpp"
 
 #if defined(CLUSTERLM_STRATA_HAVE_CUDA)
 #include <cuda_runtime.h>
@@ -239,6 +242,88 @@ int cmd_convert(const Args& a) {
 }
 
 #if defined(CLUSTERLM_STRATA_HAVE_CUDA)
+// ---------------------------------------------------------------- a mapped model (CUDA tools)
+
+// Serves a converted model directory without copying: every shard is mapped read-only and a single-range object
+// (a strata-dense object, an expert in the pack's experts.bin) is a span of its mapping - the OS page cache decides
+// residency, as with Strata's own mapped experts. Multi-range objects (experts as GGUF role slices) are assembled
+// once. Digests are verified on first use. `gpu_experts_per_layer` marks experts 0..N-1 of every layer
+// GPU-resident (the rest form the CPU complement), so both expert paths can be exercised.
+class MappedModelResolver final : public objects::ObjectResolver {
+ public:
+  static Result<std::unique_ptr<MappedModelResolver>> open(const fs::path& dir, bool verify, std::uint32_t gpu_per_layer) {
+    std::ifstream in(dir / objects::CanonicalModelStore::kManifestFileName, std::ios::binary);
+    if (!in) return make_error(ErrorCode::kNotFound, "no manifest.json in " + dir.string());
+    std::ostringstream text;
+    text << in.rdbuf();
+    CLM_ASSIGN_OR_RETURN(objects::ModelManifest m, objects::ModelManifest::from_json(text.str()));
+    CLM_RETURN_IF_ERROR(m.validate());
+    std::unique_ptr<MappedModelResolver> r(new MappedModelResolver());
+    r->manifest_ = std::move(m);
+    r->verify_ = verify;
+    r->gpu_per_layer_ = gpu_per_layer;
+    for (const auto& sh : r->manifest_.shards) {
+      CLM_ASSIGN_OR_RETURN(platform::MappedFile f, platform::MappedFile::open(dir / sh.file_name, platform::MapMode::kReadOnly));
+      if (f.size() != sh.byte_size) return make_error(ErrorCode::kDataLoss, "shard size mismatch: " + sh.file_name);
+      r->maps_.push_back(std::move(f));
+    }
+    return r;
+  }
+  const objects::ModelManifest& manifest() const { return manifest_; }
+
+  Result<objects::ProvisionedObject> resolve(std::string_view name) const override {
+    const objects::ManifestObject* o = manifest_.find(name);
+    if (o == nullptr) return make_error(ErrorCode::kNotFound, "unknown object '" + std::string(name) + "'");
+    std::lock_guard lock(mu_);
+    ByteSpan bytes;
+    if (o->source_ranges.size() == 1) {
+      const auto& r = o->source_ranges[0];
+      bytes = maps_[r.shard].span().subspan(static_cast<std::size_t>(r.offset), static_cast<std::size_t>(r.length));
+    } else {
+      auto it = assembled_.find(o->name);
+      if (it == assembled_.end()) {
+        Bytes b;
+        b.reserve(static_cast<std::size_t>(o->byte_size));
+        for (const auto& r : o->source_ranges) {
+          const ByteSpan s = maps_[r.shard].span().subspan(static_cast<std::size_t>(r.offset), static_cast<std::size_t>(r.length));
+          b.insert(b.end(), s.begin(), s.end());
+        }
+        it = assembled_.emplace(o->name, std::move(b)).first;
+      }
+      bytes = it->second;
+    }
+    if (bytes.size() != o->byte_size) return make_error(ErrorCode::kDataLoss, "object '" + o->name + "': size mismatch");
+    if (verify_ && !verified_.contains(o->name)) {
+      if (Sha256::of(bytes) != o->object_digest)
+        return make_error(ErrorCode::kDataLoss, "object '" + o->name + "': digest mismatch");
+      verified_.insert(o->name);
+    }
+    objects::ProvisionedObject p;
+    p.entry = o;
+    p.bytes = bytes;
+    p.target = o->kind == objects::ObjectKind::kRoutedExpert && o->expert && *o->expert < gpu_per_layer_
+                   ? objects::AllocationTarget::kGpuResident
+                   : objects::AllocationTarget::kCpuResident;
+    return p;
+  }
+
+ private:
+  MappedModelResolver() = default;
+  objects::ModelManifest manifest_;
+  std::vector<platform::MappedFile> maps_;
+  bool verify_ = true;
+  std::uint32_t gpu_per_layer_ = 0;
+  mutable std::mutex mu_;
+  mutable std::map<std::string, Bytes> assembled_;
+  mutable std::set<std::string> verified_;
+};
+
+Result<std::unique_ptr<MappedModelResolver>> open_model(const Args& a) {
+  if (!a.has("model")) return make_error(ErrorCode::kInvalidArgument, "--model <converted model dir> is required");
+  return MappedModelResolver::open(a.get("model"), !a.has("no-verify"),
+                                   static_cast<std::uint32_t>(std::stoul(a.get("gpu-experts-per-layer", "0"))));
+}
+
 // ---------------------------------------------------------------- plans and domains (CUDA)
 
 struct Stage {
@@ -288,7 +373,7 @@ std::uint64_t device_used() {
 }
 
 int cmd_requirements(const Args& a) {
-  auto store = objects::CanonicalModelStore::open(a.get("model"));
+  auto store = open_model(a);
   if (!store.is_ok()) return fail("--model: " + store.status().to_string());
   const auto& m = (*store)->manifest();
   auto plan = parse_plan(a.get("plan"), m.geometry.n_layers);
@@ -350,7 +435,9 @@ struct Pipeline {
     const domain::WindowRequest req{epoch, session, WindowId{++window}, base, state,
                                     static_cast<std::uint32_t>(tokens.size())};
     CLM_ASSIGN_OR_RETURN(domain::StageActivations a, d.front()->run_prefix(req, tokens));
-    for (std::size_t i = 1; i + 1 < d.size(); ++i) CLM_ASSIGN_OR_RETURN(a, d[i]->run_window(req, a));
+    for (std::size_t i = 1; i + 1 < d.size(); ++i) {
+      CLM_ASSIGN_OR_RETURN(a, d[i]->run_window(req, a));
+    }
     return d.back()->run_tail(req, a);
   }
   Status commit(std::uint32_t accepted) {
@@ -367,7 +454,7 @@ struct Pipeline {
 };
 
 int cmd_numerics(const Args& a) {
-  auto store = objects::CanonicalModelStore::open(a.get("model"));
+  auto store = open_model(a);
   if (!store.is_ok()) return fail("--model: " + store.status().to_string());
   const auto& m = (*store)->manifest();
   auto plan = parse_plan(a.get("plan"), m.geometry.n_layers);
@@ -485,7 +572,7 @@ int usage() {
 #if defined(CLUSTERLM_STRATA_HAVE_CUDA)
                "  requirements --model <model-dir> --plan 0-12,12-24,24-36,36-48 [--context N] [--measure] [--ple-gguf G] [--out F]\n"
                "  numerics     --model <model-dir> --plan ... --tokens <ids.txt> --ple-gguf G [--q 1,2,4,8] [--mtp <rt-dir>]\n"
-               "               [--generate N] [--context N] [--out F]\n"
+               "               [--generate N] [--context N] [--gpu-experts-per-layer N] [--no-verify] [--out F]\n"
 #endif
   );
   return 2;
