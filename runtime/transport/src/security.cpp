@@ -8,14 +8,11 @@
 #include <memory>
 #include <system_error>
 
-#include "clusterlm/common/digest.hpp"
-#include "security_internal.hpp"
+#include <openssl/crypto.h>
 
-#ifndef _WIN32
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
+#include "clusterlm/common/digest.hpp"
+#include "clusterlm/platform/paths.hpp"
+#include "security_internal.hpp"
 
 namespace clusterlm::transport {
 namespace {
@@ -139,25 +136,22 @@ Status DeviceIdentity::save(const std::filesystem::path& dir) const {
       return openssl_error(ErrorCode::kUnavailable, "write " + cert_path);
   }
 
-  const auto key_path = (dir / kKeyFile).string();
-#ifndef _WIN32
-  // Create with 0600 from the start so the key is never world-readable, even briefly.
-  const int fd = ::open(key_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  if (fd < 0) return make_error(ErrorCode::kUnavailable, "cannot create " + key_path);
-  (void)::fchmod(fd, 0600);  // tighten a pre-existing file too
-  FILE* fp = ::fdopen(fd, "wb");
-  if (fp == nullptr) {
-    ::close(fd);
-    return make_error(ErrorCode::kUnavailable, "fdopen " + key_path);
+  const auto key_path = (dir / kKeyFile);
+  // Serialise to memory, then write through the platform layer, which creates the file owner-only from the first
+  // instant on both OSes (POSIX mode 0600; Windows protected DACL: owner account + SYSTEM, ADR 0133).
+  BioPtr mem(BIO_new(BIO_s_mem()));
+  if (!mem || PEM_write_bio_PrivateKey(mem.get(), impl_->key, nullptr, nullptr, 0, nullptr, nullptr) != 1)
+    return openssl_error(ErrorCode::kUnavailable, "serialise " + key_path.string());
+  char* pem = nullptr;
+  const long pem_len = BIO_get_mem_data(mem.get(), &pem);
+  Status st = Status::ok();
+  if (pem == nullptr || pem_len <= 0) {
+    st = make_error(ErrorCode::kInternal, "empty private key encoding");
+  } else {
+    st = platform::write_owner_only_file(key_path, ByteSpan(reinterpret_cast<const std::uint8_t*>(pem), static_cast<std::size_t>(pem_len)));
+    OPENSSL_cleanse(pem, static_cast<std::size_t>(pem_len));  // do not leave the key in freed heap memory
   }
-  const int ok = PEM_write_PrivateKey(fp, impl_->key, nullptr, nullptr, 0, nullptr, nullptr);
-  const int cl = std::fclose(fp);
-  if (ok != 1 || cl != 0) return openssl_error(ErrorCode::kUnavailable, "write " + key_path);
-#else
-  BioPtr kb(BIO_new_file(key_path.c_str(), "wb"));
-  if (!kb || PEM_write_bio_PrivateKey(kb.get(), impl_->key, nullptr, nullptr, 0, nullptr, nullptr) != 1)
-    return openssl_error(ErrorCode::kUnavailable, "write " + key_path);
-#endif
+  if (!st.is_ok()) return st;
   return Status::ok();
 }
 

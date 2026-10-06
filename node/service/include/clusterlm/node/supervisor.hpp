@@ -8,7 +8,8 @@
 //   2. if it does not within the cooperative deadline (default 2 s), the supervisor terminates the worker's
 //      job and relaunches it — the relaunched worker's orphan recovery deletes leftover staging before it can
 //      accept another lease;
-//   3. a worker that dies on its own is relaunched the same way.
+//   3. a worker that dies on its own is relaunched the same way;
+//   4. suspend revokes immediately like (1); resume restarts from Busy (on_suspend / on_resume).
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -65,7 +66,16 @@ class NodeSupervisor {
   Result<std::vector<SupervisorEvent>> tick();
   void stop();
 
+  // The machine is going to sleep. Local policy wins without consulting Father: the worker is revoked right now
+  // (cooperative deadline, then forced termination) and the supervisor stays ineligible until on_resume() and a
+  // fresh policy evaluation say otherwise. Idempotent.
+  Result<std::vector<SupervisorEvent>> on_suspend();
+  // The machine woke up. The worker is guaranteed Busy: nothing is offered until policy is satisfied again
+  // (the next tick() must observe an eligible machine; callers should invalidate stale activity data first).
+  Result<std::vector<SupervisorEvent>> on_resume();
+
   bool eligible() const { return eligible_; }
+  bool suspended() const { return suspended_; }
   platform::ChildProcess* worker() { return worker_.get(); }
   std::string worker_endpoint() const { return endpoint_; }
   std::string worker_device_id() const { return device_id_; }
@@ -88,6 +98,7 @@ class NodeSupervisor {
   std::unique_ptr<platform::ChildProcess> worker_;
   std::string endpoint_, device_id_;
   bool eligible_ = false;
+  bool suspended_ = false;
 };
 
 }  // namespace clusterlm::node
