@@ -20,6 +20,7 @@ int cmd_gpu(const cli::Args& args, bool pcie_only);
 int cmd_calibrate(const cli::Args& args);
 int cmd_transport(const cli::Args& args);
 int cmd_placement(const cli::Args& args);
+int cmd_placement_inputs(const cli::Args& args);
 int cmd_qualification(const cli::Args& args);
 int cmd_cluster(const cli::Args& args);
 int cmd_faults(const cli::Args& args);

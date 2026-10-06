@@ -38,8 +38,8 @@ if(WIN32)
 endif()
 
 add_executable(clusterlm-bench src/main.cpp src/cmd_basic.cpp src/cmd_transport.cpp src/cmd_cluster.cpp
-  src/cmd_cpu.cpp src/cmd_gpu.cpp src/cmd_calibrate.cpp)
-target_link_libraries(clusterlm-bench PRIVATE clusterlm_bench_harness)
+  src/cmd_cpu.cpp src/cmd_gpu.cpp src/cmd_calibrate.cpp src/cmd_placement_inputs.cpp)
+target_link_libraries(clusterlm-bench PRIVATE clusterlm_bench_harness clusterlm_planning clusterlm_father_service)
 target_compile_definitions(clusterlm-bench PRIVATE CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 clusterlm_set_warnings(clusterlm-bench)
 # clusterlm-bench spawns clusterlm-node from its own directory.

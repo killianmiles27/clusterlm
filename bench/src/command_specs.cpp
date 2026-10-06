@@ -40,6 +40,7 @@ std::vector<CommandSpec> build() {
   s.push_back({"faults", {}, join({kCommon, {"plan", "model", "seed", "insecure", "window-timeout-ms", "max-new", "release-cycles",
                                              "work", "keep-work", "impair"}})});
   s.push_back({"placement", {}, join({kCommon, {"profiles", "father", "node", "network", "context", "q"}})});
+  s.push_back({"placement-inputs", {}, join({kCommon, {"model", "corpus", "q", "max-new", "routing-out", "work"}})});
   s.push_back({"qualification", {}, kCommon});
   s.push_back({"domain",
                {"cpu-experts", "sustained", "gpu-layers", "vram-ledger", "grouped-experts"},

@@ -43,6 +43,7 @@ int dispatch(const std::string& cmd, const cli::Args& args) {
   if (cmd == "cluster") return bench::cmd_cluster(args);
   if (cmd == "faults") return bench::cmd_faults(args);
   if (cmd == "placement") return bench::cmd_placement(args);
+  if (cmd == "placement-inputs") return bench::cmd_placement_inputs(args);
   if (cmd == "qualification") return bench::cmd_qualification(args);
   return bench::cmd_hardware_only(cmd, args);
 }

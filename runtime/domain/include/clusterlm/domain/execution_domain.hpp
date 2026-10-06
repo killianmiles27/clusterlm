@@ -116,6 +116,15 @@ struct DomainMetrics {
   std::uint64_t stale_rejections = 0;
 };
 
+// Aggregate routed-expert selection counts for the layers a domain owns (calibration input for placement).
+// Counts only — never which position selected what, never token-linked sequences (privacy contract). Counts every
+// executed position, including verified-then-rejected speculative positions (they execute and cost the same).
+struct RoutingAggregate {
+  std::uint32_t first_layer = 0;
+  std::vector<std::vector<std::uint64_t>> counts;  // [local layer][expert]
+  std::uint64_t positions = 0;                     // positions executed per layer
+};
+
 // Tail output for one window: per-position logits (Father-local, never sent over the network).
 struct Logits {
   std::uint32_t positions = 0;
@@ -149,6 +158,11 @@ class ExecutionDomain {
   // Release every allocation. After release the domain must be prepared again.
   virtual Status release() = 0;
   virtual DomainMetrics read_metrics() const = 0;
+  // Opt-in aggregate routing statistics (off by default). Backends without the counter report kUnimplemented.
+  virtual Status enable_routing_aggregation(bool) { return make_error(ErrorCode::kUnimplemented, "routing aggregation"); }
+  virtual Result<RoutingAggregate> routing_aggregate() const {
+    return make_error(ErrorCode::kUnimplemented, "routing aggregation");
+  }
 };
 
 }  // namespace clusterlm::domain

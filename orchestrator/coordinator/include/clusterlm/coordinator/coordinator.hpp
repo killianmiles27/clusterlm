@@ -237,6 +237,10 @@ class Coordinator {
   Result<GenerationResult> generate(const GenerationRequest& request);
   // Cancel an in-progress prepare() (provisioning stops; the partial lease is released).
   void cancel_prepare();
+  // Calibration: aggregate routed-expert selection counts in Father's local domains (counts only). Routing is a
+  // property of model and data, so calibration runs use a Father-only plan where every layer is local.
+  Status enable_routing_aggregation(bool on);
+  Result<std::vector<domain::RoutingAggregate>> routing_aggregates() const;
   // Release every Node lease and Father's local domains.
   Result<ReleaseReport> release();
   // True while every Node in the current plan is Ready under the lease Father prepared.

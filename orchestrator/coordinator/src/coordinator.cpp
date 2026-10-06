@@ -1140,6 +1140,21 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
 
 void Coordinator::cancel_prepare() { impl_->cancel_prepare.store(true); }
 
+Status Coordinator::enable_routing_aggregation(bool on) {
+  if (!impl_->prepared) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
+  for (auto& [id, d] : impl_->local) CLM_RETURN_IF_ERROR(d->enable_routing_aggregation(on));
+  return Status::ok();
+}
+
+Result<std::vector<domain::RoutingAggregate>> Coordinator::routing_aggregates() const {
+  std::vector<domain::RoutingAggregate> out;
+  for (const auto& [id, d] : impl_->local) {
+    CLM_ASSIGN_OR_RETURN(auto a, d->routing_aggregate());
+    if (!a.counts.empty()) out.push_back(std::move(a));
+  }
+  return out;
+}
+
 Result<ReleaseReport> Coordinator::release() {
   auto& im = *impl_;
   ReleaseReport report;

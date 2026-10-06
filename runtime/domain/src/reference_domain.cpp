@@ -342,6 +342,18 @@ class ReferenceDomainImpl final : public ReferenceDomain {
     return Status::ok();
   }
 
+  Status enable_routing_aggregation(bool on) override {
+    aggregate_routing_ = on;
+    routing_ = RoutingAggregate{};
+    routing_.first_layer = spec_.layers.begin;
+    routing_.counts.assign(spec_.layers.size(), std::vector<std::uint64_t>(g_.n_experts, 0));
+    return Status::ok();
+  }
+  Result<RoutingAggregate> routing_aggregate() const override {
+    if (!aggregate_routing_) return make_error(ErrorCode::kFailedPrecondition, "routing aggregation is not enabled");
+    return routing_;
+  }
+
   DomainMetrics read_metrics() const override {
     DomainMetrics m = metrics_;
     m.resident_weight_bytes = resident_bytes_;
@@ -529,6 +541,7 @@ class ReferenceDomainImpl final : public ReferenceDomain {
       swiglu(ex.gate.data(), ex.up.data(), ex.down.data(), ff, sc.h.data());
       for (std::size_t c = 0; c < H; ++c) sc.y[c] += weights_[k] * sc.d[c];
       ++timing_.experts_selected;
+      if (aggregate_routing_) ++routing_.counts[li][sel[k]];
       (lw.expert_target[sel[k]] == AllocationTarget::kGpuResident ? timing_.experts_gpu : timing_.experts_cpu)++;
     }
     if (g_.shared_expert_ff > 0) {
@@ -537,6 +550,7 @@ class ReferenceDomainImpl final : public ReferenceDomain {
     }
     timing_.cpu_expert_ns += monotonic_ns() - t0;
 
+    if (aggregate_routing_ && li == 0) ++routing_.positions;
     for (std::size_t c = 0; c < H; ++c) P[c] = sc.m[c] + sc.y[c];
     for (std::size_t j = 0; j < hc; ++j) g[j] = rm::sigmoid(rm::dot(dn + lw.lay.inj + j * H, sc.x.data(), H));
   }
@@ -580,6 +594,8 @@ class ReferenceDomainImpl final : public ReferenceDomain {
   std::unordered_map<SessionId, Window> windows_;
   DomainMetrics metrics_;
   StageTiming timing_;
+  bool aggregate_routing_ = false;
+  RoutingAggregate routing_;
 };
 
 }  // namespace
