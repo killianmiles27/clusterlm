@@ -737,7 +737,7 @@ Windows pinned-memory behaviour.
 **Distributed Strata run: Father prefix -> G14 -> 3060 -> Father tail** — status: `pending`
 
 - **Purpose:** Run the Ultra tier end to end through clusterlm-father with every domain on the Strata backend: the Father prefix (embedding, PLE), two token-free Node middle domains provisioned with only their converted objects, and the Father tail (head, sampling, MTP); compare tokens with the single-machine numerics reference and measure decode.
-- **Command:** `build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && clusterlm-node --name g14 --listen <g14-ip>:7001 --staging <dir> --backend strata --identity <dir> & clusterlm-node --name n3060 --listen <3060-ip>:7001 --staging <dir> --backend strata --identity <dir> & clusterlm-father --model <ultra-dir> --backend strata --node g14=<g14-ip>:7001 --node n3060=<3060-ip>:7001 --plan 0-12@father,12-30@0,30-40@1,40-48@father --q 4 --max-new 512 --trust <fp> --out results/p0d.json`
+- **Command:** `build/bin/clusterlm-strata convert --pack <ultra-dir>/<strata-pack> --gguf <ultra-dir>/<first-shard>.gguf && clusterlm-node --name g14 --listen <g14-ip>:7001 --staging <dir> --backend strata --identity <dir> --trust <father-fp> & clusterlm-node --name n3060 --listen <3060-ip>:7001 --staging <dir> --backend strata --identity <dir> --trust <father-fp> & clusterlm-father --model <ultra-dir> --backend strata --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --plan 0-12@father,12-30@0,30-40@1,40-48@father --q 4 --max-new 512 (record the printed tokens and timings with clusterlm-bench numerics --reference for the comparison)`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -747,7 +747,7 @@ Windows pinned-memory behaviour.
   - abort/commit behaviour under a forced stale epoch
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0D-01"`; metrics `cluster.decode_tok_s`, `cluster.token_agreement`, `node.staged_bytes_after_release`
 - **Decision affected:** Ultra tier viability on the Strata stage design (P0-D).
-- **Acceptance:** Prerequisite: `--backend strata` in clusterlm-father / clusterlm-node (coordinator and Node integration of make_strata_backend; outside WP6). Then: identical greedy tokens to the single-machine reference and zero staged bytes after release.
+- **Acceptance:** `--backend strata` is wired into clusterlm-father and clusterlm-node (WP17; Father-only flags --strata-ple-gguf and --strata-mtp-dir, device flags --cuda-device, --vram-reserve-mib, --strata-cpu-threads; both sides must run the same build, the backend build hash is checked at PreparePlan). Needs the -DCLUSTERLM_ENABLE_STRATA=ON build on all three machines. Then: identical greedy tokens to the single-machine reference and zero staged bytes after release.
 
 ### HQ-INSTALL-01
 

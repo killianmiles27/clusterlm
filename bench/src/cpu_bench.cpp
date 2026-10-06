@@ -326,6 +326,7 @@ Result<CpuBenchReport> run_cpu_bench(const CpuBenchOptions& opt, const std::func
       pt.round_ms = c.round_ms;
       pt.bytes_per_s = c.bytes_per_s;
       rr.q_points.push_back(pt);
+      if (std::string path = bank->kernel_path(c.q); !path.empty()) rr.kernel_paths[c.q] = std::move(path);
       if (c.q == 1) {
         const double dq = static_cast<double>(c.timing.dequant_ns), gv = static_cast<double>(c.timing.gemv_ns);
         if (dq + gv > 0) rr.dequant_fraction = dq / (dq + gv);
@@ -462,6 +463,7 @@ void emit_cpu_metrics(BenchmarkResult& r, const CpuBenchReport& rep) {
     r.metric(p + ".bytes_per_expert", rr.bytes_per_expert);
     r.metric(p + ".bank_experts", rr.bank_experts);
     for (const auto& [t, d] : rr.thread_bytes_per_s) r.metric(p + ".thread_scaling.t" + std::to_string(t), d, "bytes/s");
+    for (const auto& [q, path] : rr.kernel_paths) r.metric(p + ".q" + std::to_string(q) + ".kernel_path", path);
     r.metric(p + ".best_threads", rr.best_threads);
     r.metric(p + ".usable_threads", rr.usable_threads);
     r.metric(p + ".single_thread_bytes_per_s", rr.single_thread_bytes_per_s);

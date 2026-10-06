@@ -25,7 +25,7 @@ cmake -S . -B build -G Ninja -DCLUSTERLM_ENABLE_STRATA_CPU=ON       # CPU expert
 | MTP drafter on the Father tail (`StrataMtpDrafter`) | Implemented (greedy drafts, one-hot Q; ADR 0203); adapter tested with a fake | `mtp_drafter.hpp` |
 | Patches 0001-0006 | Applied by `fetch_upstream.py`, verified by ctest | `third_party/patches/strata/` |
 | Tool `clusterlm-strata` (probe, cpu-experts, convert, requirements, numerics) | Implemented; probe/cpu-experts/convert run here, requirements/numerics need a GPU | `runtime/backends/strata/tools` |
-| Coordinator / Node use of the strata backend (`--backend strata`) | Not in WP6 (coordinator/node code); qualification HQ-P0D-01 | — |
+| Coordinator / Node use of the strata backend (`--backend strata`) | WP17: `runtime/backends/factory` (name -> adapter), `--backend` on clusterlm-father / clusterlm-node, fake-engine end-to-end test (`tests/backends/test_strata_wiring.cpp`); real run is HQ-P0D-01 | — |
 
 Decisions: ADR 0200 (memory-backed weights), 0201 (local sub-batches), 0202 (abort_window), 0203 (MTP on the
 Father tail), 0204 (patch series).
@@ -218,13 +218,27 @@ Remaining process-wide Strata state a domain relies on: the CPU expert layout (m
 domain of a process), the diagnostic verifier registry (`g_live`, 16 entries), kernel feature probes and
 environment switches. None of them holds a pointer into a domain's memory.
 
+## 6b. Product wiring (WP17)
+
+`runtime/backends/factory` maps a backend name to a `BackendAdapter`: `reference` (always), `llama` (with
+`CLUSTERLM_ENABLE_LLAMA`), `strata` (with `CLUSTERLM_ENABLE_STRATA`). An unknown name is `kInvalidArgument`, a known
+one that is not built is `kUnimplemented`; nothing falls back to another backend. `clusterlm-father --backend NAME`
+builds the adapter and hands it to `CoordinatorConfig::backend` (shared pointer; null = reference);
+`clusterlm-node --backend NAME` sets `NodeConfig::backend`. Strata flags: `--cuda-device`, `--vram-reserve-mib`,
+`--strata-cpu-threads` (both), `--strata-ple-gguf`, `--strata-mtp-dir` (Father only). `Coordinator::make_drafter()`
+returns the MTP drafter bound to the Father tail (Strata) or the fixture drafter (reference). A prepare failure of a
+backend (for example `kHardwareUnavailable` without a CUDA device) is reported with its real code and message by
+`Coordinator::prepare`, whether it happened on Father or on a Node, and releases everything already prepared.
+`tests/backends/test_strata_wiring.cpp` runs Father + two real Node workers over loopback through `StrataDomain`
+with the fake engine. The bench provider `strata-cpu` is the real Strata CPU kernels in a `CLUSTERLM_ENABLE_STRATA_CPU`
+build (`clusterlm-bench cpu --provider strata-cpu`).
+
 ## 7. What still needs a GPU (qualification)
 
 * Every numeric property of the CUDA path: split vs reference logits and greedy agreement for every rejection
   length (HQ-NUM-01), abort_window restoring the state bit for bit on the device (HQ-GPU-05), the VRAM ledger vs
   `describe_requirements` (HQ-GPU-02), MTP acceptance on the Father tail (HQ-MTP-02), CPU kernel throughput on the
-  target CPUs (HQ-CPU-01) and the full prefix -> G14 -> 3060 -> tail run (HQ-P0D-01, which also needs the
-  coordinator/Node `--backend strata` integration). Commands: `HARDWARE-QUALIFICATION.md`.
+  target CPUs (HQ-CPU-01) and the full prefix -> G14 -> 3060 -> tail run (HQ-P0D-01). Commands: `HARDWARE-QUALIFICATION.md`.
 * Prefill through the Verifier (8-position engine windows) is correct but not Strata's fast prompt path
   (`strata::prefill::Prefill`); a batched-prefill engine path is future work behind the same contract.
 * Sampled MTP drafts with full draft distributions (ADR 0203).

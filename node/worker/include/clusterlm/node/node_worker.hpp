@@ -17,7 +17,9 @@
 #include <optional>
 #include <string>
 
+#include "clusterlm/backends/strata_backend.hpp"
 #include "clusterlm/common/status.hpp"
+#include "clusterlm/domain/backend_adapter.hpp"
 #include "clusterlm/transport/impairment.hpp"
 #include "clusterlm/transport/transport.hpp"
 
@@ -42,7 +44,14 @@ struct NodeConfig {
   std::uint64_t ram_allowance = 0;      // safe RAM this Node offers (from live policy / ClusterLM Bench)
   std::uint64_t vram_allowance = 0;
   std::uint64_t disk_allowance = 0;     // 0 = disk staging not permitted
+  // Backend that creates this Node's middle-stage domains: "reference" or "strata" (runtime/backends/factory).
+  // An unknown or unavailable backend refuses to start the worker. `strata` carries the Strata engine options (CUDA
+  // device, VRAM reserve, CPU expert threads); its Father-only fields are never used on a Node.
   std::string backend = "reference";
+  backends::StrataBackendOptions strata;
+  // Test seam: when set, creates the BackendAdapter instead of the named backend (`backend` is then ignored). Lets
+  // tests run the Node through StrataDomain with a fake engine. Never set in production.
+  std::function<Result<std::unique_ptr<domain::BackendAdapter>>()> backend_factory;
   bool start_busy = false;
   // Network emulation applied to every connection this Node opens or accepts (simulation only).
   std::optional<transport::NetworkConditions> impairment;

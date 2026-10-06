@@ -65,6 +65,7 @@ struct RepresentationReport {
   double single_thread_bytes_per_s = 0;
   unsigned usable_threads = 1;      // smallest count reaching >= 95% of the best, minus a service-responsiveness reserve
   std::vector<QPoint> q_points;
+  std::map<std::uint32_t, std::string> kernel_paths;  // q -> kernel path the provider reports (empty: single path)
   double q_scaling = 0;             // mean over q>1 of (t_q/t_1 - 1)/(q-1) on the kSame pattern
   bool q_scaling_valid = false;
   double dequant_fraction = 0;      // of expert execution time at best_threads, q=1

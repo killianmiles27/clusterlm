@@ -9,9 +9,12 @@
 #include "bench_profile.hpp"
 #include "clusterlm/placement/placement.hpp"
 #include "clusterlm/placement/profile.hpp"
+#include "schema_check.hpp"
 
 using namespace clusterlm;
 using namespace clusterlm::placement;
+using clusterlm::bench::load_result_schema;
+using clusterlm::bench::validate_against_schema;
 using nlohmann::json;
 
 #ifdef CLUSTERLM_BENCH_RESULTS_DIR
@@ -121,6 +124,27 @@ TEST_CASE("cpu smoke result carries the sweep, q scaling, dequant split and pend
   CHECK(sus["metrics"].contains("thermal.time_to_equilibrium_s"));
   CHECK(sus["trace"].size() >= 2);
 }
+
+#ifdef CLUSTERLM_BENCH_HAS_STRATA_CPU
+TEST_CASE("cpu --provider strata-cpu result: schema-valid, real kernels, kernel path and ISA recorded") {
+  const auto doc = load_json(results("result-cpu-strata.json"));
+  const json schema = load_result_schema(CLUSTERLM_SOURCE_DIR);
+  REQUIRE_FALSE(schema.is_null());
+  const auto errs = validate_against_schema(doc, schema);
+  CHECK_MESSAGE(errs.empty(), (errs.empty() ? std::string() : errs.front()));
+  CHECK(doc["provenance"] == "Measured");  // kernel speed on this host; the weights are synthetic pseudo-random blobs
+  const auto& m = doc["metrics"];
+  CHECK(m["cpu.provider"] == "strata-cpu");
+  const std::string isa = m["cpu.isa_selected"].get<std::string>();
+  CHECK((isa == "avx512" || isa == "avx2" || isa == "baseline"));
+  for (const char* k : {"cpu.expert_bytes_per_s.iq3_s", "cpu.iq3_s.q1.kernel_path", "cpu.iq3_s.q2.kernel_path",
+                        "cpu.iq3_s.bytes_per_expert", "cpu.iq3_s.thread_scaling.t1"})
+    CHECK_MESSAGE(m.contains(k), k);
+  CHECK_FALSE(m.contains("cpu.iq2_xs.bytes_per_expert"));  // only the requested representation ran
+  CHECK_FALSE(m["cpu.iq3_s.q1.kernel_path"].get<std::string>().empty());
+  CHECK(m["cpu.expert_bytes_per_s.iq3_s"]["p50"].get<double>() > 0);
+}
+#endif
 
 TEST_CASE("gpu smoke without a CUDA device reports it and lists the pending items") {
   const auto doc = load_json(results("result-gpu.json"));

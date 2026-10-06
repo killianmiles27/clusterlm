@@ -11,6 +11,7 @@
 
 #include "clusterlm/common/clock.hpp"
 #include "clusterlm/common/log.hpp"
+#include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/domain/backend_adapter.hpp"
 #include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
@@ -484,7 +485,20 @@ struct Coordinator::Impl {
     CLM_ASSIGN_OR_RETURN(auto p, plan_message(n, s));
     CLM_RETURN_IF_ERROR(n.control->call<protocol::PlanAccepted>(p, cfg.request_timeout).status());
     CLM_ASSIGN_OR_RETURN(n.provision, open_channel(n, Channel::kProvision, true));
-    CLM_RETURN_IF_ERROR(provision_node(n, p));
+    if (Status pst = provision_node(n, p); !pst.is_ok()) {
+      // A Node that fails to prepare (e.g. a backend without its hardware) reports the real reason on the control
+      // channel and releases its lease; the provision channel then only sees a stale lease. Prefer the reported reason.
+      auto reported = n.control->inbox.wait(
+          [](const ReceivedMessage& r) {
+            return r.correlation == 0 && std::holds_alternative<protocol::ErrorMessage>(r.message);
+          },
+          std::chrono::milliseconds(500));
+      if (reported.is_ok()) {
+        const auto& e = std::get<protocol::ErrorMessage>(reported->message);
+        return make_error(e.code, e.message);
+      }
+      return pst;
+    }
     // PlanReady (or a prepare failure) arrives unsolicited on the control channel.
     CLM_ASSIGN_OR_RETURN(auto ready, n.control->inbox.wait(
                                          [](const ReceivedMessage& r) {
@@ -865,9 +879,19 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
   for (const auto& s : plan.stages) {
     if (s.domain != kFatherDomain) continue;
     domain::DomainSpec spec{s.stage, s.role, s.layers, plan.max_context, plan.max_window, 1};
-    CLM_ASSIGN_OR_RETURN(auto d, im.backend->create_domain(m, spec));
-    CLM_RETURN_IF_ERROR(d->prepare(*im.store));
-    im.local.emplace(s.stage.value, std::move(d));
+    // The backend's real error (e.g. kHardwareUnavailable from the Strata CUDA engine) is returned as is; domains
+    // already prepared are released so a failed prepare leaves nothing behind (no Node was contacted yet).
+    auto fail_local = [&](const Status& st) {
+      log::error("prepare_failed", {{"error", st.to_string()}});
+      for (auto& [id, ld] : im.local) (void)ld->release();
+      im.local.clear();
+      im.plan.reset();
+      return st;
+    };
+    auto d = im.backend->create_domain(m, spec);
+    if (!d.is_ok()) return fail_local(d.status());
+    if (Status st = d.value()->prepare(*im.store); !st.is_ok()) return fail_local(st);
+    im.local.emplace(s.stage.value, std::move(d).value());
   }
 
   // Provision Nodes concurrently. Their transfers share Father's single egress link, so concurrency overlaps
@@ -888,7 +912,13 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
       return st;
     }
   }
-  if (im.cfg.direct_peer) CLM_RETURN_IF_ERROR(im.authorize_peers());
+  if (im.cfg.direct_peer) {
+    if (Status st = im.authorize_peers(); !st.is_ok()) {
+      im.prepared = true;  // so release() cleans up the provisioned Nodes and local domains
+      (void)release();
+      return st;
+    }
+  }
   im.prepared = true;
 
   PrepareReport report;
@@ -918,6 +948,20 @@ std::uint64_t peak_rss_bytes() {
 }
 
 }  // namespace
+
+Result<std::shared_ptr<domain::Drafter>> Coordinator::make_drafter() {
+  auto& im = *impl_;
+  if (!im.prepared || !im.plan) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
+  if (im.backend->info().name != "strata") {
+    CLM_ASSIGN_OR_RETURN(auto d, domain::MtpFixtureDrafter::create(im.store->manifest(), *im.store));
+    return std::shared_ptr<domain::Drafter>(std::move(d));
+  }
+  auto it = im.local.find(im.plan->stages.back().stage.value);
+  if (it == im.local.end() || it->second->spec().role != domain::StageRole::kTail)
+    return make_error(ErrorCode::kFailedPrecondition, "the plan has no Father tail domain");
+  CLM_ASSIGN_OR_RETURN(auto d, backends::make_backend_drafter(im.backend->info().name, *it->second));
+  return std::shared_ptr<domain::Drafter>(std::move(d));
+}
 
 Result<std::shared_ptr<Conversation>> Coordinator::open_conversation() {
   auto& im = *impl_;

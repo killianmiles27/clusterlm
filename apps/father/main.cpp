@@ -13,6 +13,7 @@
 #include <string>
 
 #include "cli.hpp"
+#include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/common/log.hpp"
 #include "clusterlm/coordinator/coordinator.hpp"
 #include "clusterlm/diagnostics/diagnostics.hpp"
@@ -28,6 +29,8 @@ int usage() {
                "usage: clusterlm-father --model DIR --plan PLAN [--node NAME=HOST:PORT[@FINGERPRINT]]...\n"
                "                        [--prompt T1,T2,...] [--max-new N] [--q N] [--prefill-chunk N] [--relay]\n"
                "                        [--insecure-loopback | --identity DIR] [--impair PRESET]\n"
+               "                        [--backend reference|llama|strata] [--strata-ple-gguf FILE] [--strata-mtp-dir DIR]\n"
+               "                        [--cuda-device N] [--vram-reserve-mib N] [--strata-cpu-threads N]\n"
                "       clusterlm-father diagnostics --out FILE [--model DIR --plan PLAN] [--bench-results FILE]...\n");
   return 2;
 }
@@ -74,6 +77,24 @@ int main(int argc, char** argv) {
   coordinator::CoordinatorConfig cfg;
   cfg.model_dir = args.get("model");
   cfg.direct_peer = !args.has("relay");
+  // Backend of Father's prefix/tail domains, by name through the factory ("reference", "llama" when built, "strata" when
+  // built). Nodes are started with the same --backend (the build hashes must match). An unknown or unbuilt name fails.
+  backends::BackendOptions bo;
+  bo.name = args.get("backend", "reference");
+  bo.strata.cuda_device = static_cast<int>(args.integer("cuda-device", 0));
+  bo.strata.vram_reserve_mib = static_cast<std::uint32_t>(args.integer("vram-reserve-mib", 1024));
+  bo.strata.cpu_threads = static_cast<std::uint32_t>(args.integer("strata-cpu-threads", 0));
+  bo.strata.ple_table_gguf = args.get("strata-ple-gguf");
+  bo.strata.mtp_dir = args.get("strata-mtp-dir");
+#if defined(CLUSTERLM_FACTORY_HAS_LLAMA)
+  bo.llama.model_dir = cfg.model_dir;
+  bo.llama.n_gpu_layers = static_cast<std::int32_t>(args.integer("llama-gpu-layers", 0));
+#endif
+  if (bo.name != "reference") {
+    auto be = backends::make_backend(bo);
+    if (!be.is_ok()) return fail(be.status());
+    cfg.backend = std::move(be).value();
+  }
   for (const auto& spec : args.all("node")) {
     const auto eq = spec.find('=');
     if (eq == std::string::npos) return usage();
@@ -119,12 +140,9 @@ int main(int argc, char** argv) {
   req.max_new_tokens = static_cast<std::uint32_t>(args.integer("max-new", 32));
   req.q = static_cast<std::uint32_t>(args.integer("q", 1));
   req.prefill_chunk = static_cast<std::uint32_t>(args.integer("prefill-chunk", 128));
-  std::unique_ptr<objects::CanonicalModelStore> drafter_store;
   if (req.q > 1) {
-    auto store = objects::CanonicalModelStore::open(cfg.model_dir);
-    if (!store.is_ok()) return fail(store.status());
-    drafter_store = std::move(store).value();
-    auto drafter = domain::MtpFixtureDrafter::create(c.manifest(), *drafter_store);
+    // reference: the MTP fixture drafter; strata: the MTP drafter bound to the Strata tail domain.
+    auto drafter = c.make_drafter();
     if (!drafter.is_ok()) return fail(drafter.status());
     req.drafter = std::move(drafter).value();
   }

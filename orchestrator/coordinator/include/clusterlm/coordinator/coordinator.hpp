@@ -24,6 +24,8 @@
 #include "clusterlm/common/digest.hpp"
 #include "clusterlm/common/ids.hpp"
 #include "clusterlm/common/status.hpp"
+#include "clusterlm/domain/backend_adapter.hpp"
+#include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/domain/execution_domain.hpp"
 #include "clusterlm/domain/sampling.hpp"
 #include "clusterlm/objects/manifest.hpp"
@@ -69,7 +71,8 @@ struct ClusterPlan {
 struct CoordinatorConfig {
   std::filesystem::path model_dir;      // canonical model directory (manifest.json + shards)
   // Backend that hosts Father's local prefix/tail domains. Null = the deterministic reference backend. A Father-only
-  // backend such as the llama.cpp Fast backend is supplied here; it is shared, so it must outlive the Coordinator.
+  // backend such as the llama.cpp Fast backend or Strata is supplied here (clusterlm-father builds it from --backend
+  // through backends::make_backend); it is shared, so it must outlive the Coordinator.
   std::shared_ptr<domain::BackendAdapter> backend;
   transport::SecurityConfig security;
   std::vector<NodeEndpoint> nodes;
@@ -233,6 +236,10 @@ class Coordinator {
   Status connect();
   // Provision and prepare a plan. Nodes become Ready; Father's local prefix/tail domains are prepared.
   Result<PrepareReport> prepare(const ClusterPlan& plan);
+  // The speculative-decoding drafter of this Father's backend, bound to the prepared plan's tail domain: the reference
+  // MTP fixture drafter, or (strata) the MTP drafter on the Strata tail (needs StrataBackendOptions::mtp_dir). Needs a
+  // prepared plan; the Coordinator must outlive the drafter.
+  Result<std::shared_ptr<domain::Drafter>> make_drafter();
   // Open a conversation (a distributed session on every domain of the prepared plan).
   Result<std::shared_ptr<Conversation>> open_conversation();
   // Free a conversation's sequence state everywhere (the lease and weights stay Ready).

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/common/clock.hpp"
 #include "clusterlm/common/log.hpp"
 #include "clusterlm/domain/backend_adapter.hpp"
@@ -885,9 +886,18 @@ Result<std::unique_ptr<NodeWorker>> NodeWorker::start(NodeConfig config) {
   auto impl = std::make_unique<Impl>();
   impl->cfg = std::move(config);
   log::info("node_starting", {{"name", impl->cfg.name}});
-  if (impl->cfg.backend != "reference")
-    return make_error(ErrorCode::kUnimplemented, "backend '" + impl->cfg.backend + "' is not available in this build");
-  impl->backend = domain::make_reference_backend();
+  // Unknown or unbuilt backend: refuse to start rather than fall back to another one.
+  if (impl->cfg.backend_factory) {
+    CLM_ASSIGN_OR_RETURN(impl->backend, impl->cfg.backend_factory());
+    if (!impl->backend) return make_error(ErrorCode::kInternal, "backend_factory returned no adapter");
+  } else {
+    backends::BackendOptions bo;
+    bo.name = impl->cfg.backend;
+    bo.strata = impl->cfg.strata;
+    CLM_ASSIGN_OR_RETURN(impl->backend, backends::make_backend(bo));
+  }
+  log::info("node_backend", {{"backend", impl->backend->info().name},
+                              {"hardware_available", impl->backend->info().hardware_available ? "true" : "false"}});
   if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(impl->cfg.impairment->bandwidth_bytes_per_s);
 
   // Orphan recovery runs before any lease can be accepted.

@@ -37,3 +37,8 @@ if(CLUSTERLM_ENABLE_STRATA)
   clusterlm_test(test_strata_cuda SOURCES test_strata_cuda.cpp DEPS clusterlm_backend_strata)
   target_link_libraries(test_strata_cuda PRIVATE strata_engine CUDA::cudart)  # Strata's sizing arithmetic, cudart
 endif()
+
+# The Strata backend wired into Father, Node and Coordinator (fake engine through the guarded backend_factory seam,
+# real Node workers over loopback), the backend factory, and refusal of unknown backends: every build, no GPU.
+clusterlm_test(test_strata_wiring SOURCES test_strata_wiring.cpp
+  DEPS clusterlm_coordinator clusterlm_node_worker clusterlm_strata_core clusterlm_backend_factory clusterlm_domain clusterlm_objects)
