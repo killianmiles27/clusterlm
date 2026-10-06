@@ -1,3 +1,3 @@
 clusterlm_module(clusterlm_node_worker
   SOURCES src/node_worker.cpp
-  DEPS clusterlm_common clusterlm_transport clusterlm_protocol clusterlm_domain clusterlm_lease_store)
+  DEPS clusterlm_common clusterlm_transport clusterlm_protocol clusterlm_domain clusterlm_backend_factory clusterlm_lease_store)

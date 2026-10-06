@@ -30,9 +30,17 @@ endfunction()
 clusterlm_bench_smoke(cpu ARGS cpu --quick --quiet --out ${BENCH_RESULTS}/result-cpu.json)
 clusterlm_bench_smoke(cpu_sustained
   ARGS cpu --quick --quiet --sustained --minutes 0.02 --sample-s 0.2 --out ${BENCH_RESULTS}/result-cpu-sustained.json)
-clusterlm_bench_smoke(cpu_strata_stub
-  ARGS cpu --provider strata-cpu --quick --quiet --out ${BENCH_RESULTS}/result-cpu-strata.json
-  PASS_REGEX "wrote .*result-cpu-strata.json")
+if(TARGET clusterlm_strata_cpu)
+  # -DCLUSTERLM_ENABLE_STRATA_CPU=ON (or _STRATA=ON): the real Strata CPU kernels back the "strata-cpu" provider.
+  clusterlm_bench_smoke(cpu_strata
+    ARGS cpu --provider strata-cpu --representations iq3_s --q 1,2 --threads 1 --quick --quiet
+         --out ${BENCH_RESULTS}/result-cpu-strata.json
+    PASS_REGEX "wrote .*result-cpu-strata.json")
+else()
+  clusterlm_bench_smoke(cpu_strata_stub
+    ARGS cpu --provider strata-cpu --quick --quiet --out ${BENCH_RESULTS}/result-cpu-strata.json
+    PASS_REGEX "wrote .*result-cpu-strata.json")
+endif()
 clusterlm_bench_smoke(memory ARGS memory --quick --out ${BENCH_RESULTS}/result-memory.json)
 clusterlm_bench_smoke(gpu ARGS gpu --quick --out ${BENCH_RESULTS}/result-gpu.json PASS_REGEX "wrote .*result-gpu.json")
 clusterlm_bench_smoke(pcie ARGS pcie --quick --out ${BENCH_RESULTS}/result-pcie.json PASS_REGEX "wrote .*result-pcie.json")

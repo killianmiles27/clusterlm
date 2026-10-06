@@ -11,6 +11,7 @@
 
 #include "clusterlm/common/clock.hpp"
 #include "clusterlm/common/log.hpp"
+#include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/domain/backend_adapter.hpp"
 #include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
@@ -816,7 +817,15 @@ Result<std::unique_ptr<Coordinator>> Coordinator::create(CoordinatorConfig confi
   auto impl = std::make_unique<Impl>();
   impl->cfg = std::move(config);
   CLM_ASSIGN_OR_RETURN(impl->store, objects::CanonicalModelStore::open(impl->cfg.model_dir));
-  impl->backend = domain::make_reference_backend();
+  if (impl->cfg.backend_factory) {
+    CLM_ASSIGN_OR_RETURN(impl->backend, impl->cfg.backend_factory());
+    if (!impl->backend) return make_error(ErrorCode::kInternal, "backend_factory returned no adapter");
+  } else {
+    backends::BackendOptions bo;
+    bo.name = impl->cfg.backend;
+    bo.strata = impl->cfg.strata;
+    CLM_ASSIGN_OR_RETURN(impl->backend, backends::make_backend(bo));
+  }
   if (impl->cfg.impairment) impl->egress_link = std::make_shared<transport::SimulatedLink>(impl->cfg.impairment->bandwidth_bytes_per_s);
   for (const auto& ep : impl->cfg.nodes) {
     auto n = std::make_unique<RemoteNode>();
@@ -865,9 +874,19 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
   for (const auto& s : plan.stages) {
     if (s.domain != kFatherDomain) continue;
     domain::DomainSpec spec{s.stage, s.role, s.layers, plan.max_context, plan.max_window, 1};
-    CLM_ASSIGN_OR_RETURN(auto d, im.backend->create_domain(m, spec));
-    CLM_RETURN_IF_ERROR(d->prepare(*im.store));
-    im.local.emplace(s.stage.value, std::move(d));
+    // The backend's real error (e.g. kHardwareUnavailable from the Strata CUDA engine) is returned as is; domains
+    // already prepared are released so a failed prepare leaves nothing behind (no Node was contacted yet).
+    auto fail_local = [&](const Status& st) {
+      log::error("prepare_failed", {{"error", st.to_string()}});
+      for (auto& [id, ld] : im.local) (void)ld->release();
+      im.local.clear();
+      im.plan.reset();
+      return st;
+    };
+    auto d = im.backend->create_domain(m, spec);
+    if (!d.is_ok()) return fail_local(d.status());
+    if (Status st = d.value()->prepare(*im.store); !st.is_ok()) return fail_local(st);
+    im.local.emplace(s.stage.value, std::move(d).value());
   }
 
   // Provision Nodes concurrently. Their transfers share Father's single egress link, so concurrency overlaps
@@ -888,7 +907,13 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
       return st;
     }
   }
-  if (im.cfg.direct_peer) CLM_RETURN_IF_ERROR(im.authorize_peers());
+  if (im.cfg.direct_peer) {
+    if (Status st = im.authorize_peers(); !st.is_ok()) {
+      im.prepared = true;  // so release() cleans up the provisioned Nodes and local domains
+      (void)release();
+      return st;
+    }
+  }
   im.prepared = true;
 
   PrepareReport report;
@@ -918,6 +943,20 @@ std::uint64_t peak_rss_bytes() {
 }
 
 }  // namespace
+
+Result<std::shared_ptr<domain::Drafter>> Coordinator::make_drafter() {
+  auto& im = *impl_;
+  if (!im.prepared || !im.plan) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
+  if (!im.cfg.backend_factory && im.cfg.backend == "reference") {
+    CLM_ASSIGN_OR_RETURN(auto d, domain::MtpFixtureDrafter::create(im.store->manifest(), *im.store));
+    return std::shared_ptr<domain::Drafter>(std::move(d));
+  }
+  auto it = im.local.find(im.plan->stages.back().stage.value);
+  if (it == im.local.end() || it->second->spec().role != domain::StageRole::kTail)
+    return make_error(ErrorCode::kFailedPrecondition, "the plan has no Father tail domain");
+  CLM_ASSIGN_OR_RETURN(auto d, backends::make_backend_drafter(im.cfg.backend, *it->second));
+  return std::shared_ptr<domain::Drafter>(std::move(d));
+}
 
 Result<std::shared_ptr<Conversation>> Coordinator::open_conversation() {
   auto& im = *impl_;

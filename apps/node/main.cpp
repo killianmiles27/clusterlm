@@ -23,7 +23,9 @@ int usage() {
   std::fprintf(stderr,
                "usage: clusterlm-node --staging DIR [--name NAME] [--listen HOST:PORT] [--ram-gib N] [--vram-gib N]\n"
                "                      [--disk-gib N] (--insecure-loopback | --identity DIR --trust FINGERPRINT...)\n"
-               "                      [--impair PRESET] [--fault RULE]... [--start-busy] [--log debug|info|warn]\n");
+               "                      [--impair PRESET] [--fault RULE]... [--start-busy] [--log debug|info|warn]\n"
+               "                      [--backend reference|strata] [--cuda-device N] [--vram-reserve-mib N]\n"
+               "                      [--strata-cpu-threads N]\n");
   return 2;
 }
 
@@ -48,6 +50,11 @@ int main(int argc, char** argv) {
   cfg.vram_allowance = static_cast<std::uint64_t>(args.number("vram-gib", 0) * static_cast<double>(cli::kGiB));
   cfg.disk_allowance = static_cast<std::uint64_t>(args.number("disk-gib", 0) * static_cast<double>(cli::kGiB));
   cfg.start_busy = args.has("start-busy");
+  // Backend of the middle-stage domains. An unknown or unbuilt backend refuses to start (NodeWorker::start).
+  cfg.backend = args.get("backend", "reference");
+  cfg.strata.cuda_device = static_cast<int>(args.integer("cuda-device", 0));
+  cfg.strata.vram_reserve_mib = static_cast<std::uint32_t>(args.integer("vram-reserve-mib", 1024));
+  cfg.strata.cpu_threads = static_cast<std::uint32_t>(args.integer("strata-cpu-threads", 0));
 
   if (args.has("insecure-loopback")) {
     cfg.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;

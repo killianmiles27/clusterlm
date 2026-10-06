@@ -21,9 +21,12 @@
 #include <string>
 #include <vector>
 
+#include "clusterlm/backends/strata_backend.hpp"
 #include "clusterlm/common/digest.hpp"
 #include "clusterlm/common/ids.hpp"
 #include "clusterlm/common/status.hpp"
+#include "clusterlm/domain/backend_adapter.hpp"
+#include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/domain/execution_domain.hpp"
 #include "clusterlm/domain/sampling.hpp"
 #include "clusterlm/objects/manifest.hpp"
@@ -69,6 +72,14 @@ struct CoordinatorConfig {
   std::filesystem::path model_dir;      // canonical model directory (manifest.json + shards)
   transport::SecurityConfig security;
   std::vector<NodeEndpoint> nodes;
+  // Backend of Father's own prefix/tail domains: "reference" or "strata" (runtime/backends/factory). An unknown or
+  // unbuilt backend makes create() fail. `strata` carries the Strata engine options, including the Father-only PLE
+  // table GGUF (prefix) and MTP runtime directory (tail).
+  std::string backend = "reference";
+  backends::StrataBackendOptions strata;
+  // Test seam: when set, creates the BackendAdapter instead of the named backend (`backend` is then ignored). Lets
+  // tests drive Father's domains through StrataDomain with a fake engine. Never set in production.
+  std::function<Result<std::unique_ptr<domain::BackendAdapter>>()> backend_factory;
   bool direct_peer = true;              // Node->Node activation forwarding instead of Father relay
   std::optional<transport::NetworkConditions> impairment;  // simulation only
   std::shared_ptr<transport::FaultInjector> faults;
@@ -229,6 +240,10 @@ class Coordinator {
   Status connect();
   // Provision and prepare a plan. Nodes become Ready; Father's local prefix/tail domains are prepared.
   Result<PrepareReport> prepare(const ClusterPlan& plan);
+  // The speculative-decoding drafter of this Father's backend, bound to the prepared plan's tail domain: the reference
+  // MTP fixture drafter, or (strata) the MTP drafter on the Strata tail (needs StrataBackendOptions::mtp_dir). Needs a
+  // prepared plan; the Coordinator must outlive the drafter.
+  Result<std::shared_ptr<domain::Drafter>> make_drafter();
   // Open a conversation (a distributed session on every domain of the prepared plan).
   Result<std::shared_ptr<Conversation>> open_conversation();
   // Free a conversation's sequence state everywhere (the lease and weights stay Ready).

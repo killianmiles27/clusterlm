@@ -4,8 +4,8 @@
 // A provider turns a tensor representation ("f32", "q8_0-fixture", later "iq3_s", "iq2_xs") into an
 // ExpertBank: a set of experts that can be executed for 1..q positions. The reference provider wraps the
 // deterministic reference-backend math. The Strata CPU IQ kernels (AVX2/AVX-512, built by another workstream)
-// register under the id "strata-cpu" through ExpertKernelRegistry::register_factory; until then that id
-// resolves to a stub that reports kHardwareUnavailable with a precise reason.
+// register under the id "strata-cpu" through ExpertKernelRegistry::register_factory; in a build without the
+// Strata CPU kernels that id resolves to a stub that reports kHardwareUnavailable with a precise reason.
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -42,6 +42,9 @@ class ExpertBank {
   // Bytes one expert occupies in its stored representation (gate + up + down).
   virtual std::uint64_t bytes_per_expert() const = 0;
   virtual std::unique_ptr<ExpertContext> make_context() const = 0;
+  // Which kernel path executes `positions` positions on this CPU (e.g. Strata's "strata-iq512" / "strata-iq256" /
+  // "ggml-cpu"); empty when the provider has a single path. Recorded in bench results.
+  virtual std::string kernel_path(std::size_t /*positions*/) const { return {}; }
   // Executes expert `e` over `positions` inputs (positions*hidden floats) into `out` (positions*hidden floats).
   // Thread-safe for distinct contexts. `timing` may be null.
   virtual Status run(std::size_t e, std::size_t positions, const float* in, float* out, ExpertContext& ctx,

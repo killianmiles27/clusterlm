@@ -16,7 +16,7 @@ if(CLUSTERLM_ENABLE_STRATA OR CLUSTERLM_ENABLE_STRATA_CPU)
   include(${CMAKE_CURRENT_SOURCE_DIR}/strata-upstream.cmake)
 endif()
 
-foreach(adapter strata-layout strata-core strata llama)
+foreach(adapter strata-layout strata-core strata llama factory)
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${adapter}/CMakeLists.txt)
     add_subdirectory(${adapter})
   endif()

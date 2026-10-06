@@ -62,10 +62,16 @@ TEST_CASE("registry: reference provider is usable, strata-cpu is a clear stub, f
 
   auto strata = reg.create("strata-cpu");
   REQUIRE(strata.is_ok());
+#ifndef CLUSTERLM_BENCH_HAS_STRATA_CPU
+  // Built without the Strata CPU kernels: the registration stub.
   auto bank = strata.value()->make_bank("iq3_s", ExpertShape{256, 64}, 4, 1);
   REQUIRE_FALSE(bank.is_ok());
   CHECK(bank.status().code() == ErrorCode::kHardwareUnavailable);
-  CHECK(bank.status().message().find("another workstream") != std::string::npos);
+  CHECK(bank.status().message().find("registration stub") != std::string::npos);
+#else
+  // Built with them: the real provider (see the strata-cpu test case below).
+  CHECK(strata.value()->isa() != "unavailable");
+#endif
 
   CHECK_FALSE(reg.create("no-such-provider").is_ok());
 
@@ -116,3 +122,52 @@ TEST_CASE("reference banks: positions are independent, dequantization is timed s
   CHECK(f32.value()->bytes_per_expert() == 3ull * shape.ff * shape.hidden * 4);
   CHECK_FALSE(provider.value()->make_bank("iq3_s", shape, 1, 1).is_ok());
 }
+
+#ifdef CLUSTERLM_BENCH_HAS_STRATA_CPU
+TEST_CASE("strata-cpu provider: IQ3_S / IQ2_XS banks at the Flash-Next shape run, are deterministic and report their path") {
+  register_builtin_expert_providers();
+  auto p = ExpertKernelRegistry::instance().create("strata-cpu");
+  REQUIRE(p.is_ok());
+  CHECK(p.value()->id() == "strata-cpu");
+  CHECK(p.value()->representations() == std::vector<std::string>{"iq3_s", "iq2_xs"});
+  const std::string isa = p.value()->isa();
+  CHECK((isa == "avx512" || isa == "avx2" || isa == "baseline"));
+  const ExpertShape shape;  // 2560 x 640
+  CHECK_FALSE(p.value()->make_bank("q4_k", shape, 2, 1).is_ok());
+  CHECK(p.value()->make_bank("iq3_s", ExpertShape{100, 32}, 2, 1).status().code() == ErrorCode::kInvalidArgument);
+
+  std::uint64_t bytes_per_expert[2] = {};
+  int i = 0;
+  for (const char* rep : {"iq3_s", "iq2_xs"}) {
+    CAPTURE(rep);
+    auto a = p.value()->make_bank(rep, shape, 3, 42);
+    auto b = p.value()->make_bank(rep, shape, 3, 42);
+    auto c = p.value()->make_bank(rep, shape, 3, 43);
+    REQUIRE(a.is_ok());
+    REQUIRE(b.is_ok());
+    REQUIRE(c.is_ok());
+    CHECK(a.value()->experts() == 3);
+    bytes_per_expert[i++] = a.value()->bytes_per_expert();
+    CHECK(a.value()->bytes_per_expert() > 0);
+    CHECK_FALSE(a.value()->kernel_path(1).empty());
+    CHECK_FALSE(a.value()->kernel_path(4).empty());
+    const std::size_t H = shape.hidden;
+    for (std::size_t positions : {1u, 2u, 11u}) {  // 11 > one Strata window: runs as two
+      const auto x = ramp(positions * H, 2.0f, 7);
+      std::vector<float> ya(positions * H), yb(positions * H), yc(positions * H);
+      auto ca = a.value()->make_context(), cb = b.value()->make_context(), cc = c.value()->make_context();
+      ExpertTiming t;
+      REQUIRE(a.value()->run(1, positions, x.data(), ya.data(), *ca, &t).is_ok());
+      REQUIRE(b.value()->run(1, positions, x.data(), yb.data(), *cb, nullptr).is_ok());
+      REQUIRE(c.value()->run(1, positions, x.data(), yc.data(), *cc, nullptr).is_ok());
+      CHECK(t.gemv_ns > 0);
+      CHECK(bitwise_equal(ya, yb));
+      CHECK_FALSE(bitwise_equal(ya, yc));
+      for (float v : ya) REQUIRE(std::isfinite(v));
+    }
+    CHECK(a.value()->run(3, 1, ramp(H, 1.0f, 1).data(), std::vector<float>(H).data(), *a.value()->make_context(), nullptr).code() ==
+          ErrorCode::kOutOfRange);
+  }
+  CHECK(bytes_per_expert[0] > bytes_per_expert[1]);  // IQ3_S is larger than IQ2_XS
+}
+#endif

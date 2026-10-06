@@ -28,6 +28,8 @@ int usage() {
                "usage: clusterlm-father --model DIR --plan PLAN [--node NAME=HOST:PORT[@FINGERPRINT]]...\n"
                "                        [--prompt T1,T2,...] [--max-new N] [--q N] [--prefill-chunk N] [--relay]\n"
                "                        [--insecure-loopback | --identity DIR] [--impair PRESET]\n"
+               "                        [--backend reference|strata] [--strata-ple-gguf FILE] [--strata-mtp-dir DIR]\n"
+               "                        [--cuda-device N] [--vram-reserve-mib N] [--strata-cpu-threads N]\n"
                "       clusterlm-father diagnostics --out FILE [--model DIR --plan PLAN] [--bench-results FILE]...\n");
   return 2;
 }
@@ -74,6 +76,13 @@ int main(int argc, char** argv) {
   coordinator::CoordinatorConfig cfg;
   cfg.model_dir = args.get("model");
   cfg.direct_peer = !args.has("relay");
+  // Backend of Father's prefix/tail domains; Nodes are started with the same --backend (the build hashes must match).
+  cfg.backend = args.get("backend", "reference");
+  cfg.strata.cuda_device = static_cast<int>(args.integer("cuda-device", 0));
+  cfg.strata.vram_reserve_mib = static_cast<std::uint32_t>(args.integer("vram-reserve-mib", 1024));
+  cfg.strata.cpu_threads = static_cast<std::uint32_t>(args.integer("strata-cpu-threads", 0));
+  cfg.strata.ple_table_gguf = args.get("strata-ple-gguf");
+  cfg.strata.mtp_dir = args.get("strata-mtp-dir");
   for (const auto& spec : args.all("node")) {
     const auto eq = spec.find('=');
     if (eq == std::string::npos) return usage();
@@ -119,12 +128,9 @@ int main(int argc, char** argv) {
   req.max_new_tokens = static_cast<std::uint32_t>(args.integer("max-new", 32));
   req.q = static_cast<std::uint32_t>(args.integer("q", 1));
   req.prefill_chunk = static_cast<std::uint32_t>(args.integer("prefill-chunk", 128));
-  std::unique_ptr<objects::CanonicalModelStore> drafter_store;
   if (req.q > 1) {
-    auto store = objects::CanonicalModelStore::open(cfg.model_dir);
-    if (!store.is_ok()) return fail(store.status());
-    drafter_store = std::move(store).value();
-    auto drafter = domain::MtpFixtureDrafter::create(c.manifest(), *drafter_store);
+    // reference: the MTP fixture drafter; strata: the MTP drafter bound to the Strata tail domain.
+    auto drafter = c.make_drafter();
     if (!drafter.is_ok()) return fail(drafter.status());
     req.drafter = std::move(drafter).value();
   }

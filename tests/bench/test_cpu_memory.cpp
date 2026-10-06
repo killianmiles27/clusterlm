@@ -108,13 +108,17 @@ TEST_CASE("CPU bench reports throughput, thread scaling, q scaling and the dequa
   }
 }
 
-TEST_CASE("CPU bench against the strata-cpu stub fails with kHardwareUnavailable, never a crash") {
+TEST_CASE("CPU bench against the strata-cpu provider: the stub fails with kHardwareUnavailable, never a crash") {
   register_builtin_expert_providers();
   CpuBenchOptions o = tiny_options();
   o.provider = "strata-cpu";
   auto rep = run_cpu_bench(o);
   REQUIRE_FALSE(rep.is_ok());
+#ifndef CLUSTERLM_BENCH_HAS_STRATA_CPU
   CHECK(rep.status().code() == ErrorCode::kHardwareUnavailable);
+#else
+  CHECK(rep.status().code() == ErrorCode::kInvalidArgument);  // the real kernels refuse the tiny 64 x 32 shape
+#endif
   o.provider = "does-not-exist";
   CHECK(run_cpu_bench(o).status().code() == ErrorCode::kNotFound);
 }
