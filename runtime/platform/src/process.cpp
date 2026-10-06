@@ -1,5 +1,8 @@
 #include "clusterlm/platform/process.hpp"
 
+#include <algorithm>
+#include <optional>
+#include <string>
 #include <thread>
 
 #include "clusterlm/common/clock.hpp"
