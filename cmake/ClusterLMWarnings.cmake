@@ -1,7 +1,8 @@
 # clusterlm_module(<target> [SOURCES ...] [DEPS ...]) — a static library with the project's warning policy.
 function(clusterlm_set_warnings target)
   if(MSVC)
-    target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+    # C4324: "structure was padded due to alignment specifier" is the intended effect of alignas.
+    target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /wd4324)
     if(CLUSTERLM_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE /WX)
     endif()

@@ -54,15 +54,22 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Install OpenSSL (vcpkg)
-        run: vcpkg install openssl:x64-windows
+      - name: Locate OpenSSL
+        # The runner image ships OpenSSL 3 under Program Files; fall back to vcpkg (slow) if it is missing.
+        shell: pwsh
+        run: |
+          if (Test-Path "C:/Program Files/OpenSSL/include/openssl/ssl.h") {
+            "CLM_CMAKE_OPENSSL=-DOPENSSL_ROOT_DIR=C:/Program Files/OpenSSL" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            vcpkg install openssl:x64-windows
+            "CLM_CMAKE_OPENSSL=-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
       - name: Configure
-        run: >
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+        shell: pwsh
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "$env:CLM_CMAKE_OPENSSL"
       - name: Build
-        run: cmake --build build
+        # -k 0: report every MSVC error in one run instead of stopping at the first.
+        run: cmake --build build -- -k 0
       - name: Test
         # POSIX-only cases are compiled out or skip with a doctest MESSAGE under _WIN32.
         run: ctest --test-dir build --output-on-failure
