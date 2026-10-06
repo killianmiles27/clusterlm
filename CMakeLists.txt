@@ -28,6 +28,8 @@ find_package(OpenSSL 3.0 REQUIRED)
 
 add_library(clusterlm_third_party INTERFACE)
 target_include_directories(clusterlm_third_party SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+# doctest's forward declaration of std::basic_ostream is incompatible with recent MSVC STLs; use the real headers.
+target_compile_definitions(clusterlm_third_party INTERFACE DOCTEST_CONFIG_USE_STD_HEADERS)
 
 if(CLUSTERLM_BUILD_TESTS)
   enable_testing()
