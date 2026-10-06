@@ -5,3 +5,4 @@ compile_commands.json
 *.pyc
 __pycache__/
 /bench-results/
+/third_party/upstream/

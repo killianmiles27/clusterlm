@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "note": "Pinned upstream sources. Fetched (never vendored/committed) into third_party/upstream/<name> by scripts/fetch_upstream.py.",
+  "pins": {
+    "strata": {
+      "url": "https://github.com/Niko1221/Strata",
+      "commit": "1735d6471df29b42c26170efaac1f1446a58640f",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "inspected": "2026-10-06"
+    },
+    "llama.cpp": {
+      "url": "https://github.com/ggml-org/llama.cpp",
+      "commit": "6753a033f058fbf778d282556ed9b16c78de7c71",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "inspected": "2026-10-06",
+      "note": "HEAD of the default branch as returned by git ls-remote on 2026-10-06"
+    }
+  }
+}
