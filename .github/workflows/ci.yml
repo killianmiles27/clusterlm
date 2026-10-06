@@ -81,3 +81,83 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/gen_qualification_md.py --check
+
+  # Windows installers (docs/packaging.md). Separate build tree: static OpenSSL + static MSVC runtime so the
+  # executables need no DLL that Windows does not already have. Gated on the regular MSVC job (build + tests).
+  windows-packaging:
+    needs: windows-msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install OpenSSL (vcpkg, static)
+        run: vcpkg install openssl:x64-windows-static
+      - name: Configure (Release, static runtime)
+        run: >
+          cmake -S . -B build-pkg -G Ninja -DCMAKE_BUILD_TYPE=Release -DCLUSTERLM_BUILD_TESTS=OFF
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+      - name: Build
+        run: cmake --build build-pkg
+      - name: Install into staging directories (one per package)
+        run: |
+          cmake --install build-pkg --config Release --component father --prefix stage/father
+          cmake --install build-pkg --config Release --component node --prefix stage/node
+          Get-ChildItem -Recurse stage | Where-Object { -not $_.PSIsContainer } | ForEach-Object { $_.FullName }
+      - name: Executables import only Windows system DLLs
+        run: packaging/check-dependencies.ps1 -Stage stage/father, stage/node
+      - name: Signing configuration
+        id: signing
+        shell: pwsh
+        env:
+          CLUSTERLM_SIGN_CERT_BASE64: ${{ secrets.CLUSTERLM_SIGN_CERT_BASE64 }}
+          CLUSTERLM_SIGN_CERT_PASSWORD: ${{ secrets.CLUSTERLM_SIGN_CERT_PASSWORD }}
+          CLUSTERLM_SIGN_TIMESTAMP_URL: ${{ vars.CLUSTERLM_SIGN_TIMESTAMP_URL }}
+        run: |
+          $state = packaging/sign.ps1 -Probe
+          "state=$state" >> $env:GITHUB_OUTPUT
+          if ($state -ne 'signed') { Write-Host "::warning title=UNSIGNED BUILD::CLUSTERLM_SIGN_* are not configured; the MSI files will be named -UNSIGNED" }
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.Util.wixext/5.0.2
+          wix --version
+      - name: Build MSI packages
+        shell: pwsh
+        env:
+          CLUSTERLM_SIGN_CERT_BASE64: ${{ secrets.CLUSTERLM_SIGN_CERT_BASE64 }}
+          CLUSTERLM_SIGN_CERT_PASSWORD: ${{ secrets.CLUSTERLM_SIGN_CERT_PASSWORD }}
+          CLUSTERLM_SIGN_TIMESTAMP_URL: ${{ vars.CLUSTERLM_SIGN_TIMESTAMP_URL }}
+        run: >
+          packaging/build-msi.ps1 -StageRoot stage -OutDir packaging/out
+          -OpenSslLicense "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/share/openssl/copyright"
+      - name: Validate MSI packages (wix msi validate, ICE)
+        run: |
+          Get-ChildItem packaging/out -Filter *.msi | ForEach-Object {
+            Write-Host "== $($_.Name)"
+            wix msi validate $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "ICE validation failed for $($_.Name)" }
+          }
+      - name: Upload MSI packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: clusterlm-msi-${{ steps.signing.outputs.state }}
+          path: |
+            packaging/out/*.msi
+            packaging/out/packaging-manifest.json
+            packaging/out/signing-status.json
+          if-no-files-found: error
+      - name: Smoke test, Node (install, verify, uninstall)
+        run: packaging/smoke-test.ps1 -Package Node -Msi (Get-ChildItem packaging/out -Filter 'ClusterLM-Node-*.msi').FullName -LogDir packaging/out/logs
+      - name: Smoke test, Father (install, verify, uninstall)
+        run: packaging/smoke-test.ps1 -Package Father -Msi (Get-ChildItem packaging/out -Filter 'ClusterLM-Father-*.msi').FullName -LogDir packaging/out/logs
+      - name: Upload installer logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clusterlm-msi-logs
+          path: packaging/out/logs
+          if-no-files-found: ignore

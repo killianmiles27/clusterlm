@@ -25,6 +25,11 @@ include(cmake/ClusterLMWarnings.cmake)
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
+if(WIN32)
+  # A static OpenSSL (vcpkg x64-windows-static, used for the installers) needs these system libraries; a dynamic one
+  # does not mind them.
+  set_property(TARGET OpenSSL::Crypto APPEND PROPERTY INTERFACE_LINK_LIBRARIES crypt32 ws2_32 user32 advapi32)
+endif()
 
 add_library(clusterlm_third_party INTERFACE)
 target_include_directories(clusterlm_third_party SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
@@ -65,3 +70,6 @@ endforeach()
 if(CLUSTERLM_BUILD_TESTS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
   add_subdirectory(tests)
 endif()
+
+# install() rules for the Windows packages (components "father" and "node"; see packaging/ and docs/packaging.md).
+include(cmake/ClusterLMInstall.cmake)
