@@ -1,6 +1,7 @@
 #include "clusterlm/objects/manifest.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <unordered_set>
 
 #include <nlohmann/json.hpp>
@@ -295,15 +296,24 @@ Status ModelManifest::validate() const {
       if (s.length == 0) return invalid(ctx + "empty range");
       if (s.offset > shards[s.shard].byte_size || s.length > shards[s.shard].byte_size - s.offset)
         return invalid(ctx + "range outside shard");
+      if (s.length > std::numeric_limits<std::uint64_t>::max() - total) return invalid(ctx + "range lengths overflow");
       total += s.length;
     }
     // Ranges of one object may not alias each other: that would make the object larger than its source.
-    for (std::size_t i = 0; i < o.source_ranges.size(); ++i)
-      for (std::size_t k = i + 1; k < o.source_ranges.size(); ++k) {
-        const SourceRange &a = o.source_ranges[i], &b = o.source_ranges[k];
-        if (a.shard == b.shard && a.offset < b.offset + b.length && b.offset < a.offset + a.length)
-          return invalid(ctx + "overlapping source ranges");
+    // Sorted sweep (O(n log n)): a pairwise scan is quadratic in a wire-controlled range count.
+    if (o.source_ranges.size() > 1) {
+      std::vector<const SourceRange*> sorted;
+      sorted.reserve(o.source_ranges.size());
+      for (const SourceRange& s : o.source_ranges) sorted.push_back(&s);
+      std::sort(sorted.begin(), sorted.end(), [](const SourceRange* a, const SourceRange* b) {
+        return a->shard != b->shard ? a->shard < b->shard : a->offset < b->offset;
+      });
+      for (std::size_t i = 1; i < sorted.size(); ++i) {
+        const SourceRange &a = *sorted[i - 1], &b = *sorted[i];
+        // offset + length cannot wrap: both were checked against the shard size above.
+        if (a.shard == b.shard && b.offset < a.offset + a.length) return invalid(ctx + "overlapping source ranges");
       }
+    }
     if (o.representation.conversion_version == 0 && o.byte_size != total)
       return invalid(ctx + "byte_size != sum of source ranges for an unconverted object");
     if (o.byte_size == 0) return invalid(ctx + "zero byte_size");

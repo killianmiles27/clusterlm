@@ -97,7 +97,18 @@ void FaultInjector::clear_stall() {
   cv_.notify_all();
 }
 
+void FaultInjector::set_tap(Tap tap) {
+  std::lock_guard<std::mutex> lk(mu_);
+  tap_ = std::move(tap);
+}
+
 FaultInjector::Decision FaultInjector::on_frame(FaultDirection dir, const Frame& frame) {
+  Tap tap;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    tap = tap_;
+  }
+  if (tap) tap(dir, frame);
   Decision d;
   std::lock_guard<std::mutex> lk(mu_);
   for (Slot& s : rules_) {

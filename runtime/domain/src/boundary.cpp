@@ -7,6 +7,9 @@ namespace clusterlm::domain {
 namespace {
 // Sanity bound on dimensions read from the wire, before any allocation sized by them.
 constexpr std::uint32_t kMaxDim = 1u << 20;
+// floats_per_position() is a 32-bit expression (hc*H + H + hc); dimensions that individually pass kMaxDim can
+// still wrap it. Bound the true 64-bit value so the layout arithmetic everywhere else cannot overflow.
+constexpr std::uint64_t kMaxFloatsPerPosition = 1u << 28;
 }  // namespace
 
 BoundaryLayout BoundaryLayout::for_geometry(const objects::ModelGeometry& g) {
@@ -31,6 +34,9 @@ Status StageActivations::validate() const {
     return make_error(ErrorCode::kVersionMismatch, "unsupported boundary ABI");
   if (layout.residual_streams == 0 || layout.hidden_size == 0)
     return make_error(ErrorCode::kInvalidArgument, "boundary layout has a zero dimension");
+  if (std::uint64_t{layout.residual_streams} * layout.hidden_size + layout.hidden_size + layout.residual_streams >
+      kMaxFloatsPerPosition)
+    return make_error(ErrorCode::kInvalidArgument, "boundary layout exceeds the maximum record size");
   if (data.size() != std::uint64_t{positions} * layout.floats_per_position())
     return make_error(ErrorCode::kInvalidArgument, "activation payload size does not match positions * layout");
   return Status::ok();
@@ -59,6 +65,10 @@ Result<StageActivations> StageActivations::decode(ByteReader& r, std::uint32_t m
   a.layout.abi = BoundaryAbi::kResidualHandoffF32V1;
   if (a.layout.residual_streams == 0 || a.layout.residual_streams > kMaxDim || a.layout.hidden_size == 0 ||
       a.layout.hidden_size > kMaxDim)
+    return make_error(ErrorCode::kProtocolError, "activations: implausible dimensions");
+  if (std::uint64_t{a.layout.residual_streams} * a.layout.hidden_size + a.layout.hidden_size +
+          a.layout.residual_streams >
+      kMaxFloatsPerPosition)
     return make_error(ErrorCode::kProtocolError, "activations: implausible dimensions");
   if (a.positions > max_positions)
     return make_error(ErrorCode::kResourceExhausted, "activations: positions exceed the receiver's maximum");

@@ -47,6 +47,9 @@ Windows pinned-memory behaviour.
 | [HQ-STRONG-01](#hq-strong-01) | Strong tier qualification | Father, Node G14 | pending |
 | [HQ-FAST-01](#hq-fast-01) | Fast tier local baseline | Father | pending |
 | [HQ-TIER-01](#hq-tier-01) | Tier catalog pinning and context-profile qualification | Father, Node G14, Node 3060 | pending |
+| [HQ-SEC-01](#hq-sec-01) | Device private key file ACL on Windows | Father, Node G14, Node 3060 | pending |
+| [HQ-SEC-02](#hq-sec-02) | Local IPC (named pipe) ACL enforcement | Father, Node G14, Node 3060 | pending |
+| [HQ-SEC-03](#hq-sec-03) | NTFS reparse points, junctions and sharing violations during staging deletion | Node G14, Node 3060 | pending |
 
 ## Experiments
 
@@ -450,3 +453,54 @@ Windows pinned-memory behaviour.
   - which offered contexts are dropped from the catalog (e.g. Fast 64K/128K)
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-TIER-01"`; metrics `catalog.root_hash`, `context.qualified`, `context.vram_margin`
 - **Decision affected:** Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.
+
+### HQ-SEC-01
+
+**Device private key file ACL on Windows** — status: `pending`
+
+- **Purpose:** The device key (device_key.pem) is written with POSIX mode 0600 on Linux and, on Windows, inherits the ACL of its directory. Verify the shipped key directory ACL (owner + SYSTEM only, no inheritance from a user-writable parent) so a non-admin local user cannot read a Node's or Father's TLS identity.
+- **Command:** `Manual until a bench check exists: icacls <identity dir>\device_key.pem; then as a second non-admin local user: type <identity dir>\device_key.pem (must be denied). Record the ACL listing and the result in results/sec-key-acl-<machine>.json (clusterlm-bench has no `security` subcommand yet).`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** none
+- **Measurements:**
+  - effective ACEs on the identity directory and key file
+  - read/open attempt as a different non-admin user
+  - read/open attempt as the service account
+  - inheritance flags of the parent directory
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-SEC-01"`; metrics `security.key_acl.principals`, `security.key_acl.foreign_user_denied`
+- **Decision affected:** Whether DeviceIdentity::save must set an explicit DACL before pairing ships (DEVELOPMENT-STATUS gap 7); threat model residual risk R-04.
+- **Acceptance:** only the owning account and SYSTEM (and Administrators for recovery) hold access; a second standard user is denied; no ACE is inherited from a user-writable parent
+
+### HQ-SEC-02
+
+**Local IPC (named pipe) ACL enforcement** — status: `pending`
+
+- **Purpose:** The Node service / session helper and the Father UI will talk over local named pipes. Verify that a pipe created with the product DACL refuses connections from other standard users and from other sessions, rejects remote clients, and that frames are bounded and attributed by the pipe's client identity (token), not by claimed content.
+- **Command:** `Manual until the session-helper IPC and a bench check exist: create the pipe with the product DACL as the service account, then connect as a second standard user, from another session and over the network; record SDDL and outcomes in results/sec-pipe-acl-<machine>.json.`
+- **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** none
+- **Measurements:**
+  - pipe DACL (SDDL)
+  - connect result per principal (owner, other standard user, other session, network logon)
+  - remote clients rejected (PIPE_REJECT_REMOTE_CLIENTS)
+  - oversized / malformed frame handling
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-SEC-02"`; metrics `security.pipe_acl.sddl`, `security.pipe_acl.foreign_user_denied`, `security.pipe_acl.remote_denied`
+- **Decision affected:** Design of the session-helper IPC (not yet implemented); threat model residual risk R-05.
+- **Acceptance:** only the owning user/service and SYSTEM can connect; remote and other-user clients are refused; malformed frames close the pipe without crashing the service
+
+### HQ-SEC-03
+
+**NTFS reparse points, junctions and sharing violations during staging deletion** — status: `pending`
+
+- **Purpose:** Linux tests plant symlinks; Windows has junctions, mount points, cloud placeholders and delete-pending semantics. Verify that lease cleanup never follows a junction or placeholder out of the staging root and handles sharing violations without leaving bytes, and that CreateProcessW argument quoting round-trips through CommandLineToArgvW for the hostile-argument set.
+- **Command:** `clusterlm-bench faults --census full --kill-phases cleanup --out results/sec-reparse-<machine>.json after planting a junction, a symlink and a cloud placeholder inside the staging root (planting is manual until the bench grows --plant); argument round trip: spawn a child that prints its argv for the hostile-argument set in tests/security/test_hardening.cpp and diff.`
+- **Machines:** Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
+- **Model:** none (fixture objects)
+- **Measurements:**
+  - files outside the staging root touched by cleanup (must be 0)
+  - residual bytes after cleanup with an antivirus/indexer holding a handle
+  - reparse tag of every planted link and whether it was removed as a link
+  - argv recovered by the child vs argv sent for the hostile-argument set
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-SEC-03"`; metrics `security.reparse.outside_root_touched`, `security.reparse.residual_bytes`, `security.cmdline.mismatches`
+- **Decision affected:** STORE-02 acceptance on Windows; whether remove_tree_no_follow needs additional reparse-point handling.
+- **Acceptance:** zero files outside the staging root are modified or deleted; zero residual bytes after retry; zero argv mismatches

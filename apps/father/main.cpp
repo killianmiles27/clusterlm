@@ -2,6 +2,11 @@
 //
 //   clusterlm-father --model DIR --node a=127.0.0.1:7001 --node b=127.0.0.1:7002
 //                    --plan 0-4@father,4-10@0,10-13@1,13-16@father --prompt 1,2,3,4 --max-new 32 --q 4
+//   clusterlm-father diagnostics --out bundle.json [--model DIR --plan PLAN] [--bench-results FILE]...
+//
+// `diagnostics` writes a redacted JSON bundle (build info, recent log lines, plan, bench result PATHS) that is safe to
+// attach to a bug report: it never contains prompts, responses, token IDs or activations (see
+// orchestrator/diagnostics and docs/security/threat-model.md).
 //
 // The user-facing Father application wraps the same Coordinator; this tool exposes it without UI.
 #include <cstdio>
@@ -10,6 +15,7 @@
 #include "cli.hpp"
 #include "clusterlm/common/log.hpp"
 #include "clusterlm/coordinator/coordinator.hpp"
+#include "clusterlm/diagnostics/diagnostics.hpp"
 #include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
 
@@ -21,7 +27,8 @@ int usage() {
   std::fprintf(stderr,
                "usage: clusterlm-father --model DIR --plan PLAN [--node NAME=HOST:PORT[@FINGERPRINT]]...\n"
                "                        [--prompt T1,T2,...] [--max-new N] [--q N] [--prefill-chunk N] [--relay]\n"
-               "                        [--insecure-loopback | --identity DIR] [--impair PRESET]\n");
+               "                        [--insecure-loopback | --identity DIR] [--impair PRESET]\n"
+               "       clusterlm-father diagnostics --out FILE [--model DIR --plan PLAN] [--bench-results FILE]...\n");
   return 2;
 }
 
@@ -30,9 +37,37 @@ int fail(const Status& s) {
   return 1;
 }
 
+// `clusterlm-father diagnostics --out FILE`: a redacted diagnostics bundle for this installation.
+int run_diagnostics(int argc, char** argv) {
+  cli::Args args(argc, argv, 2);
+  if (!args.has("out") || args.get("out").empty()) return usage();
+  diagnostics::LogRing ring;
+  ring.install();
+  diagnostics::BundleInputs in;
+  in.component = "father";
+  if (args.has("plan")) {
+    in.plan_description = args.get("plan");
+    // With the model directory the plan is parsed and normalized; without it the text is recorded as given.
+    if (args.has("model")) {
+      auto store = objects::CanonicalModelStore::open(args.get("model"));
+      if (!store.is_ok()) return fail(store.status());
+      auto plan = coordinator::ClusterPlan::parse(args.get("plan"), store.value()->manifest().geometry.n_layers);
+      if (!plan.is_ok()) return fail(plan.status());
+      in.plan_description = plan->describe();
+    }
+  }
+  in.bench_result_paths = args.all("bench-results");
+  in.log_lines = ring.snapshot();
+  in.log_lines_dropped = ring.dropped();
+  if (auto st = diagnostics::write_bundle(args.get("out"), in); !st.is_ok()) return fail(st);
+  std::printf("wrote diagnostics bundle %s (conversation content is never included)\n", args.get("out").c_str());
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string(argv[1]) == "diagnostics") return run_diagnostics(argc, argv);
   cli::Args args(argc, argv);
   if (!args.has("model") || !args.has("plan")) return usage();
   log::set_component("father");

@@ -16,8 +16,15 @@ Status verify_object_bytes(const ManifestObject& obj, ByteSpan bytes) {
 }
 
 Result<std::unique_ptr<CanonicalModelStore>> CanonicalModelStore::open(const std::filesystem::path& dir) {
-  std::ifstream in(dir / std::string(kManifestFileName), std::ios::binary);
-  if (!in) return make_error(ErrorCode::kNotFound, "cannot open " + (dir / std::string(kManifestFileName)).string());
+  const auto manifest_path = dir / std::string(kManifestFileName);
+  std::ifstream in(manifest_path, std::ios::binary);
+  if (!in) return make_error(ErrorCode::kNotFound, "cannot open " + manifest_path.string());
+  // A real manifest is tens of MiB (one entry per routed expert); anything far beyond that is not a manifest.
+  constexpr std::uint64_t kMaxManifestJsonBytes = 512ull << 20;
+  std::error_code size_ec;
+  const auto manifest_size = std::filesystem::file_size(manifest_path, size_ec);
+  if (!size_ec && manifest_size > kMaxManifestJsonBytes)
+    return make_error(ErrorCode::kInvalidArgument, "manifest file exceeds " + std::to_string(kMaxManifestJsonBytes) + " bytes");
   std::ostringstream text;
   text << in.rdbuf();
   CLM_ASSIGN_OR_RETURN(ModelManifest m, ModelManifest::from_json(text.str()));
@@ -37,6 +44,9 @@ Result<std::unique_ptr<CanonicalModelStore>> CanonicalModelStore::open(const std
 }
 
 Result<Bytes> CanonicalModelStore::load_unlocked(const ManifestObject& obj) const {
+  // Checked before allocating: for a converted object byte_size is not bounded by the shard sizes.
+  if (obj.representation.conversion_version != 0)
+    return make_error(ErrorCode::kUnimplemented, "object '" + obj.name + "': conversion not supported by this store");
   Bytes out(obj.byte_size);
   std::size_t pos = 0;
   // One open per object per shard, one bounded read per source range.

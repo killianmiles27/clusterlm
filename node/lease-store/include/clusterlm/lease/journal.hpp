@@ -46,6 +46,9 @@ class Journal {
 
   // Reads and parses `path`; a missing file is an empty replay.
   static Result<JournalReplay> replay(const std::filesystem::path& path);
+  // Parses journal text (the pure part of replay; also the fuzzing entry point). Never fails: unparsable lines
+  // are counted and skipped.
+  static JournalReplay parse(std::string_view text);
   // Opens for durable append, creating the file if needed. If the existing tail is torn, a newline is
   // appended first so new records never glue onto garbage.
   static Result<Journal> open(const std::filesystem::path& path);

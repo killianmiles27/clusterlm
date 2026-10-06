@@ -5,6 +5,7 @@
 // candidate strings or expert-selection sequences. There is deliberately no API for logging a tensor.
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -18,6 +19,12 @@ void set_level(Level level);
 Level level();
 // Component name shown in every line (e.g. "father", "node-a").
 void set_component(std::string component);
+
+// Optional observer of every emitted line (the formatted text, without the trailing newline), invoked in
+// addition to stderr output. Used by the diagnostics ring buffer and by privacy tests. The sink runs with the
+// logger's internal lock held: it must be fast and must not log. An empty function clears it.
+using Sink = std::function<void(std::string_view line)>;
+void set_sink(Sink sink);
 
 using Field = std::pair<std::string_view, std::string>;
 void write(Level level, std::string_view event, std::initializer_list<Field> fields = {});

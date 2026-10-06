@@ -5,6 +5,18 @@ namespace clusterlm::objects {
 namespace {
 constexpr std::uint32_t kMaxLayers = 1u << 16;
 constexpr std::size_t kMaxFamilyLen = 256;
+// Sanity ceilings on dimensions read from a manifest. They are orders of magnitude above any real model (Flash-Next:
+// H 2560, hc 4, 512 experts, expert_ff 640, 24 heads, head_dim 256, 48 layers) and exist so that a hostile or corrupt
+// manifest cannot make a domain size scratch, KV or boundary buffers from an arbitrary 32-bit field.
+constexpr std::uint32_t kMaxHidden = 1u << 18;
+constexpr std::uint32_t kMaxStreams = 64;
+constexpr std::uint32_t kMaxExperts = 1u << 14;
+constexpr std::uint32_t kMaxFf = 1u << 20;
+constexpr std::uint32_t kMaxHeads = 1u << 12;
+constexpr std::uint32_t kMaxHeadDim = 1u << 12;
+constexpr std::uint32_t kMaxVocab = 1u << 22;
+constexpr std::uint32_t kMaxPleRows = 1u << 26;
+constexpr std::uint32_t kMaxMtpLayers = 64;
 }  // namespace
 
 Status ModelGeometry::validate() const {
@@ -25,6 +37,10 @@ Status ModelGeometry::validate() const {
   for (LayerKind k : layer_kinds)
     if (k != LayerKind::kRecurrent && k != LayerKind::kFullAttention) return bad("unknown layer kind");
   if (family.size() > kMaxFamilyLen) return bad("family too long");
+  if (hidden_size > kMaxHidden || residual_streams > kMaxStreams) return bad("hidden_size/residual_streams too large");
+  if (n_experts > kMaxExperts || expert_ff > kMaxFf || shared_expert_ff > kMaxFf) return bad("expert dimensions too large");
+  if (n_heads > kMaxHeads || n_kv_heads > kMaxHeads || head_dim > kMaxHeadDim) return bad("attention dimensions too large");
+  if (vocab_size > kMaxVocab || ple_rows > kMaxPleRows || mtp_layers > kMaxMtpLayers) return bad("vocab/PLE/MTP dimensions too large");
   return Status::ok();
 }
 

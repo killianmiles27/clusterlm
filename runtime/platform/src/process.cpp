@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "clusterlm/common/clock.hpp"
+#include "clusterlm/platform/command_line.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -36,28 +37,6 @@ std::wstring widen(const std::string& s) {
   MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
   return w;
 }
-// Quote one argument per the CommandLineToArgvW rules.
-std::wstring quote(const std::wstring& arg) {
-  if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos) return arg;
-  std::wstring out = L"\"";
-  std::size_t backslashes = 0;
-  for (wchar_t c : arg) {
-    if (c == L'\\') {
-      ++backslashes;
-    } else if (c == L'"') {
-      out.append(backslashes * 2 + 1, L'\\');
-      out.push_back(c);
-      backslashes = 0;
-    } else {
-      out.append(backslashes, L'\\');
-      out.push_back(c);
-      backslashes = 0;
-    }
-  }
-  out.append(backslashes * 2, L'\\');
-  out.push_back(L'"');
-  return out;
-}
 }  // namespace
 
 struct ChildProcess::Impl {
@@ -83,8 +62,10 @@ Result<std::unique_ptr<ChildProcess>> ChildProcess::spawn(const std::filesystem:
     return make_error(ErrorCode::kInternal, "CreatePipe failed");
   SetHandleInformation(impl->stdin_write, HANDLE_FLAG_INHERIT, 0);
   SetHandleInformation(impl->stdout_read, HANDLE_FLAG_INHERIT, 0);
-  std::wstring cmd = quote(executable.wstring());
-  for (const auto& a : args) cmd += L" " + quote(widen(a));
+  // Never a shell: CreateProcessW gets one explicitly quoted command line (see command_line.hpp for the rules).
+  std::vector<std::wstring> wargs;
+  for (const auto& a : args) wargs.push_back(widen(a));
+  std::wstring cmd = build_windows_command_line<wchar_t>(executable.wstring(), wargs);
   STARTUPINFOW si{};
   si.cb = sizeof si;
   si.dwFlags = STARTF_USESTDHANDLES;
