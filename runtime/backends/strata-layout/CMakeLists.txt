@@ -1,0 +1,1 @@
+clusterlm_module(clusterlm_strata_layout SOURCES src/strata_handoff.cpp DEPS clusterlm_domain_api)

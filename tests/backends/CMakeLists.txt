@@ -1,0 +1,1 @@
+clusterlm_test(test_strata_layout SOURCES test_strata_handoff.cpp DEPS clusterlm_strata_layout)
