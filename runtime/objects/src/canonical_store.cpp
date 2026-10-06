@@ -63,6 +63,57 @@ Result<Bytes> CanonicalModelStore::load_unlocked(const ManifestObject& obj) cons
   return out;
 }
 
+Status CanonicalModelStore::stream_object(std::string_view name, std::size_t chunk_bytes,
+                                          const std::function<Status(std::uint64_t, ByteSpan)>& sink) const {
+  const ManifestObject* obj = manifest_.find(name);
+  if (obj == nullptr) return make_error(ErrorCode::kNotFound, "unknown object '" + std::string(name) + "'");
+  if (obj->representation.conversion_version != 0)
+    return make_error(ErrorCode::kUnimplemented, "object '" + obj->name + "': conversion not supported by this store");
+  if (chunk_bytes == 0) return make_error(ErrorCode::kInvalidArgument, "chunk size must be positive");
+  Sha256 digest;
+  Bytes buf(chunk_bytes);
+  std::size_t fill = 0;
+  std::uint64_t emitted = 0;
+  std::unordered_map<std::uint32_t, std::ifstream> files;
+  auto flush = [&]() -> Status {
+    if (fill == 0) return Status::ok();
+    const ByteSpan chunk(buf.data(), fill);
+    digest.update(chunk);
+    CLM_RETURN_IF_ERROR(sink(emitted, chunk));
+    emitted += fill;
+    fill = 0;
+    return Status::ok();
+  };
+  std::uint64_t total = 0;
+  for (const SourceRange& r : obj->source_ranges) {
+    total += r.length;
+    if (total > obj->byte_size)
+      return make_error(ErrorCode::kDataLoss, "object '" + obj->name + "': ranges exceed object size");
+    auto it = files.find(r.shard);
+    if (it == files.end()) {
+      it = files.emplace(r.shard, std::ifstream(dir_ / manifest_.shards[r.shard].file_name, std::ios::binary)).first;
+      if (!it->second) return make_error(ErrorCode::kNotFound, "cannot open shard " + manifest_.shards[r.shard].file_name);
+    }
+    std::ifstream& f = it->second;
+    f.seekg(static_cast<std::streamoff>(r.offset));
+    std::uint64_t left = r.length;
+    while (left > 0) {
+      const auto n = static_cast<std::size_t>(std::min<std::uint64_t>(left, chunk_bytes - fill));
+      f.read(reinterpret_cast<char*>(buf.data() + fill), static_cast<std::streamsize>(n));
+      if (!f || static_cast<std::size_t>(f.gcount()) != n)
+        return make_error(ErrorCode::kDataLoss, "object '" + obj->name + "': short read");
+      fill += n;
+      left -= n;
+      if (fill == chunk_bytes) CLM_RETURN_IF_ERROR(flush());
+    }
+  }
+  CLM_RETURN_IF_ERROR(flush());
+  if (emitted != obj->byte_size) return make_error(ErrorCode::kDataLoss, "object '" + obj->name + "': size mismatch");
+  if (digest.finish() != obj->object_digest)
+    return make_error(ErrorCode::kDataLoss, "object '" + obj->name + "': digest mismatch in canonical store");
+  return Status::ok();
+}
+
 Result<ProvisionedObject> CanonicalModelStore::resolve(std::string_view name) const {
   const ManifestObject* obj = manifest_.find(name);
   if (obj == nullptr) return make_error(ErrorCode::kNotFound, "unknown object '" + std::string(name) + "'");

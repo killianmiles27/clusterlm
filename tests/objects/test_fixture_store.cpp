@@ -193,3 +193,39 @@ TEST_CASE("InMemoryResolver verifies digests on add and only resolves what was a
   CHECK(mem.remove(dense_object_name(0)));
   CHECK(mem.resolve(dense_object_name(0)).status().code() == ErrorCode::kNotFound);
 }
+
+TEST_CASE("stream_object yields exactly the object bytes in bounded chunks and detects corruption") {
+  TempDir dir("stream");
+  auto m = write_fixture_model(FixtureSpec::tiny(), dir.path());
+  REQUIRE(m.is_ok());
+  auto store = CanonicalModelStore::open(dir.path());
+  REQUIRE(store.is_ok());
+  for (const char* name : {"blk.1.exp.3", "blk.0.dense"}) {
+    const auto* obj = store.value()->manifest().find(name);
+    if (obj == nullptr) continue;
+    auto whole = store.value()->read_object_bytes(name);
+    REQUIRE(whole.is_ok());
+    Bytes streamed;
+    std::size_t max_chunk = 0;
+    auto st = store.value()->stream_object(name, 100, [&](std::uint64_t off, ByteSpan c) {
+      CHECK(off == streamed.size());
+      max_chunk = std::max(max_chunk, c.size());
+      streamed.insert(streamed.end(), c.begin(), c.end());
+      return Status::ok();
+    });
+    REQUIRE(st.is_ok());
+    CHECK(max_chunk <= 100);
+    CHECK(streamed == whole.value());
+  }
+  // Corrupt one byte of the transformer shard: streaming completes but reports kDataLoss.
+  const auto* obj = store.value()->manifest().find("blk.1.exp.3");
+  REQUIRE(obj != nullptr);
+  {
+    std::fstream f(dir.path() / "fixture-transformer.bin", std::ios::in | std::ios::out | std::ios::binary);
+    f.seekp(static_cast<std::streamoff>(obj->source_ranges[0].offset));
+    char c = 0x7f;
+    f.write(&c, 1);
+  }
+  auto st = store.value()->stream_object("blk.1.exp.3", 64, [](std::uint64_t, ByteSpan) { return Status::ok(); });
+  CHECK(st.code() == ErrorCode::kDataLoss);
+}

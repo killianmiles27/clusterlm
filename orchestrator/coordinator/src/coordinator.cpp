@@ -362,21 +362,20 @@ struct Coordinator::Impl {
   Status provision_node(RemoteNode& n, const protocol::PreparePlan& p) {
     for (const auto& a : p.assignments) {
       const auto& obj = p.manifest.objects[a.object_index];
-      CLM_ASSIGN_OR_RETURN(Bytes bytes, store->read_object_bytes(obj.name));
-      for (std::uint64_t off = 0; off < bytes.size(); off += cfg.provision_chunk_bytes) {
-        const auto len = std::min<std::uint64_t>(cfg.provision_chunk_bytes, bytes.size() - off);
-        protocol::ProvisionChunk chunk;
-        chunk.lease = n.lease;
-        chunk.object_index = a.object_index;
-        chunk.offset = off;
-        chunk.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(off),
-                          bytes.begin() + static_cast<std::ptrdiff_t>(off + len));
-        chunk.chunk_digest = Sha256::of(chunk.data);
-        CLM_RETURN_IF_ERROR(n.provision->stream->send(chunk));
-      }
+      // Bounded streaming read: Father never holds more than one chunk of an object in memory.
+      CLM_RETURN_IF_ERROR(store->stream_object(
+          obj.name, cfg.provision_chunk_bytes, [&](std::uint64_t offset, ByteSpan data) -> Status {
+            protocol::ProvisionChunk chunk;
+            chunk.lease = n.lease;
+            chunk.object_index = a.object_index;
+            chunk.offset = offset;
+            chunk.data.assign(data.begin(), data.end());
+            chunk.chunk_digest = Sha256::of(chunk.data);
+            return n.provision->stream->send(chunk);
+          }));
       protocol::SealObject seal{n.lease, a.object_index, obj.byte_size, obj.object_digest};
       CLM_RETURN_IF_ERROR(n.provision->stream->send(seal, n.provision->stream->next_correlation()));
-      n.provision_report.bytes += bytes.size();
+      n.provision_report.bytes += obj.byte_size;
       ++n.provision_report.objects;
     }
     // Every seal must be acknowledged; any chunk/seal error arrives as an ErrorMessage.

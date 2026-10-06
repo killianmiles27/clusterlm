@@ -5,6 +5,7 @@
 // manifest, and materializes an object lazily on first resolve(): one bounded read per source range,
 // digest verification, then caching. Counters make "this domain loaded only its own objects" testable.
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -27,8 +28,14 @@ class CanonicalModelStore final : public ObjectResolver {
   // Loads (once), verifies and caches. kNotFound for an unknown name; kDataLoss on a digest mismatch or a
   // short read. Returned bytes stay valid until evict_all() or destruction.
   Result<ProvisionedObject> resolve(std::string_view name) const override;
-  // Reads and verifies without caching (used to provision an object to a Node).
+  // Reads and verifies without caching.
   Result<Bytes> read_object_bytes(std::string_view name) const;
+  // Streams an object's provisioned bytes to `sink` in chunks of at most `chunk_bytes`, never materializing
+  // the whole object (provisioning memory stays bounded by the chunk size). The object digest is computed
+  // incrementally; a mismatch is reported as kDataLoss after the final chunk — the receiver's seal rejects the
+  // object independently. Thread-safe: each call uses its own file handles.
+  Status stream_object(std::string_view name, std::size_t chunk_bytes,
+                       const std::function<Status(std::uint64_t offset, ByteSpan chunk)>& sink) const;
 
   std::uint64_t loaded_bytes() const;
   std::size_t loaded_object_count() const;
