@@ -1,0 +1,3 @@
+clusterlm_test(test_father_service SOURCES test_father_service.cpp test_tokenizer.cpp
+  DEPS clusterlm_father_service clusterlm_node_worker clusterlm_domain)
+target_compile_definitions(test_father_service PRIVATE CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
