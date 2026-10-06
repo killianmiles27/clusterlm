@@ -223,9 +223,10 @@ void draw_diagnostics(FatherViewModel& vm, FatherDrawState& ui, const FatherView
   ImGui::BeginChild("diagnostics", ImVec2(0, 0), ImGuiChildFlags_Borders);
   ImGui::SeparatorText("Advanced diagnostics");
   if (ImGui::BeginTable("diag_rows", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-    ImGui::TableSetupColumn("Measure");
-    ImGui::TableSetupColumn("Value");
-    ImGui::TableSetupColumn("Source");
+    // Explicit stretch weights: with no rows yet, weights derived from content widths would be 0/0 (NaN layout).
+    ImGui::TableSetupColumn("Measure", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthStretch, 1.0f);
     ImGui::TableHeadersRow();
     for (const auto& r : d.rows) {
       ImGui::TableNextRow();

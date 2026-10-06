@@ -87,7 +87,7 @@ struct NodeProc {
         CLUSTERLM_NODE_SERVICE_BINARY,
         {"--console", "--simulate-activity", "--pair", "--pair-port", "0", "--name", n, "--port", std::to_string(port),
          "--staging", (dir / "staging").string(), "--identity", (dir / "identity").string(), "--settings", (dir / "node.json").string(),
-         "--ipc-dir", (dir / "ipc").string(), "--idle-seconds", "1", "--ram-gib", "2", "--vram-gib", "1", "--worker", CLUSTERLM_NODE_BINARY, "--deadline-ms", "3000"});
+         "--ipc-dir", (dir / "ipc").string(), "--helper-pipe", "clusterlm-e2e-" + n, "--idle-seconds", "1", "--ram-gib", "2", "--vram-gib", "1", "--worker", CLUSTERLM_NODE_BINARY, "--deadline-ms", "3000"});
     REQUIRE_MESSAGE(p.is_ok(), p.status().to_string());
     proc = std::move(p).value();
     auto line = proc->read_until("CLUSTERLM_NODE_PAIRING ", 30s);

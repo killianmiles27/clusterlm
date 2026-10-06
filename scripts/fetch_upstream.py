@@ -29,7 +29,9 @@ DEST = ROOT / "third_party" / "upstream"
 
 
 def git(repo, *args, check=True, env=None):
-    return subprocess.run(["git", "-C", str(repo), *args], check=check, capture_output=True, text=True, env=env)
+    # core.autocrlf=false: the pinned trees and our patches are LF; a Windows checkout must not rewrite them.
+    return subprocess.run(["git", "-c", "core.autocrlf=false", "-C", str(repo), *args], check=check,
+                          capture_output=True, text=True, env=env)
 
 
 def head(repo):

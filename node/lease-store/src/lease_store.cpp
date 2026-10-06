@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <string>
+#include <string_view>
 #include <new>
 #include <set>
 
@@ -16,6 +19,17 @@ namespace fs = std::filesystem;
 namespace plat = clusterlm::platform;
 
 namespace {
+
+// Store-relative paths are spelled with '/' on every platform (resolve_under_root rejects '\\', which
+// path::operator/ would insert on Windows).
+fs::path store_path(std::initializer_list<std::string_view> parts) {
+  std::string out;
+  for (const auto part : parts) {
+    if (!out.empty()) out.push_back('/');
+    out.append(part);
+  }
+  return fs::path(out);
+}
 
 constexpr std::align_val_t kRamAlign{64};
 
@@ -227,7 +241,7 @@ void LeaseStore::run_recovery_locked(const JournalReplay& replay) {
     if (l.released) continue;
     handled.insert(name);
     ++recovery_.leases_found;
-    auto dir = plat::resolve_under_root(root_, fs::path("leases") / name);
+    auto dir = plat::resolve_under_root(root_, store_path({"leases", name}));
     if (!dir.is_ok()) {
       recovery_.errors.push_back(dir.status().message());
       continue;
@@ -296,7 +310,7 @@ Status LeaseStore::begin_lease(LeaseGeneration generation, LeaseBudget budget) {
   if (generation.value <= last_generation_)
     return make_error(ErrorCode::kStaleEpoch, "lease generation not newer than last begun generation");
 
-  auto dir = plat::resolve_under_root(root_, fs::path("leases") / generation.str());
+  auto dir = plat::resolve_under_root(root_, store_path({"leases", generation.str()}));
   if (!dir.is_ok()) return dir.status();
 
   // Durable intent first: if we crash between here and the mkdir, recovery simply finds nothing to delete.
@@ -338,7 +352,7 @@ Result<ObjectWriter*> LeaseStore::create_object(std::uint32_t index, std::uint64
     CLM_RETURN_IF_ERROR(w->init_ram());
   } else {
     const std::string name = lease_file_name(index);
-    auto path = plat::resolve_under_root(root_, fs::path("leases") / generation_.str() / name);
+    auto path = plat::resolve_under_root(root_, store_path({"leases", generation_.str(), name}));
     if (!path.is_ok()) return path.status();
     CLM_RETURN_IF_ERROR(journal_.append_file(generation_, name));  // durable BEFORE the file exists
     CLM_RETURN_IF_ERROR(w->init_disk(*path));

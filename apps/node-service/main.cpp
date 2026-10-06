@@ -13,6 +13,7 @@
 //   clusterlm-node-service --pair [--pair-port N] [--pair-window-seconds S]   enter pairing mode at startup
 //   clusterlm-node-service --unpair                           forget the paired Father (service stopped)
 //   [--settings FILE]   Node settings document (default: <node_root>/node-settings.json)
+//   [--helper-pipe NAME] helper pipe name for side-by-side dev/test instances (default: the product name)
 //
 // Pairing (docs/pairing.md): pairing mode opens a time-boxed listener, prints one line
 //   CLUSTERLM_NODE_PAIRING code=ABCD-EFGH endpoint=HOST:PORT fingerprint=xxxx-xxxx-xxxx
@@ -399,6 +400,9 @@ int main(int argc, char** argv) {
   cfg.supervisor.policy.require_ac_power = !args.has("allow-battery") && settings.ac_only;
   cfg.supervisor.cooperative_deadline = std::chrono::milliseconds(args.integer("deadline-ms", 2000));
   cfg.helper_endpoint.socket_dir = args.get("ipc-dir", paths->ipc_dir.string());
+  // Windows pipe names are machine-global (--ipc-dir does not apply there): side-by-side dev/test instances need
+  // their own name. The Node UI and helper connect to the default name.
+  if (args.has("helper-pipe")) cfg.helper_endpoint.name = args.get("helper-pipe");
   cfg.helper_auth.require_interactive_session = true;
   if (args.has("paired-father")) cfg.paired_father = args.get("paired-father");  // dev override of the status label
 

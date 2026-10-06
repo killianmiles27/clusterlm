@@ -25,6 +25,8 @@ def run(*args, cwd):
 def git_env():
     env = dict(os.environ)
     env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    # The fixture repository must not get CRLF line endings on Windows (core.autocrlf=true on the runners).
+    env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf", GIT_CONFIG_VALUE_0="false")
     return env
 
 
@@ -51,9 +53,9 @@ def main():
         origin.mkdir()
         run("git", "init", "-q", cwd=origin)
         run("git", "config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
-        (origin / "LICENSE").write_text("MIT\n")
-        (origin / "a.txt").write_text("one\ntwo\nthree\n")
-        (origin / "b.txt").write_text("alpha\nbeta\n")
+        (origin / "LICENSE").write_text("MIT\n", newline="\n")
+        (origin / "a.txt").write_text("one\ntwo\nthree\n", newline="\n")
+        (origin / "b.txt").write_text("alpha\nbeta\n", newline="\n")
         run("git", "add", "-A", cwd=origin)
         run("git", "commit", "-qm", "pin", cwd=origin)
         pin_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=origin, check=True, capture_output=True,
@@ -64,18 +66,18 @@ def main():
         run("git", "clone", "-q", str(origin), str(work), cwd=tmp)
         patches = tmp / "third_party" / "patches" / "up"
         patches.mkdir(parents=True)
-        (work / "a.txt").write_text("one\nTWO\nthree\n")
+        (work / "a.txt").write_text("one\nTWO\nthree\n", newline="\n")
         (patches / "0001-a.patch").write_text(subprocess.run(["git", "diff"], cwd=work, check=True, capture_output=True,
-                                                             text=True).stdout)
+                                                             text=True).stdout, newline="\n")
         run("git", "commit", "-qam", "p1", cwd=work)
-        (work / "a.txt").write_text("one\nTWO\nthree\nfour\n")
-        (work / "b.txt").write_text("alpha\nBETA\n")
+        (work / "a.txt").write_text("one\nTWO\nthree\nfour\n", newline="\n")
+        (work / "b.txt").write_text("alpha\nBETA\n", newline="\n")
         (patches / "0002-ab.patch").write_text(subprocess.run(["git", "diff"], cwd=work, check=True, capture_output=True,
-                                                              text=True).stdout)
+                                                              text=True).stdout, newline="\n")
 
         pins = {"schema": 1, "pins": {"up": {"url": "file://" + str(origin), "commit": pin_sha, "license": "MIT",
                                              "license_file": "LICENSE", "patches": "third_party/patches/up"}}}
-        (tmp / "third_party" / "upstream.json").write_text(json.dumps(pins))
+        (tmp / "third_party" / "upstream.json").write_text(json.dumps(pins), newline="\n")
         fu = load_module(tmp)
         pin = pins["pins"]["up"]
         repo = fu.DEST / "up"
@@ -98,12 +100,12 @@ def main():
         expect(quiet(fu.verify, "up", pin, True), "--check --apply-patches accepts pin + patches")
         expect(not quiet(fu.verify, "up", pin, False), "--check without --apply-patches flags the patched tree")
 
-        (repo / "b.txt").write_text("alpha\nlocal edit\n")
+        (repo / "b.txt").write_text("alpha\nlocal edit\n", newline="\n")
         expect(fu.patch_state("up", pin) == "foreign", "a local edit is foreign")
         expect(not quiet(fu.apply_patches, "up", pin), "patching over a foreign edit is refused")
         expect((repo / "b.txt").read_text() == "alpha\nlocal edit\n", "the foreign edit is left untouched")
         expect(not quiet(fu.verify, "up", pin, True), "--check refuses a foreign edit")
-        (repo / "b.txt").write_text("alpha\nBETA\n")
+        (repo / "b.txt").write_text("alpha\nBETA\n", newline="\n")
         expect(fu.patch_state("up", pin) == "patched", "undoing the edit restores pin + patches")
 
         run("git", "checkout", "-q", "--", ".", cwd=repo)
@@ -114,7 +116,7 @@ def main():
 
         # a patch that does not apply leaves the pin clean, never half-patched
         run("git", "checkout", "-q", "--", ".", cwd=repo)
-        (patches / "0003-bad.patch").write_text("--- a/zzz.txt\n+++ b/zzz.txt\n@@ -1 +1 @@\n-nope\n+yes\n")
+        (patches / "0003-bad.patch").write_text("--- a/zzz.txt\n+++ b/zzz.txt\n@@ -1 +1 @@\n-nope\n+yes\n", newline="\n")
         expect(not quiet(fu.apply_patches, "up", pin), "a broken patch fails")
         expect(fu.patch_state("up", pin) == "clean", "a failed application leaves the pin clean")
 
