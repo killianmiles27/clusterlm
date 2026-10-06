@@ -1,0 +1,69 @@
+{
+  "father_egress_bytes_per_s": {
+    "provenance": "synthetic",
+    "source": "synthetic: development estimate",
+    "value": 110000000.0
+  },
+  "links": [
+    {
+      "bandwidth_bytes_per_s": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 110000000.0
+      },
+      "from": "Father-4060Ti-7600",
+      "jitter_ms": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.1
+      },
+      "rtt_ms": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.4
+      },
+      "to": "Node-G14-4070-8945HS"
+    },
+    {
+      "bandwidth_bytes_per_s": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 110000000.0
+      },
+      "from": "Father-4060Ti-7600",
+      "jitter_ms": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.1
+      },
+      "rtt_ms": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.4
+      },
+      "to": "Node-3060-5600"
+    },
+    {
+      "bandwidth_bytes_per_s": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 110000000.0
+      },
+      "from": "Node-G14-4070-8945HS",
+      "jitter_ms": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.1
+      },
+      "rtt_ms": {
+        "provenance": "synthetic",
+        "source": "synthetic: development estimate",
+        "value": 0.4
+      },
+      "to": "Node-3060-5600"
+    }
+  ],
+  "note": "development estimate, not a measurement; 110 MB/s application payload is a simulation parameter only",
+  "schema": "clusterlm.network_profile.v1",
+  "synthetic": true
+}
