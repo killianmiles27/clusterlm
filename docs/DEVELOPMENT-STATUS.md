@@ -50,7 +50,6 @@ Father, G14 or 3060 machines.
 ## Known gaps / next engineering steps (no hardware required)
 
 1. ~~Node service supervisor~~ — done: `node/service` (`NodeSupervisor`, `clusterlm-node-service`), tested with a real worker incl. forced termination at the deadline. Remaining: Windows service host + session helper IPC.
-   deadline by terminating the job. Route session-helper activity to the worker.
 2. **Prefill chunk pipelining across stages.** Chunks currently flow sequentially, which is correct but not overlapped.
 3. **Streamed provisioning reads on Father.** Objects are read whole before chunking. Bounded streaming reads are
    needed for very large dense objects.
