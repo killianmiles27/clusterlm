@@ -57,6 +57,8 @@ struct FatherSettings {
   std::uint32_t context_tokens = 4096;
   KeepReadyPolicy keep_ready;
   std::map<std::string, std::string> model_dirs;   // tier id -> directory holding the manifest + shards
+  // tier id -> manifest root hash (hex) the user confirmed after inspection (catalog models start unpinned)
+  std::map<std::string, std::string> confirmed_model_roots;
   AdvancedOptions advanced;
 
   const PairedDevice* find_node(std::string_view fingerprint) const;

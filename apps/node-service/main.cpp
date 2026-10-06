@@ -310,8 +310,8 @@ int main(int argc, char** argv) {
                                   "--listen",  "0.0.0.0:" + std::to_string(port),
                                   "--staging", staging.string(),
                                   "--identity", identity.string(),
-                                  "--ram-gib", std::to_string(settings.caps.ram_gib),
-                                  "--vram-gib", std::to_string(settings.caps.vram_gib)};
+                                  "--ram-gib", args.get("ram-gib", std::to_string(settings.caps.ram_gib)),
+                                  "--vram-gib", args.get("vram-gib", std::to_string(settings.caps.vram_gib))};
     if (settings.temp_storage_limit_gib > 0) {
       cfg.supervisor.worker_args.push_back("--disk-gib");
       cfg.supervisor.worker_args.push_back(std::to_string(settings.temp_storage_limit_gib));

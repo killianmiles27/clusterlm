@@ -129,6 +129,8 @@ Status validate(const FatherSettings& s) {
     if (!printable_label(tier, kMaxName)) return bad("model_dirs tier id is malformed");
     if (dir.empty() || dir.size() > kMaxPath) return bad("model_dirs path is malformed");
   }
+  for (const auto& [tier, root] : s.confirmed_model_roots)
+    if (!printable_label(tier, kMaxName) || !is_fingerprint(root)) return bad("confirmed_model_roots entry is malformed");
   const auto& a = s.advanced;
   if (a.bench_results_dir.size() > kMaxPath) return bad("advanced.bench_results_dir too long");
   if (a.log_level != "debug" && a.log_level != "info" && a.log_level != "warn" && a.log_level != "error")
@@ -192,6 +194,7 @@ std::string to_json(const FatherSettings& s) {
   doc["context_tokens"] = s.context_tokens;
   doc["keep_ready"] = {{"enabled", s.keep_ready.enabled}, {"release_after_idle_minutes", s.keep_ready.release_after_idle_minutes}};
   doc["model_dirs"] = s.model_dirs;
+  doc["confirmed_model_roots"] = s.confirmed_model_roots;
   doc["advanced"] = {{"bench_results_dir", s.advanced.bench_results_dir}, {"log_level", s.advanced.log_level},
                      {"direct_peer", s.advanced.direct_peer},           {"default_q", s.advanced.default_q},
                      {"prefill_chunk", s.advanced.prefill_chunk}};
@@ -217,6 +220,7 @@ Result<FatherSettings> father_settings_from_json(std::string_view text) {
     CLM_RETURN_IF_ERROR(read(*kr, "release_after_idle_minutes", s.keep_ready.release_after_idle_minutes));
   }
   CLM_ASSIGN_OR_RETURN(s.model_dirs, string_map(doc, "model_dirs"));
+  CLM_ASSIGN_OR_RETURN(s.confirmed_model_roots, string_map(doc, "confirmed_model_roots"));
   CLM_ASSIGN_OR_RETURN(const json* adv, read_object(doc, "advanced"));
   if (adv != nullptr) {
     CLM_RETURN_IF_ERROR(read(*adv, "bench_results_dir", s.advanced.bench_results_dir));
