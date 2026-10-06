@@ -120,7 +120,13 @@ struct NodeWorker::Impl {
   }
 
   void set_state(NodeState s) {
-    if (state != s) log::info("node_state", {{"from", std::string(to_string(state))}, {"to", std::string(to_string(s))}});
+    if (state != s) {
+      // Ready <-> Inferencing flips every window; keep it out of the default log.
+      const bool per_window = (state == NodeState::kReady && s == NodeState::kInferencing) ||
+                              (state == NodeState::kInferencing && s == NodeState::kReady);
+      log::write(per_window ? log::Level::kDebug : log::Level::kInfo, "node_state",
+                 {{"from", std::string(to_string(state))}, {"to", std::string(to_string(s))}});
+    }
     state = s;
     counters.state = s;
   }
