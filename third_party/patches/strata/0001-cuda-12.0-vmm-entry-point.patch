@@ -1,0 +1,19 @@
+diff --git a/src/core/vmm.cpp b/src/core/vmm.cpp
+index d66f17b..c8794ca 100644
+--- a/src/core/vmm.cpp
++++ b/src/core/vmm.cpp
+@@ -25,7 +25,14 @@ struct Api {
+ template <class F> bool resolve(const char* name, F& f) {
+     cudaDriverEntryPointQueryResult q{};
+     void* p = nullptr;
++#if defined(CUDART_VERSION) && CUDART_VERSION < 12050
++    // ClusterLM patch 0001: cudaGetDriverEntryPointByVersion arrived in CUDA 12.5.  Before it, the unversioned query
++    // resolves the entry point of the driver API version this translation unit was compiled against - 12.x here,
++    // the same 12000 ABI the versioned call asks for.
++    if (cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q) != cudaSuccess ||
++#else
+     if (cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q) != cudaSuccess ||
++#endif
+         q != cudaDriverEntryPointSuccess || p == nullptr)
+         return false;
+     f = (F) p;

@@ -1,0 +1,111 @@
+diff --git a/include/strata/core/mtp.hpp b/include/strata/core/mtp.hpp
+index 4997927..295a3b4 100644
+--- a/include/strata/core/mtp.hpp
++++ b/include/strata/core/mtp.hpp
+@@ -32,9 +32,13 @@
+ namespace strata::core {
+ 
+ class NativeHead;
++class NativeEmbed;
+ 
+ class MtpDrafter {
+ public:
++    /// ClusterLM patch 0004: the GGUF-form embedding table this drafter gathers from instead of the process-wide
++    /// `native_embed()` (null: the process-wide one).  Before the first draft.
++    void set_embed(const NativeEmbed* e) { embed_ = e; }
+     MtpDrafter() = default;
+     ~MtpDrafter();
+     MtpDrafter(const MtpDrafter&) = delete;
+@@ -181,6 +185,7 @@ private:
+     SessionState* ss_ = nullptr;
+     SessionState* ple_ss_ = nullptr;
+     const WeightTable* wt_ = nullptr;
++    const NativeEmbed* embed_ = nullptr;   ///< ClusterLM patch 0004: set_embed
+     const NativeHead* head_ = nullptr;
+     const float* window_R_ = nullptr;
+     int max_t_ = 0;
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index 05b6ae3..5f32618 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -40,6 +40,7 @@
+ namespace strata::core {
+ 
+ class NativeHead;
++class NativeEmbed;
+ class RemoteExpertOpt;
+ 
+ /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
+@@ -207,6 +208,13 @@ public:
+     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
+     /// path, the end of a run) calls wait_commit() first.  STRATA_COMMIT_SYNC=1 keeps the wait.
+     static void set_commit_async(bool on);
++    /// ClusterLM patch 0004: this verifier's commit always waits for its graph, whatever `set_commit_async` set for
++    /// the process (two independent domains in one process - the Father's prefix and tail - must not share that
++    /// switch).  Before the first commit.
++    void set_commit_sync(bool on) { commit_sync_ = on; }
++    /// ClusterLM patch 0004: the GGUF-form embedding table THIS verifier gathers from (layer 0), instead of the
++    /// process-wide `native_embed()`.  Null (default): the process-wide one.  Before the first window.
++    void set_embed(const NativeEmbed* e) { embed_ = e; }
+     /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device);
+     /// false with `err` when it failed.  Free when nothing is pending.
+     bool wait_commit(std::string& err);
+@@ -398,6 +406,8 @@ private:
+     int last_t_ = 0;
+     int64_t last_pos0_ = 0;
+     bool self_commit_ok_ = true;   ///< ClusterLM patch 0003: set_self_commit
++    bool commit_sync_ = false;     ///< ClusterLM patch 0004: set_commit_sync
++    const NativeEmbed* embed_ = nullptr;   ///< ClusterLM patch 0004: set_embed
+     bool window_open_ = false;     ///< ClusterLM patch 0003: a solo window was launched and not yet committed/aborted
+     float* hist_pre_ = nullptr;    ///< ClusterLM patch 0003: the PLE history before the window (NG_HIST * NG_HC_DIM)
+     int32_t last_tokens_[8] = {};
+diff --git a/src/core/mtp.cpp b/src/core/mtp.cpp
+index b446b43..472d82b 100644
+--- a/src/core/mtp.cpp
++++ b/src/core/mtp.cpp
+@@ -670,7 +670,7 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
+         // ---- the two input branches
+         const WeightRef* we = wt_->find("token_embd.weight");
+         if (!we) { err = "mtp: token_embd.weight is missing"; return false; }
+-        if (const NativeEmbed* ne = native_embed()) {   // plan v0.3 P6: the GGUF-form table
++        if (const NativeEmbed* ne = embed_ != nullptr ? embed_ : native_embed()) {   // plan v0.3 P6 (ClusterLM patch 0004: own table when set)
+             ne->gather_dev(tok_, T, emb_, cs);
+         } else {
+             const auto* codes = (const uint8_t*) we->data;
+diff --git a/src/core/native_dense.cpp b/src/core/native_dense.cpp
+index ffa9bda..972f6bc 100644
+--- a/src/core/native_dense.cpp
++++ b/src/core/native_dense.cpp
+@@ -213,7 +213,9 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
+             }
+             for (const auto& tensor : gguf.tensors()) {
+                 if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
+-                if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
++                // ClusterLM patch 0004: an explicit [layer_lo, layer_hi) (checked by `outside` above) wins over the
++                // process-wide set_layer_range, so two stages in one process never filter by each other's range
++                if (layer_hi < 0 && !in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
+                 if (!seen.insert(tensor.name).second) {
+                     err = "native dense: duplicate tensor " + tensor.name; return false;
+                 }
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 317261a..f05a41d 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -684,7 +684,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+         copy_from_mapped(R_, hin, (int64_t) T * HC * N, cs);
+         copy_from_mapped(bo_, hin + (size_t) T * HC * N, (int64_t) T * N, cs);
+         copy_from_mapped(inj2_, hin + (size_t) T * (HC + 1) * N, (int64_t) T * HC, cs);
+-    } else if (const NativeEmbed* ne = native_embed()) {       // plan v0.3 P6: the GGUF-form table
++    } else if (const NativeEmbed* ne = embed_ != nullptr ? embed_ : native_embed()) {   // plan v0.3 P6: the GGUF-form table (ClusterLM patch 0004: this verifier's own when set)
+         ne->gather_dev(tok_, T, emb_, cs);
+         broadcast_streams(emb_, R_, N, (int) HC, T, cs);
+     } else {
+@@ -2036,7 +2036,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
+         // set_commit_async: no wait here - the next window runs on the same stream after it, and the drafter (its own
+         // stream) reads only this window's final rows and its own K/V. h_commit_ is next written after the next window's
+         // results are read, i.e. after this graph has run.  Everything else waits on commit_done_ (wait_commit).
+-        if (!g_commit_async || next_ != nullptr) {
++        if (!g_commit_async || next_ != nullptr || commit_sync_) {   // ClusterLM patch 0004: commit_sync_
+             const cudaError_t se = cudaStreamSynchronize(cs_);
+             if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
+         } else {

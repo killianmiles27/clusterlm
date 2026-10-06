@@ -1,0 +1,194 @@
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index 5f32618..798d606 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -76,6 +76,13 @@ public:
+     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
+     bool release_gpu_waits(int timeout_ms);
+ 
++    /// ClusterLM patch 0006: what `init` allocates for a window of up to `max_t` tokens over a session of `max_cells`
++    /// cells with `k` experts per token and a head of `n_vocab` rows - the device arena and the mapped (pinned host)
++    /// staging - counted by the same carve `init` uses, with nothing allocated (no device needed).  Excludes the
++    /// optional profiler/trace buffers and the batch-window arena (`init_slots`).
++    struct InitBytes { uint64_t device = 0, mapped = 0; };
++    static InitBytes init_bytes(const ModelGeometry& g, int64_t k, int64_t max_cells, int max_t, int64_t n_vocab);
++
+     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
+     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
+               const NativeHead* head, int max_t, std::string& err);
+@@ -376,6 +383,8 @@ private:
+     Verifier* next_ = nullptr;
+     void* next_user_ = nullptr;
+     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
++    void carve_arena(void* bump, int64_t k);   ///< ClusterLM patch 0006: init's device arena (see init_bytes)
++    static int64_t plan_words(int64_t cap);    ///< ClusterLM patch 0006: the GPU plan block's int32 words
+     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
+     bool staged_ = false;
+     bool copy_used_ = false;
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index f05a41d..68f900b 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -448,7 +448,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+         const int64_t cap = (int64_t) (T * K);
+         const int64_t i32 = 4 + (cap + 1) + cap + cap;
+         const int64_t ptr_off = (i32 + 1) & ~1ll;
+-        plan_i32_ = ptr_off + 4 * cap + (cap + 1) + 1;
++        plan_i32_ = plan_words(cap);   // ClusterLM patch 0006: = ptr_off + 4 * cap + (cap + 1) + 1
+         if (!mapped((size_t) plan_i32_ * 4 * 2 + 64, (void**) &h_plan_, (void**) &m_plan_)) {
+             err = "verify: mapped plan allocation failed";
+             return false;
+@@ -466,48 +466,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+         sink_.ctx = this;
+     }
+ 
+-    // ---- the device arena: the same sequence counted, then carved
+-    auto carve = [&](Bump& b) {
+-        tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * strata::kernels::kStepCount);
+-        pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
+-        ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
+-        mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
+-        inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
+-        lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
+-        xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
+-        sh_xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
+-        qkv_L_ = b.take<float>(nG * T * C); h_L_ = b.take<float>(nG * T * C);
+-        gate_L_ = b.take<float>(nG * T * HV); beta_L_ = b.take<float>(nG * T * HV);
+-        z_ = b.take<float>(T * ZV); y_ = b.take<float>(T * ZV); y_dummy_ = b.take<float>(T * ZV);
+-        qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
+-        kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
+-        idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
+-        scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_);
+-        attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
+-        attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
+-        tail_snap_ = b.take<float>(nQ * TS);
+-        logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
+-        shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
+-        hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
+-        plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
+-        staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
+-        hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
+-        nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
+-        hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
+-            strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
+-            strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
+-        head_mixed_ = b.take<float>(T * N); head_inj_ = b.take<float>(HC);
+-        sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
+-        sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
+-        head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
+-        arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
+-        one_ = b.take<int32_t>(4);
+-        hist_snap_ = b.take<float>(T * HS);
+-        hist_pre_ = b.take<float>(HS);   // ClusterLM patch 0003
+-        ple_key_ = b.take<float>(T * (uint64_t) strata::kernels::NG_HC_DIM); ple_val_ = b.take<float>(T * N);
+-    };
++    // ---- the device arena: the same sequence counted, then carved (ClusterLM patch 0006: carve_arena, so that
++    // init_bytes() counts it without allocating)
++    (void) C; (void) HV; (void) HD; (void) ID; (void) nG; (void) nQ; (void) HS; (void) max_in;
+     Bump count;
+-    carve(count);
++    carve_arena(&count, (int64_t) K);
+     if (cudaMalloc(&arena_, count.used) != cudaSuccess) {
+         err = "verify: the device arena (" + std::to_string(count.used >> 20) + " MiB) does not fit";
+         return false;
+@@ -538,7 +501,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+     }
+     Bump real;
+     real.base = (uint8_t*) arena_;
+-    carve(real);
++    carve_arena(&real, (int64_t) K);
+     {
+         const int32_t one = 1;
+         if (cudaMemcpy(one_, &one, sizeof one, cudaMemcpyHostToDevice) != cudaSuccess) {
+@@ -620,6 +583,91 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+     return true;
+ }
+ 
++// ClusterLM patch 0006: init's device arena, carved into `bump` (a Bump: counted when its base is null, laid out when
++// set).  Moved out of init unchanged so init_bytes() can count it with nothing allocated.
++void Verifier::carve_arena(void* bump, int64_t k) {
++    Bump& b = *(Bump*) bump;
++    const ModelGeometry& g = *g_;
++    const strata::kernels::QsaShapes s = shapes_of(g);
++    const uint64_t T = (uint64_t) max_t_, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) k;
++    const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
++    const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
++    const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
++    const uint64_t nG = (uint64_t) g.n_gdn_layers(), nQ = (uint64_t) g.n_qsa_layers();
++    const uint64_t HS = (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM;
++    const uint64_t TS = (uint64_t) (s.idx_block - 1) * ID;
++    const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
++    tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * strata::kernels::kStepCount);
++    pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
++    ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
++    mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
++    inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
++    lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
++    xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
++    sh_xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
++    qkv_L_ = b.take<float>(nG * T * C); h_L_ = b.take<float>(nG * T * C);
++    gate_L_ = b.take<float>(nG * T * HV); beta_L_ = b.take<float>(nG * T * HV);
++    z_ = b.take<float>(T * ZV); y_ = b.take<float>(T * ZV); y_dummy_ = b.take<float>(T * ZV);
++    qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
++    kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
++    idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
++    scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_);
++    attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
++    attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
++    tail_snap_ = b.take<float>(nQ * TS);
++    logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
++    shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
++    hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
++    plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
++    staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
++    hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
++    nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
++    hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
++        strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
++        strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
++    head_mixed_ = b.take<float>(T * N); head_inj_ = b.take<float>(HC);
++    sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
++    sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
++    head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
++    arg_scratch_ = b.take<uint8_t>(strata::kernels::argmax_rows_scratch_bytes((int) T));
++    one_ = b.take<int32_t>(4);
++    hist_snap_ = b.take<float>(T * HS);
++    hist_pre_ = b.take<float>(HS);   // ClusterLM patch 0003
++    ple_key_ = b.take<float>(T * (uint64_t) strata::kernels::NG_HC_DIM); ple_val_ = b.take<float>(T * N);
++}
++
++int64_t Verifier::plan_words(int64_t cap) {   // ClusterLM patch 0006: the GPU plan block, in int32 words
++    const int64_t i32 = 4 + (cap + 1) + cap + cap;
++    const int64_t ptr_off = (i32 + 1) & ~1ll;
++    return ptr_off + 4 * cap + (cap + 1) + 1;
++}
++
++Verifier::InitBytes Verifier::init_bytes(const ModelGeometry& g, int64_t k, int64_t max_cells, int max_t,
++                                         int64_t n_vocab) {   // ClusterLM patch 0006: see the header
++    InitBytes out;
++    if (max_t < 1 || k < 1 || max_cells < 1) return out;
++    Verifier v;   // nothing below allocates: the default verifier holds no device or host resource
++    v.g_ = &g;
++    v.max_t_ = max_t;
++    v.n_vocab_ = n_vocab;
++    const strata::kernels::QsaShapes s = shapes_of(g);
++    v.cap_ = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
++    v.max_blocks_ = max_cells / s.idx_block + 2;
++    v.attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(v.cap_, s);
++    const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, K = (uint64_t) k;
++    const uint64_t NH = (uint64_t) g.n_head, NKV = (uint64_t) g.n_head_kv, IQ = (uint64_t) g.idx_q_heads;
++    v.plan_i32_ = plan_words((int64_t) (T * K));
++    Bump count;
++    v.carve_arena(&count, k);
++    out.device = count.used;
++    // init's mapped() staging, each rounded to a page as cudaHostAlloc rounds it (keep in step with init)
++    const uint64_t sizes[] = {T * 4, T * strata::kernels::kStepCount * 4, T * (NH + NKV + IQ) * 4, (2 + T) * 4 + 16,
++                              T * N * 4, T * 4 + 16, T * N * 4, T * K * 4, T * K * 4, 64, 64, 64, 64, 64,
++                              T * K * N * 4, (uint64_t) v.plan_i32_ * 4 * 2 + 64};
++    for (uint64_t b : sizes) out.mapped += (b + 4095) / 4096 * 4096;
++    return out;
++}
++
+ const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
+ 
+ // ================================ THE WINDOW, AS CAPTURED ================================

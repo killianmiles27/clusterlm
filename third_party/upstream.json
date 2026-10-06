@@ -7,7 +7,16 @@
       "commit": "1735d6471df29b42c26170efaac1f1446a58640f",
       "license": "MIT",
       "license_file": "LICENSE",
-      "inspected": "2026-10-06"
+      "inspected": "2026-10-06",
+      "patches": "third_party/patches/strata"
+    },
+    "strata-ggml": {
+      "url": "https://github.com/ggml-org/llama.cpp",
+      "commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "inspected": "2026-10-06",
+      "note": "The llama.cpp commit the Strata pin builds its CPU ggml from (strata/third_party/ggml/VERSION.txt). Passed to Strata as STRATA_GGML_DIR so a CLUSTERLM_ENABLE_STRATA build needs no configure-time FetchContent."
     },
     "llama.cpp": {
       "url": "https://github.com/ggml-org/llama.cpp",
