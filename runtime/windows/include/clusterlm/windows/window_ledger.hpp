@@ -32,6 +32,7 @@ class WindowLedger {
     std::optional<WindowId> last_window;          // highest window ID admitted
     std::optional<domain::WindowRequest> outstanding;  // window run but not yet committed
     std::optional<domain::CommitAck> last_ack;    // for idempotent commit replay
+    std::uint32_t last_accepted = 0;              // accepted length of last_ack (replay must match it)
   };
 
   Status open_session(Epoch epoch, SessionId session);
