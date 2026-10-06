@@ -164,6 +164,7 @@ bool decode_body(ByteReader& r, PreparePlan& m, const DecodeLimits& l) {
   if (!(get(r, m.lease) && get(r, m.model_root) && r.str(m.backend_build, l.max_string) && get(r, m.plan_hash) &&
         r.u32(n) && n <= kMaxStages))
     return false;
+  if (r.remaining() / 25 < n) return false;  // 4+1+8+12 bytes per stage assignment
   m.stages.resize(n);
   for (auto& s : m.stages) {
     if (!(get(r, s.stage) && get_enum(r, s.role, 2) && get(r, s.layers) && r.u32(s.max_context) &&
@@ -174,7 +175,8 @@ bool decode_body(ByteReader& r, PreparePlan& m, const DecodeLimits& l) {
   auto manifest = objects::ModelManifest::decode(r);
   if (!manifest.is_ok()) return false;
   m.manifest = std::move(manifest).value();
-  if (!r.u32(n) || n > l.max_manifest_objects) return false;
+  // Each assignment is 5 bytes on the wire: never size the vector from a count the input cannot back.
+  if (!r.u32(n) || n > l.max_manifest_objects || r.remaining() / 5 < n) return false;
   m.assignments.resize(n);
   for (auto& a : m.assignments) {
     if (!(r.u32(a.object_index) && get_enum(r, a.target, 3))) return false;
@@ -278,6 +280,7 @@ bool decode_body(ByteReader& r, RunWindow& m, const DecodeLimits& l) {
         r.boolean(m.auto_commit) && r.u32(n) &&
         n <= kMaxTimings))
     return false;
+  if (r.remaining() / 36 < n) return false;  // 3*8 + 3*4 bytes per StageTiming
   m.upstream_timings.resize(n);
   for (auto& t : m.upstream_timings)
     if (!get(r, t)) return false;
@@ -314,7 +317,7 @@ bool decode_body(ByteReader& r, StageResult& m, const DecodeLimits& l) {
     m.activations = std::move(acts).value();
   }
   std::uint32_t n;
-  if (!r.u32(n) || n > kMaxTimings) return false;
+  if (!r.u32(n) || n > kMaxTimings || r.remaining() / 36 < n) return false;
   m.timings.resize(n);
   for (auto& t : m.timings)
     if (!get(r, t)) return false;
@@ -362,7 +365,7 @@ void encode_body(ByteWriter& w, const ProvisionStatus& m) {
 }
 bool decode_body(ByteReader& r, ProvisionStatus& m, const DecodeLimits& l) {
   std::uint32_t n;
-  if (!(get(r, m.lease) && r.u32(n) && n <= l.max_manifest_objects)) return false;
+  if (!(get(r, m.lease) && r.u32(n) && n <= l.max_manifest_objects && r.remaining() / 4 >= n)) return false;
   m.sealed_objects.resize(n);
   for (auto& i : m.sealed_objects)
     if (!r.u32(i)) return false;

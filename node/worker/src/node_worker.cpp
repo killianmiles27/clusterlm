@@ -1,7 +1,9 @@
 #include "clusterlm/node/node_worker.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <condition_variable>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -101,7 +103,14 @@ struct NodeWorker::Impl {
   std::optional<protocol::AuthorizePeer> downstream;  // we forward to this peer
   std::shared_ptr<MessageStream> downstream_stream;
   std::vector<protocol::AuthorizePeer> inbound_allowed;  // peers allowed to forward to us
-  std::vector<std::thread> handlers;
+  // One thread per accepted connection. Finished threads are joined as new connections arrive (an unjoined
+  // finished thread keeps its stack until joined), and the number of live handlers is bounded.
+  struct Handler {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+  };
+  std::vector<Handler> handlers;
+  static constexpr std::size_t kMaxLiveHandlers = 64;
 
   std::mutex exec_mu;  // serializes domain execution/commit/abort/release
 
@@ -154,7 +163,25 @@ struct NodeWorker::Impl {
         continue;
       }
       std::lock_guard lock(mu);
-      handlers.emplace_back([this, c = wrap(std::move(conn).value())]() mutable { handle_connection(std::move(c)); });
+      for (auto it = handlers.begin(); it != handlers.end();) {
+        if (it->done->load(std::memory_order_acquire)) {
+          if (it->thread.joinable()) it->thread.join();
+          it = handlers.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      if (handlers.size() >= kMaxLiveHandlers) {
+        log::warn("connection_refused", {{"reason", "too many live connections"}});
+        conn.value()->close();
+        continue;
+      }
+      auto done = std::make_shared<std::atomic<bool>>(false);
+      handlers.push_back(Handler{std::thread([this, done, c = wrap(std::move(conn).value())]() mutable {
+                                   handle_connection(std::move(c));
+                                   done->store(true, std::memory_order_release);
+                                 }),
+                                 done});
     }
   }
 
@@ -174,6 +201,15 @@ struct NodeWorker::Impl {
       conn->close();
       return;
     }
+    // The Hello role is a claim by the peer; the TLS identity is the proof. A direct peer Node is trusted only through
+    // AuthorizePeer (one lease), so an identity that Father authorized as a peer must never be able to present itself
+    // as Father and reach the control, provision or Father-activation paths.
+    if (conn->peer().authenticated && hello.role == protocol::NodeRole::kFather &&
+        is_authorized_peer(conn->peer().device_id)) {
+      log::warn("role_claim_rejected", {{"claimed", "father"}});
+      conn->close();
+      return;
+    }
     auto stream = std::make_shared<MessageStream>(std::move(conn), hello.channel);
     switch (hello.channel) {
       case Channel::kControl: serve_control(stream, hello); break;
@@ -181,6 +217,19 @@ struct NodeWorker::Impl {
       case Channel::kProvision: serve_provision(stream, hello); break;
     }
     stream->close();
+  }
+
+  // True if `device_id` was authorized by Father for a direct peer link of the current lease (either direction).
+  bool is_authorized_peer(const std::string& device_id) const {
+    auto lower = [](std::string v) {
+      std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      return v;
+    };
+    const std::string id = lower(device_id);
+    std::lock_guard lock(mu);
+    if (downstream && lower(downstream->peer_device_id) == id) return true;
+    return std::any_of(inbound_allowed.begin(), inbound_allowed.end(),
+                       [&](const auto& a) { return lower(a.peer_device_id) == id; });
   }
 
   Status send_hello_ack(MessageStream& s) {
@@ -303,21 +352,53 @@ struct NodeWorker::Impl {
       if (st.role != domain::StageRole::kMiddle)
         return make_error(ErrorCode::kPermissionDenied, "Nodes host token-free middle stages only");
 
+    // Sums of wire-supplied sizes saturate instead of wrapping, so a hostile plan cannot sneak under a budget.
+    auto add = [](std::uint64_t& total, std::uint64_t n) {
+      total = n > std::numeric_limits<std::uint64_t>::max() - total ? std::numeric_limits<std::uint64_t>::max() : total + n;
+    };
     std::uint64_t ram = 0, vram = 0, disk = 0;
+    std::vector<bool> assigned(p.manifest.objects.size(), false);
     for (const auto& a : p.assignments) {
       if (a.object_index >= p.manifest.objects.size())
         return make_error(ErrorCode::kOutOfRange, "assignment names a missing object");
+      if (assigned[a.object_index]) return make_error(ErrorCode::kInvalidArgument, "object assigned twice");
+      assigned[a.object_index] = true;
       const auto& obj = p.manifest.objects[a.object_index];
       if (obj.father_only()) return make_error(ErrorCode::kPermissionDenied, "plan assigns Father-only object");
       switch (a.target) {
-        case objects::AllocationTarget::kCpuResident: ram += obj.byte_size; break;
+        case objects::AllocationTarget::kCpuResident: add(ram, obj.byte_size); break;
         // GPU-resident objects land in bounded RAM staging, are uploaded, and the staging is discarded. The
         // reference backend has no GPU, so it keeps them in RAM and accounts them against both budgets.
-        case objects::AllocationTarget::kGpuResident: vram += obj.byte_size; ram += obj.byte_size; break;
-        case objects::AllocationTarget::kTemporaryBacking: disk += obj.byte_size; break;
+        case objects::AllocationTarget::kGpuResident: add(vram, obj.byte_size); add(ram, obj.byte_size); break;
+        case objects::AllocationTarget::kTemporaryBacking: add(disk, obj.byte_size); break;
         case objects::AllocationTarget::kFatherOnly:
           return make_error(ErrorCode::kPermissionDenied, "plan assigns Father-only target");
       }
+    }
+    // Working memory the stages themselves will allocate (sequence state, window snapshots, scratch) is sized
+    // from wire fields (max_context, max_window): admit it against the RAM allowance before anything is created.
+    {
+      std::uint64_t working = 0;
+      for (const auto& sa : p.stages) {
+        if (sa.role != domain::StageRole::kMiddle)
+          return make_error(ErrorCode::kPermissionDenied, "Nodes host token-free middle stages only");
+        domain::DomainSpec spec;
+        spec.stage = sa.stage;
+        spec.role = sa.role;
+        spec.layers = sa.layers;
+        spec.max_context = sa.max_context;
+        spec.max_window = sa.max_window;
+        spec.max_local_batch = sa.max_local_batch;
+        CLM_ASSIGN_OR_RETURN(auto probe, backend->create_domain(p.manifest, spec));
+        CLM_ASSIGN_OR_RETURN(domain::DomainRequirements req, probe->describe_requirements());
+        add(working, req.state_bytes);
+        add(working, req.window_bytes);
+        add(working, req.scratch_bytes);
+      }
+      const std::uint64_t allowance = std::min(cfg.ram_allowance, p.ram_cap_bytes ? p.ram_cap_bytes : cfg.ram_allowance);
+      if (working > allowance)
+        return make_error(ErrorCode::kResourceExhausted,
+                          "stage working memory " + std::to_string(working) + " exceeds the RAM allowance");
     }
     if (ram > std::min(cfg.ram_allowance, p.ram_cap_bytes ? p.ram_cap_bytes : cfg.ram_allowance))
       return make_error(ErrorCode::kResourceExhausted, "plan RAM " + std::to_string(ram) + " exceeds allowance");
@@ -488,7 +569,9 @@ struct NodeWorker::Impl {
       std::lock_guard lock(mu);
       if (s.lease != lease || state != NodeState::kPreparing || !plan)
         return make_error(ErrorCode::kStaleEpoch, "seal for a stale or inactive lease");
-      const auto& obj = plan->manifest.objects.at(s.object_index);
+      if (s.object_index >= plan->manifest.objects.size())
+        return make_error(ErrorCode::kOutOfRange, "seal names an object outside the plan manifest");
+      const auto& obj = plan->manifest.objects[s.object_index];
       if (s.total_length != obj.byte_size || s.object_digest != obj.object_digest)
         return make_error(ErrorCode::kDataLoss, "seal does not match the plan manifest");
       auto* writer = store->find_object(s.object_index);
@@ -882,13 +965,13 @@ void NodeWorker::stop() {
     for (auto& p : impl_->peer_inbound) streams.push_back(p);
   }
   for (auto& s : streams) s->close();
-  std::vector<std::thread> handlers;
+  std::vector<Impl::Handler> handlers;
   {
     std::lock_guard lock(impl_->mu);
     handlers.swap(impl_->handlers);
   }
-  for (auto& t : handlers)
-    if (t.joinable()) t.join();
+  for (auto& h : handlers)
+    if (h.thread.joinable()) h.thread.join();
   bool leased;
   {
     std::lock_guard lock(impl_->mu);

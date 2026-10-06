@@ -71,6 +71,7 @@ replayed blindly.
 | `orchestrator/placement` | `clusterlm_placement` | Hardware profiles with provenance, cost model, placement search, Pareto frontier |
 | `orchestrator/coordinator` | `clusterlm_coordinator` | Father orchestration: connect, prepare, generate, release |
 | `bench` | `clusterlm-bench` | ClusterLM Bench: profiles, transport, local clusters, faults, placement, qualification registry |
+| `orchestrator/diagnostics` | `clusterlm_diagnostics` | Redacting diagnostics bundle and log ring buffer (`clusterlm-father diagnostics`) |
 | `apps` | `clusterlm-node`, `clusterlm-father` | Executables |
 
 ## Channels and transport

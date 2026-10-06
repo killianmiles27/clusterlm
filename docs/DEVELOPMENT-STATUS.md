@@ -58,7 +58,7 @@ Father, G14 or 3060 machines.
 5. **Stochastic speculative acceptance.** Greedy verification only so far.
 6. **A runtime-reported allocation ledger from the real backend** (`describe_requirements`) feeding placement
    admission.
-7. ~~Windows key-file ACL~~ — done: the key is written owner-only (owner account + SYSTEM, protected DACL) via `platform::write_owner_only_file`; ADR 0133. Real ACL inspection pending `HQ-WIN-04`.
+7. ~~Windows key-file ACL~~ — done: the key is written owner-only (owner account + SYSTEM, protected DACL) via `platform::write_owner_only_file`; ADR 0133. Real ACL inspection pending `HQ-WIN-04`. Further checks: HQ-SEC-01, `docs/security/threat-model.md`.
 8. **Product surfaces** (Father UI, tray, installer, pairing UX) after the lifecycle above is exercised on hardware.
 
 ## Pending hardware qualification

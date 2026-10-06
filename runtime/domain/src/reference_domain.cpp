@@ -181,6 +181,10 @@ class ReferenceDomainImpl final : public ReferenceDomain {
       return p;
     };
     auto decode_f32 = [&](const ProvisionedObject& p, std::size_t offset_floats, std::size_t n, std::vector<float>& out) {
+      // The object's byte_size comes from the manifest and is only checked for self-consistency; the tensor span
+      // must be re-checked against the geometry-derived size before it is sliced or sized from.
+      if (n > p.bytes.size() / 4 || offset_floats > p.bytes.size() / 4 - n)
+        return make_error(ErrorCode::kDataLoss, "object '" + p.entry->name + "' is smaller than its tensor layout");
       out.resize(n);
       return decode_tensor(p.entry->representation.quant_type, p.bytes.subspan(offset_floats * 4, n * 4), out);
     };

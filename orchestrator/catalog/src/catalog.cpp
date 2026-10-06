@@ -90,7 +90,10 @@ bool depth_within(std::string_view text, int limit) {
     if (c == '"') in_str = true;
     else if (c == '{' || c == '[') {
       if (++depth > limit) return false;
-    } else if (c == '}' || c == ']') --depth;
+    } else if (c == '}' || c == ']') {
+      // Never below zero: stray closers must not "bank" depth that a later run of openers could spend.
+      if (depth > 0) --depth;
+    }
   }
   return true;
 }

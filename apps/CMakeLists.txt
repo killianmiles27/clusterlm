@@ -6,7 +6,7 @@ target_link_libraries(clusterlm-node PRIVATE clusterlm_node_worker clusterlm_cli
 clusterlm_set_warnings(clusterlm-node)
 
 add_executable(clusterlm-father father/main.cpp)
-target_link_libraries(clusterlm-father PRIVATE clusterlm_coordinator clusterlm_domain clusterlm_cli)
+target_link_libraries(clusterlm-father PRIVATE clusterlm_coordinator clusterlm_domain clusterlm_diagnostics clusterlm_cli)
 clusterlm_set_warnings(clusterlm-father)
 
 add_executable(clusterlm-node-service node-service/main.cpp)

@@ -6,7 +6,7 @@
 // builder. Accepted files must satisfy the reader's invariants; the builder must never crash, and every manifest
 // it produces must validate and keep its ranges inside the (virtual) file.
 //
-//   clang++ build:  cmake -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCLUSTERLM_FUZZ=ON && \
+//   clang++ build:  cmake -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCLUSTERLM_FUZZ=ON
 //                   cmake --build build-fuzz --target fuzz_gguf gen_gguf_seeds
 //   seeds:          build-fuzz/bin/gen_gguf_seeds corpus/ && build-fuzz/bin/fuzz_gguf corpus/ -max_len=65536 -max_total_time=60
 #include <algorithm>

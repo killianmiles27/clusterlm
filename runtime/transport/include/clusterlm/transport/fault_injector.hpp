@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -49,6 +50,12 @@ class FaultInjector {
   // Releases stalls in both directions (a stall already released does not re-arm for the same rule).
   void clear_stall();
 
+  // Observer of every frame the decorator counts (both directions), called with no injector lock held. For
+  // tests that capture traffic (privacy assertions); frames are seen exactly as the decorator sees them,
+  // before any corruption rule is applied. An empty function clears it.
+  using Tap = std::function<void(FaultDirection, const Frame&)>;
+  void set_tap(Tap tap);
+
   // --- used by the impairment decorator ---
   struct Decision {
     bool close_before = false;
@@ -73,6 +80,7 @@ class FaultInjector {
   mutable std::mutex mu_;
   std::condition_variable cv_;
   std::vector<Slot> rules_;
+  Tap tap_;
   std::uint64_t fired_ = 0;
   bool stalled_[2] = {false, false};
 };

@@ -1,0 +1,8 @@
+B 9
+F 9 ../../etc/passwd
+F 9 obj-4.part
+X
+R abc
+B 9
+R 9
+

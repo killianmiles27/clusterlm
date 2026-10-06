@@ -53,7 +53,11 @@ Result<JournalReplay> Journal::replay(const std::filesystem::path& path) {
     if (bytes.status().code() == ErrorCode::kNotFound) return out;
     return bytes.status();
   }
-  const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+  return parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+}
+
+JournalReplay Journal::parse(std::string_view text) {
+  JournalReplay out;
   std::map<std::uint64_t, std::size_t> index_of;  // generation -> position in out.leases
 
   std::size_t pos = 0;

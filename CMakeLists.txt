@@ -23,6 +23,17 @@ option(CLUSTERLM_ENABLE_STRATA "Build the Strata backend adapter against the pin
 
 include(cmake/ClusterLMWarnings.cmake)
 
+# Fuzzing: every library is instrumented (ASan + UBSan + libFuzzer coverage) so the targets in tests/fuzz see
+# inside the code under test. Declared here because the flags must precede every add_subdirectory.
+option(CLUSTERLM_FUZZ "Build libFuzzer targets (clang only; instruments all libraries with ASan+UBSan)" OFF)
+if(CLUSTERLM_FUZZ)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "CLUSTERLM_FUZZ requires clang (libFuzzer)")
+  endif()
+  add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 find_package(Threads REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
 
@@ -52,6 +63,7 @@ foreach(module
     orchestrator/planning
     orchestrator/catalog
     orchestrator/father-service
+    orchestrator/diagnostics
     node/worker
     node/service
     bench

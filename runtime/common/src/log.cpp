@@ -9,6 +9,7 @@ namespace {
 std::atomic<Level> g_level{Level::kInfo};
 std::mutex g_mutex;
 std::string g_component = "clusterlm";
+Sink g_sink;
 
 const char* level_name(Level l) {
   switch (l) {
@@ -27,6 +28,11 @@ Level level() { return g_level.load(); }
 void set_component(std::string component) {
   std::lock_guard lock(g_mutex);
   g_component = std::move(component);
+}
+
+void set_sink(Sink sink) {
+  std::lock_guard lock(g_mutex);
+  g_sink = std::move(sink);
 }
 
 void write(Level l, std::string_view event, std::initializer_list<Field> fields) {
@@ -49,6 +55,7 @@ void write(Level l, std::string_view event, std::initializer_list<Field> fields)
     line += '=';
     line += v;
   }
+  if (g_sink) g_sink(line);
   line += '\n';
   std::fputs(line.c_str(), stderr);
 }

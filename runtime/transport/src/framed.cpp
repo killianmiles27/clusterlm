@@ -1,5 +1,6 @@
 #include "framed.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <limits>
@@ -11,6 +12,11 @@ namespace {
 // Frames up to this size are coalesced with their header into a single write (one TLS record / TCP segment
 // run) so small control messages cost one syscall.
 constexpr std::size_t kCoalesceLimit = 64 * 1024;
+
+// A received payload buffer grows in steps of this size as bytes actually arrive. Sizing it from the header's
+// payload_len up front would let a peer that sends 24 header bytes pin max_payload (64 MiB by default) of
+// zero-filled memory per connection; this keeps memory proportional to what the peer really delivered.
+constexpr std::size_t kReceiveGrowth = 1u << 20;
 
 class FramedConnection final : public Connection {
  public:
@@ -64,7 +70,9 @@ class FramedConnection final : public Connection {
         have_header_ = true;
       }
     }
-    while (payload_got_ < frame_.payload.size()) {
+    while (payload_got_ < payload_len_) {
+      if (payload_got_ == frame_.payload.size())
+        frame_.payload.resize(std::min<std::size_t>(payload_len_, payload_got_ + kReceiveGrowth));
       std::size_t got = 0;
       Status s = stream_->read_some(frame_.payload.data() + payload_got_, frame_.payload.size() - payload_got_,
                                     got, deadline);
@@ -76,6 +84,7 @@ class FramedConnection final : public Connection {
     have_header_ = false;
     hdr_got_ = 0;
     payload_got_ = 0;
+    payload_len_ = 0;
     bytes_received_ += kFrameHeaderSize + out.payload.size();
     ++frames_received_;
     return out;
@@ -120,7 +129,8 @@ class FramedConnection final : public Connection {
     frame_.channel = channel;
     frame_.flags = flags;
     frame_.correlation = correlation;
-    frame_.payload.assign(len, 0);
+    payload_len_ = len;
+    frame_.payload.clear();
     payload_got_ = 0;
     return Status::ok();
   }
@@ -143,6 +153,7 @@ class FramedConnection final : public Connection {
   bool have_header_ = false;
   Frame frame_;
   std::size_t payload_got_ = 0;
+  std::size_t payload_len_ = 0;
 
   std::atomic<std::uint64_t> bytes_sent_{0}, bytes_received_{0}, frames_sent_{0}, frames_received_{0};
 };

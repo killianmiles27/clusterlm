@@ -42,7 +42,7 @@ struct Principals {
   std::vector<std::uint8_t> user_token;  // TOKEN_USER + SID
   std::vector<std::uint8_t> system_sid;
   PSID user() const { return reinterpret_cast<const TOKEN_USER*>(user_token.data())->User.Sid; }
-  PSID system() const { return const_cast<std::uint8_t*>(system_sid.data()); }
+  PSID system_sid_ptr() const { return const_cast<std::uint8_t*>(system_sid.data()); }
 };
 
 Result<Principals> load_principals() {
@@ -65,7 +65,7 @@ Result<Principals> load_principals() {
 Result<PACL> build_dacl(const Principals& p, bool inherit) {
   EXPLICIT_ACCESSW ea[2] = {};
   const DWORD flags = inherit ? (CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE) : NO_INHERITANCE;
-  PSID sids[2] = {p.user(), p.system()};
+  PSID sids[2] = {p.user(), p.system_sid_ptr()};
   for (int i = 0; i < 2; ++i) {
     ea[i].grfAccessPermissions = FILE_ALL_ACCESS;
     ea[i].grfAccessMode = SET_ACCESS;
@@ -153,7 +153,7 @@ Result<bool> is_owner_only(const fs::path& path) {
         break;
       }
       PSID sid = reinterpret_cast<PSID>(&static_cast<ACCESS_ALLOWED_ACE*>(ace)->SidStart);
-      only = ::EqualSid(sid, principals.user()) || ::EqualSid(sid, principals.system());
+      only = ::EqualSid(sid, principals.user()) || ::EqualSid(sid, principals.system_sid_ptr());
     }
   }
   ::LocalFree(sd);
