@@ -81,13 +81,34 @@ std::string check_command_tokens(const CommandSpec& spec, const std::vector<std:
 }
 
 std::string validate_registry_command(const std::string& command_line) {
-  std::istringstream in(command_line);
-  std::vector<std::string> tok;
-  for (std::string t; in >> t;) tok.push_back(t);
-  if (tok.size() < 2 || tok[0] != "clusterlm-bench") return "must start with 'clusterlm-bench <command>'";
-  const CommandSpec* spec = find_command_spec(tok[1]);
-  if (!spec) return "unknown command '" + tok[1] + "'";
-  return check_command_tokens(*spec, std::vector<std::string>(tok.begin() + 2, tok.end()));
+  // Procedures that only a person at the machine can perform are written "manual: docs/<file>#<anchor> (...)".
+  if (command_line.rfind("manual:", 0) == 0) {
+    return command_line.find("docs/") != std::string::npos ? std::string{}
+                                                            : "manual procedure must reference its docs/ section";
+  }
+  // Other shipped ClusterLM executables: their own tests own their flag surface.
+  static const std::vector<std::string> kOtherTools = {"clusterlm-expert-domain-bench", "clusterlm-model-inspect",
+                                                       "clusterlm-node-service", "clusterlm-father", "clusterlm-node",
+                                                       "clusterlm-father-agent", "clusterlm-node-helper"};
+  std::size_t start = 0;
+  while (start <= command_line.size()) {
+    const auto amp = command_line.find("&&", start);
+    const std::string segment = command_line.substr(start, amp == std::string::npos ? std::string::npos : amp - start);
+    std::istringstream in(segment);
+    std::vector<std::string> tok;
+    for (std::string t; in >> t;) tok.push_back(t);
+    if (tok.empty()) return "empty command segment";
+    if (std::find(kOtherTools.begin(), kOtherTools.end(), tok[0]) == kOtherTools.end()) {
+      if (tok.size() < 2 || tok[0] != "clusterlm-bench") return "must start with 'clusterlm-bench <command>'";
+      const CommandSpec* spec = find_command_spec(tok[1]);
+      if (!spec) return "unknown command '" + tok[1] + "'";
+      auto err = check_command_tokens(*spec, std::vector<std::string>(tok.begin() + 2, tok.end()));
+      if (!err.empty()) return err;
+    }
+    if (amp == std::string::npos) break;
+    start = amp + 2;
+  }
+  return {};
 }
 
 }  // namespace clusterlm::bench

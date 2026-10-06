@@ -378,7 +378,7 @@ Windows pinned-memory behaviour.
 **Grouped expert-domain on real hardware: LAN peers, quantized kernels, real routing** — status: `pending`
 
 - **Purpose:** Replace the parts of the grouped expert-domain prototype that cannot run in the cloud: expert domains as separate machines reached over the real 1GbE link with mutual TLS (the prototype runs them as threads over loopback), quantized GPU/CPU expert kernels (the prototype runs FP32 reference SwiGLU), and the model's real routing statistics (the analytic model assumes uniform independent routing). Real routing decides how fast the expert union grows with q and how balanced the domains are.
-- **Command:** `clusterlm-bench domain grouped-experts-real --q 1,2,3,4 --route-trace results/route-trace.json --nodes <g14>,<3060> --out results/grouped-real.json`
+- **Command:** `clusterlm-expert-domain-bench --experiment HQ-P0C-02 --remote-domains 2 --q 1,2,3,4 --presets unlimited --windows 64 --out results/grouped-real.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -389,6 +389,9 @@ Windows pinned-memory behaviour.
   - end-to-end emitted tok/s of grouped versus layer-domain on the same model
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-P0C-02"`; metrics `grouped_real.union_growth_q4`, `grouped_real.domain_imbalance`, `grouped_real.layer_barrier_ms_p95`
 - **Decision affected:** Whether the grouped expert-domain topology replaces or complements the layer-domain pipeline, which expert ownership it uses, and the q cap that keeps the expert union affordable.
+- **Not yet measurable by `clusterlm-bench`:**
+  - LAN peer mode (expert domains as separate machines over mutual TLS) is not implemented; the tool runs domains as loopback threads.
+  - Quantized (IQ3_S/IQ2_XS) expert kernels and real routing traces are not wired into the expert-domain prototype.
 
 ### HQ-PERF-01
 
@@ -500,7 +503,7 @@ Windows pinned-memory behaviour.
 **Tier catalog pinning and context-profile qualification** — status: `pending`
 
 - **Purpose:** Download and inspect each catalog artifact on Father to pin its manifest root hash, then qualify each offered context profile (4K to 128K) per tier on the real machines so the catalog's qualified flags and readiness notes can change.
-- **Command:** `clusterlm-bench catalog inspect --model <tier-model-dir> --out results/catalog-<tier>.json && clusterlm-bench catalog contexts --tier <fast|strong|ultra> --contexts 4096,8192,16384,32768,65536,131072 --out results/contexts-<tier>.json`
+- **Command:** `clusterlm-model-inspect <tier-model-dir>/*.gguf --hash --summary --manifest results/manifest-<tier>.json && clusterlm-bench cluster --tier <fast|strong|ultra> --model <tier-model-dir> --context 4096 --out results/context-4096-<tier>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Fast, Strong and Ultra catalog artifacts (exact shard hashes recorded)
 - **Measurements:**
@@ -509,6 +512,8 @@ Windows pinned-memory behaviour.
   - which offered contexts are dropped from the catalog (e.g. Fast 64K/128K)
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-TIER-01"`; metrics `catalog.root_hash`, `context.qualified`, `context.vram_margin`
 - **Decision affected:** Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.
+- **Not yet measurable by `clusterlm-bench`:**
+  - Repeat the cluster run per context profile (8192 ... 131072); a single multi-context sweep flag is not implemented.
 
 ### HQ-WIN-01
 

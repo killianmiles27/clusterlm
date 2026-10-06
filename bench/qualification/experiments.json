@@ -577,7 +577,7 @@
       "id": "HQ-P0C-02",
       "title": "Grouped expert-domain on real hardware: LAN peers, quantized kernels, real routing",
       "purpose": "Replace the parts of the grouped expert-domain prototype that cannot run in the cloud: expert domains as separate machines reached over the real 1GbE link with mutual TLS (the prototype runs them as threads over loopback), quantized GPU/CPU expert kernels (the prototype runs FP32 reference SwiGLU), and the model's real routing statistics (the analytic model assumes uniform independent routing). Real routing decides how fast the expert union grows with q and how balanced the domains are.",
-      "command": "clusterlm-bench domain grouped-experts-real --q 1,2,3,4 --route-trace results/route-trace.json --nodes <g14>,<3060> --out results/grouped-real.json",
+      "command": "clusterlm-expert-domain-bench --experiment HQ-P0C-02 --remote-domains 2 --q 1,2,3,4 --presets unlimited --windows 64 --out results/grouped-real.json",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -601,7 +601,11 @@
         ]
       },
       "decision_affected": "Whether the grouped expert-domain topology replaces or complements the layer-domain pipeline, which expert ownership it uses, and the q cap that keeps the expert union affordable.",
-      "status": "pending"
+      "status": "pending",
+      "tool_gaps": [
+        "LAN peer mode (expert domains as separate machines over mutual TLS) is not implemented; the tool runs domains as loopback threads.",
+        "Quantized (IQ3_S/IQ2_XS) expert kernels and real routing traces are not wired into the expert-domain prototype."
+      ]
     },
     {
       "id": "HQ-PERF-01",
@@ -792,7 +796,7 @@
       "id": "HQ-TIER-01",
       "title": "Tier catalog pinning and context-profile qualification",
       "purpose": "Download and inspect each catalog artifact on Father to pin its manifest root hash, then qualify each offered context profile (4K to 128K) per tier on the real machines so the catalog's qualified flags and readiness notes can change.",
-      "command": "clusterlm-bench catalog inspect --model <tier-model-dir> --out results/catalog-<tier>.json && clusterlm-bench catalog contexts --tier <fast|strong|ultra> --contexts 4096,8192,16384,32768,65536,131072 --out results/contexts-<tier>.json",
+      "command": "clusterlm-model-inspect <tier-model-dir>/*.gguf --hash --summary --manifest results/manifest-<tier>.json && clusterlm-bench cluster --tier <fast|strong|ultra> --model <tier-model-dir> --context 4096 --out results/context-4096-<tier>.json",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -814,7 +818,10 @@
         ]
       },
       "decision_affected": "Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.",
-      "status": "pending"
+      "status": "pending",
+      "tool_gaps": [
+        "Repeat the cluster run per context profile (8192 ... 131072); a single multi-context sweep flag is not implemented."
+      ]
     },
     {
       "id": "HQ-WIN-01",
