@@ -22,7 +22,7 @@ skip_re='^runtime/backends/(strata|llama)/'
 
 flags=(-std=c++20 -fsyntax-only -D_WIN32_WINNT=0x0A00 -DWIN32_LEAN_AND_MEAN -DNOMINMAX
        -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Werror)
-incs=(-isystem "$stage/inc" -isystem "$root/third_party" -I "$root/apps/common" -DCLUSTERLM_SOURCE_DIR="\"$root\"" -DCLUSTERLM_NODE_BINARY="\"clusterlm-node.exe\"")
+incs=(-isystem "$stage/inc" -isystem "$root/third_party" -I "$root/apps/common" -I "$root/bench/src" -DCLUSTERLM_SOURCE_DIR="\"$root\"" -DCLUSTERLM_NODE_BINARY="\"clusterlm-node.exe\"")
 cd "$root"
 while IFS= read -r d; do incs+=(-I "$root/$d"); done < <(
   find . -type d -name include -not -path './third_party/*' -not -path './build*' -not -path './.*' \

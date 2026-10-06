@@ -51,7 +51,8 @@ foreach(module
     node/worker
     node/service
     bench
-    apps)
+    apps
+    experimental/expert-domains)
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${module}/CMakeLists.txt)
     add_subdirectory(${module})
   endif()
