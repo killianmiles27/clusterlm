@@ -40,6 +40,7 @@ foreach(module
     runtime/domain
     runtime/transport
     runtime/protocol
+    runtime/backends
     node/lease-store
     orchestrator/placement
     orchestrator/coordinator

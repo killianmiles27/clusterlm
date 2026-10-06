@@ -6,3 +6,4 @@ compile_commands.json
 __pycache__/
 /bench-results/
 /.claude/worktrees/
+/third_party/upstream/
