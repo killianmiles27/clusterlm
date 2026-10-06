@@ -27,6 +27,7 @@ Windows pinned-memory behaviour.
 | [HQ-CPU-02](#hq-cpu-02) | Laptop sustained CPU/GPU performance at thermal equilibrium | Node G14 | pending |
 | [HQ-GPU-01](#hq-gpu-01) | GPU dense, attention, hot-expert and prefill timings | Father, Node G14, Node 3060 | pending |
 | [HQ-GPU-02](#hq-gpu-02) | Safe VRAM margins under WDDM | Father, Node G14, Node 3060 | pending |
+| [HQ-GPU-03](#hq-gpu-03) | Laptop sustained GPU clocks, power and temperature | Node G14 | pending |
 | [HQ-PCIE-01](#hq-pcie-01) | Local PCIe staging and Windows pinned-memory limits | Father, Node G14, Node 3060 | pending |
 | [HQ-NET-01](#hq-net-01) | Pairwise application-payload bandwidth, RTT and jitter | Father, Node G14, Node 3060 | pending |
 | [HQ-NET-02](#hq-net-02) | Direct Node-to-Node forwarding versus Father relay | Father, Node G14, Node 3060 | pending |
@@ -53,51 +54,60 @@ Windows pinned-memory behaviour.
 **Per-machine hardware profile** — status: `pending`
 
 - **Purpose:** Replace synthetic profile fields with measured values for each execution domain.
-- **Command:** `clusterlm-bench profile --out results/profile-<machine>.json --duration 120`
+- **Command:** `clusterlm-bench calibrate --machine-id <machine> --role <father|node> --on-target --peer <peer-name>=<host:port> --identity <dir> --trust <fingerprint> --out-dir results --out results/calibrate-<machine>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** none (synthetic kernels only)
 - **Measurements:**
   - CPUID + OS-enabled vector features (AVX2/AVX-512)
-  - usable cores/threads
-  - physical RAM, commit limit, safe allowance under live policy
-  - effective memory bandwidth (read)
-  - GPU identity, driver version, DXGI budget / current usage
-  - power source and power plan
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PROF-01"`; metrics `cpu.features`, `cpu.usable_threads`, `memory.ram_total`, `memory.ram_safe_allowance`, `memory.ram_bandwidth`, `gpu.vram_budget`
+  - usable threads from a thread sweep of the expert kernels
+  - physical RAM, commit limit, bounded largest-allocation probe with page touching
+  - effective memory bandwidth (read) per thread count
+  - GPU identity, driver version, VRAM total/free, DXGI budget / current usage (CUDA build, Windows)
+  - AC/battery power source
+  - writes profile-<machine>.json (HardwareProfile) and network-<machine>.json (NetworkProfile) with Measured provenance
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PROF-01"`; metrics `cpu.features`, `cpu.usable_threads`, `memory.ram_total`, `memory.commit_limit`, `memory.alloc.largest_ok_bytes`, `memory.ram_bandwidth`, `gpu.0.vram_total`, `profile.measured_fields`
 - **Decision affected:** HardwareProfile provenance Synthetic -> Measured; admission budgets for every placement.
+- **Not yet measurable by `clusterlm-bench`:**
+  - power plan (only the AC/battery source is sampled)
+  - ram_safe_allowance under live policy (a policy value, kept as a Synthetic placeholder, not a measurement)
+  - GPU fields that need backend kernels (gpu_expert_bytes_per_s, dense_layer_ms, prefill_tokens_per_s, scratch_vram) stay Synthetic until HQ-GPU-01/HQ-GPU-02
 
 ### HQ-CPU-01
 
 **CPU routed-expert throughput by quant and verification width** — status: `pending`
 
 - **Purpose:** Measure effective CPU expert bytes/s including unpacking and GEMV for the exact tensor representations.
-- **Command:** `clusterlm-bench domain cpu-experts --backend strata --model <ultra-dir> --layers 4,20,40 --q 1,2,4 --threads sweep --isa avx2,avx512 --out results/cpu-experts-<machine>.json`
+- **Command:** `clusterlm-bench cpu --provider strata-cpu --representations iq3_s,iq2_xs --q 1,2,4 --threads sweep --isa avx2,avx512 --on-target --machine-id <machine> --out results/cpu-experts-<machine>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
-- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Model:** none (synthetic expert weights of the exact Flash-Next shape and representation)
 - **Measurements:**
-  - ms per routed expert per q and quant type
-  - effective bytes/s
-  - thread-count sweep incl. reserve for service responsiveness
-  - AVX2 vs AVX-512 where legal
-  - miss-union multiplier on held-out routing traces
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-CPU-01"`; metrics `cpu.expert_bytes_per_s.<quant>`, `cpu.q_scaling`, `cpu.best_threads`, `cpu.isa_selected`
+  - effective bytes/s per expert representation at q=1 (dequant + GEMV)
+  - dequant and GEMV rates separated
+  - q=1/2/4 with expert-union patterns (same, overlap, disjoint) and the derived q_scaling
+  - thread-count sweep, separate experts per thread, incl. a reserve CPU for service responsiveness
+  - AVX2 vs AVX-512 where legal (provider-selected ISA recorded)
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-CPU-01"`; metrics `cpu.expert_bytes_per_s.<quant>`, `cpu.q_scaling`, `cpu.best_threads`, `cpu.usable_threads`, `cpu.isa_selected`
 - **Decision affected:** CPU/GPU miss crossover, per-domain expert residency, viability of the stage architecture vs grouped expert domains.
+- **Not yet measurable by `clusterlm-bench`:**
+  - the Strata CPU IQ3_S/IQ2_XS kernels: provider 'strata-cpu' is a registration stub until the Strata workstream registers its factory (bench/src/expert_providers_external.cpp)
+  - miss-union multiplier on held-out routing traces (needs the Ultra artifact; the synthetic union patterns are measured)
+  - per-layer-index timing (layers 4,20,40): kernels are timed on synthetic weights of the exact shape
 
 ### HQ-CPU-02
 
 **Laptop sustained CPU/GPU performance at thermal equilibrium** — status: `pending`
 
 - **Purpose:** Determine the G14's sustained derate on AC under a 30-minute mixed load.
-- **Command:** `clusterlm-bench domain sustained --backend strata --model <ultra-dir> --minutes 30 --out results/sustained-g14.json`
+- **Command:** `clusterlm-bench cpu --provider strata-cpu --representations iq3_s --sustained --minutes 30 --sample-s 10 --on-target --machine-id g14 --out results/sustained-g14.json`
 - **Machines:** Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)
-- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Model:** none (synthetic expert weights of the exact Flash-Next shape and representation)
 - **Measurements:**
-  - expert throughput over time
-  - GPU clocks/power
-  - temperatures
-  - AC/battery state
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-CPU-02"`; metrics `cpu.sustained_factor`, `gpu.sustained_factor`, `thermal.time_to_equilibrium_s`
+  - CPU expert throughput over time with trend, derate and time to equilibrium
+  - AC/battery state sampled with every throughput sample (Windows power adapter)
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-CPU-02"`; metrics `cpu.sustained_factor`, `thermal.time_to_equilibrium_s`, `cpu.sustained.slope_pct_per_min`
 - **Decision affected:** Laptop share of layers/CPU work; whether laptop-light plans are preferred.
+- **Not yet measurable by `clusterlm-bench`:**
+  - GPU clocks, power and temperatures need vendor telemetry (NVML): see HQ-GPU-03
 
 ### HQ-GPU-01
 
@@ -130,36 +140,55 @@ Windows pinned-memory behaviour.
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-GPU-02"`; metrics `gpu.vram_budget`, `gpu.peak_prepare`, `gpu.peak_prefill`, `gpu.peak_verify`
 - **Decision affected:** MEM-01 admission margins; maximum GPU expert residency per domain.
 
+### HQ-GPU-03
+
+**Laptop sustained GPU clocks, power and temperature** — status: `pending`
+
+- **Purpose:** Determine the G14's sustained GPU derate under the same 30-minute load as HQ-CPU-02.
+- **Command:** `clusterlm-bench domain sustained --backend strata --model <ultra-dir> --minutes 30 --out results/sustained-gpu-g14.json`
+- **Machines:** Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)
+- **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
+- **Measurements:**
+  - GPU kernel throughput over time
+  - GPU clocks and power draw (NVML)
+  - GPU and CPU temperatures
+  - AC/battery state
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-GPU-03"`; metrics `gpu.sustained_factor`, `thermal.time_to_equilibrium_s`
+- **Decision affected:** Laptop share of GPU-resident layers; whether laptop-light plans are preferred.
+- **Not yet measurable by `clusterlm-bench`:**
+  - the tool does not read NVML telemetry yet; the Strata GPU kernels and NVML sampling are both required
+
 ### HQ-PCIE-01
 
 **Local PCIe staging and Windows pinned-memory limits** — status: `pending`
 
 - **Purpose:** Measure H2D/D2H bandwidth with bounded pinned rings and the safe pinned-memory cap per machine.
-- **Command:** `clusterlm-bench domain pcie --ring-bytes 64M,256M,1G --pinned-cap sweep --out results/pcie-<machine>.json`
+- **Command:** `clusterlm-bench pcie --ring-bytes 64M,256M,1G --pinned-cap sweep --on-target --machine-id <machine> --out results/pcie-<machine>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** none (synthetic kernels only)
 - **Measurements:**
-  - H2D/D2H GB/s per ring size
-  - pinned allocation failures / WDDM pressure
-  - effect on desktop responsiveness
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PCIE-01"`; metrics `gpu.pcie_h2d_bytes_per_s`, `memory.pinned_limit`
+  - H2D/D2H bytes/s per ring size, pageable vs cudaHostAlloc vs cudaHostRegister
+  - pinned allocation limit (stepwise probe up to the cap) and whether it stopped by cap or by failure
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PCIE-01"`; metrics `gpu.0.pinned.<ring>.h2d_bytes_per_s`, `gpu.0.pageable.<ring>.h2d_bytes_per_s`, `gpu.0.pinned_limit_bytes`
 - **Decision affected:** Whether large prefill unions stream experts to GPU instead of CPU GEMV; pinned caps.
+- **Not yet measurable by `clusterlm-bench`:**
+  - WDDM pressure events and desktop responsiveness during pinned allocation need interactive observation
 
 ### HQ-NET-01
 
 **Pairwise application-payload bandwidth, RTT and jitter** — status: `pending`
 
 - **Purpose:** Replace the simulated 1GbE parameters with measured authenticated TLS payload throughput and latency.
-- **Command:** `clusterlm-bench transport --tls --peer <host:port> --sizes 64,51216,204864,1048576 --duration 30 --out results/net-<a>-<b>.json`
+- **Command:** `clusterlm-bench transport --peer <node-a>=<host:port> --peer <node-b>=<host:port> --identity <dir> --trust <fingerprint> --sizes 64,51216,204864,1048576 --duration 30 --on-target --machine-id <machine> --network-out results/network-<machine>.json --out results/net-<machine>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** none (synthetic kernels only)
 - **Measurements:**
-  - payload MB/s per direction
-  - tiny-message RTT p50/p95/p99
-  - 50 KiB and 200 KiB message latency
-  - jitter
-  - two simultaneous links sharing Father's NIC
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-NET-01"`; metrics `network.bandwidth_bytes_per_s`, `network.rtt_ms`, `network.jitter_ms`, `network.father_egress_bytes_per_s`
+  - payload bytes/s per direction at 64 B, 50 KiB, 200 KiB and 1 MiB
+  - RTT distribution p50/p95/p99 per size, jitter (stddev and p99-p50)
+  - two simultaneous links sharing Father's NIC (concurrent egress/ingress)
+  - Node->Node link: run the same command on Node A against Node B started with --serve (or `--node-to-node` for the localhost orchestration check)
+  - TLS (mutual, pinned fingerprints) is on by default for --peer
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-NET-01"`; metrics `link.<peer>.rtt_ms.<size>`, `link.<peer>.jitter_ms.<size>`, `link.<peer>.rtt_p99_minus_p50_ms.<size>`, `link.<peer>.tx_bytes_per_s.<size>`, `link.<peer>.rx_bytes_per_s.<size>`, `concurrent.egress_bytes_per_s`
 - **Decision affected:** Transport term of the cost model; direct-peer value; provisioning estimates.
 
 ### HQ-NET-02
@@ -167,15 +196,18 @@ Windows pinned-memory behaviour.
 **Direct Node-to-Node forwarding versus Father relay** — status: `pending`
 
 - **Purpose:** Measure per-round latency and Father NIC load of the direct peer path versus relay with real models.
-- **Command:** `clusterlm-bench cluster --plan <plan> --direct-peer on,off --q 1,4 --out results/peer-vs-relay.json`
+- **Command:** `clusterlm-bench cluster --plan <plan> --compare-routing --q 1,4 --out results/peer-vs-relay.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
-  - round latency
+  - round latency, direct Node->Node forwarding vs Father relay
   - boundary bytes per emitted token
-  - Father NIC bytes
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-NET-02"`; metrics `round.remote_ms`, `round.boundary_payload_bytes`
+  - per-stage compute vs wait time
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-NET-02"`; metrics `direct.q<q>.round_ms`, `relay.q<q>.round_ms`, `direct.q<q>.boundary_bytes_per_emitted_token`, `relay.q<q>.boundary_bytes_per_emitted_token`, `direct.q<q>.stage.remote_wait_ms`
 - **Decision affected:** Whether the direct peer path is required for qualification (SHOULD HAVE).
+- **Not yet measurable by `clusterlm-bench`:**
+  - Father NIC byte counters (OS-level) are not sampled; boundary payload bytes per round are recorded instead
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PROV-01
 
@@ -187,20 +219,22 @@ Windows pinned-memory behaviour.
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
   - bytes per Node
-  - Father read MB/s
-  - wire MB/s
-  - Node hash/seal time
-  - upload time
-  - PlanReady latency
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PROV-01"`; metrics `prepare.total_ms`, `prepare.node_ms`, `prepare.bytes`
+  - wire provisioning bytes/s per Node
+  - Node-side prepare time (hash, seal, map, allocate)
+  - PlanReady latency as seen by Father
+  - repeated cold prepare/release cycles
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PROV-01"`; metrics `prepare.total_ms`, `prepare.node.<node>.ms`, `prepare.node.<node>.node_side_ms`, `prepare.node.<node>.provision_bytes_per_s`, `prepare.node.<node>.bytes`
 - **Decision affected:** Lease amortization in placement; UI preparation estimates (PERF-03).
+- **Not yet measurable by `clusterlm-bench`:**
+  - Father disk read MB/s and the Node hash/upload split are not separated (only total Node-side prepare time)
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-REL-01
 
 **Release and cleanup latency under real drivers** — status: `pending`
 
 - **Purpose:** Verify activity-driven release targets: stop new work <=250 ms, cooperative release <1 s, 2 s worker deadline, storage reclaimed <=10 s after termination.
-- **Command:** `clusterlm-bench faults --release-cycles 20 --trigger local-activity --phases prepare,ready,inference --out results/release-<machine>.json`
+- **Command:** `clusterlm-bench faults --release-cycles 20 --on-target --machine-id <machine> --out results/release-<machine>.json`
 - **Machines:** Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -209,23 +243,28 @@ Windows pinned-memory behaviour.
   - forced termination count
   - storage reclaim time
   - p95 and worst case
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-REL-01"`; metrics `release.stop_ms`, `release.cooperative_ms`, `release.storage_reclaim_ms`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-REL-01"`; metrics `release_cycles.release_ms`, `release_cycles.prepare_ms`, `local_activity.release_observed_ms`
 - **Decision affected:** REL-01, PERF-04; Job Object deadline values.
+- **Not yet measurable by `clusterlm-bench`:**
+  - `faults` always runs its full scenario set (all lifecycle phases); selecting a trigger/phase subset is not implemented
+  - forced-termination counts under the real Windows service supervisor (node/service) are exercised by its own tests, not by this command
 
 ### HQ-STORE-01
 
 **Filesystem census including backend caches and native packs** — status: `pending`
 
 - **Purpose:** Prove no application-owned model bytes remain anywhere after release, including backend caches outside the staging root.
-- **Command:** `clusterlm-bench faults --census full --kill-phases transfer,hashing,packing,mapping,allocation,ready,inference,cleanup --out results/census-<machine>.json`
+- **Command:** `clusterlm-bench faults --on-target --machine-id <machine> --out results/census-<machine>.json`
 - **Machines:** Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
   - bytes under staging root
   - bytes in backend cache dirs (CUDA cache, temp, AppData)
   - files created during lease (ETW/procmon diff)
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-STORE-01"`; metrics `census.residual_bytes`, `census.unexpected_paths`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-STORE-01"`; metrics `crash_<phase>.detect_ms`, `post_release_census_zero`
 - **Decision affected:** STORE-01..04 acceptance.
+- **Not yet measurable by `clusterlm-bench`:**
+  - census covers the staging root only; backend cache directories (CUDA cache, temp, AppData) and ETW/procmon file diffs are not collected by the tool
 
 ### HQ-NUM-01
 
@@ -252,27 +291,32 @@ Windows pinned-memory behaviour.
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
-  - A per workload category
-  - draft_ms
-  - verify ms per stage
-  - p95/p99 inter-token gaps
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-MTP-01"`; metrics `mtp.acceptance_mean`, `mtp.draft_ms`, `round.total_ms`
+  - proposed vs accepted draft positions and accepted tokens per round, per corpus file
+  - draft, verify (per stage compute and wait) and commit times
+  - round-time distribution incl. p95/p99
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-MTP-01"`; metrics `q<q>.mtp.acceptance_rate`, `q<q>.mtp.accepted_tokens_per_round`, `q<q>.draft_ms`, `q<q>.verify_ms`, `q<q>.round_ms`
 - **Decision affected:** Production q; whether MTP is enabled (SHOULD HAVE).
+- **Not yet measurable by `clusterlm-bench`:**
+  - acceptance on real text: the corpus is tokenized as bytes for the fixture model; real corpora need the Father tokenizer and the real MTP head
+  - inter-token gap distribution (round time distribution is recorded)
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PLACE-01
 
 **Placement calibration: predicted versus measured** — status: `pending`
 
 - **Purpose:** Run the top placement candidates end-to-end and compare against the cost model; determine optimal layer boundaries and node order.
-- **Command:** `clusterlm-bench placement --profiles results/ --model <ultra-dir> --top 6 --execute --out results/placement.json`
+- **Command:** `clusterlm-bench placement --profiles results --father profile-<father>.json --node profile-<node-a>.json --node profile-<node-b>.json --network network-<father>.json --context 4096 --q 4 --out results/placement.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
   - predicted vs measured decode/prefill/prepare per candidate
   - both node orders
   - Father prefix/tail sizes
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PLACE-01"`; metrics `placement.prediction_error`, `placement.best_plan`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PLACE-01"`; metrics `placement.report`, `placement.weakest_input_provenance`
 - **Decision affected:** Optimal layer boundaries, expert residency, recommended plan.
+- **Not yet measurable by `clusterlm-bench`:**
+  - predicted-vs-measured comparison per candidate (executing candidate plans) requires the real backend; the command currently produces the ranked candidates from the measured profiles
 
 ### HQ-P0A-01
 
@@ -334,9 +378,12 @@ Windows pinned-memory behaviour.
   - p95/p99 inter-token gaps
   - worst stall
   - accepted tokens per round
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-01"`; metrics `decode_tok_s.median`, `decode_tok_s.p10`, `gap_ms.p99`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-01"`; metrics `q<q>.decode_tok_s`, `q<q>.round_ms`, `q<q>.accepted_per_round`, `q<q>.prefill_tok_s`
 - **Decision affected:** Ultra 20+ tok/s claim (pass/fail recorded honestly).
 - **Acceptance:** median >= 20 emitted tok/s per category at 4K/8K
+- **Not yet measurable by `clusterlm-bench`:**
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
+  - inter-token gap distribution (round time distribution incl. max is recorded)
 
 ### HQ-PERF-02
 
@@ -351,39 +398,45 @@ Windows pinned-memory behaviour.
   - state bytes per domain
   - CPU miss fraction change
   - hard paging events
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-02"`; metrics `decode_tok_s.median`, `state_bytes`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-02"`; metrics `ctx<N>.q<q>.decode_tok_s`, `ctx<N>.q<q>.prefill_tok_s`
 - **Decision affected:** Per-context placement profiles; UI context limits.
+- **Not yet measurable by `clusterlm-bench`:**
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
+  - state bytes per domain, CPU miss fraction and hard paging events need backend counters
 
 ### HQ-PERF-03
 
 **Cold preparation, cold TTFT and warm TTFT** — status: `pending`
 
 - **Purpose:** Separate preparation from first-token latency and warm follow-up latency (PERF-03).
-- **Command:** `clusterlm-bench cluster --tier ultra --measure cold-prepare,cold-ttft,warm-ttft --repeat 5 --out results/ttft.json`
+- **Command:** `clusterlm-bench cluster --tier ultra --repeat 5 --out results/ttft.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
   - prepare_s
   - cold TTFT
   - warm TTFT
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-03"`; metrics `prepare.total_ms`, `ttft_ms.cold`, `ttft_ms.warm`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-03"`; metrics `prepare.total_ms`, `q<q>.ttft_cold_ms`, `q<q>.ttft_warm_ms`
 - **Decision affected:** UI estimates; keep-ready policy.
+- **Not yet measurable by `clusterlm-bench`:**
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PERF-04
 
 **Sustained run and repeated release/reprepare cycles** — status: `pending`
 
 - **Purpose:** 30-minute sustained laptop run and >=20 full release/reprepare cycles without memory creep or slowing cleanup.
-- **Command:** `clusterlm-bench cluster --tier ultra --sustained 30m --release-cycles 20 --out results/soak.json`
+- **Command:** `clusterlm-bench cluster --tier ultra --minutes 30 --out results/soak.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
-  - tok/s over time
-  - RSS/commit/VRAM per cycle
-  - release time per cycle
-  - residual bytes per cycle
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-04"`; metrics `soak.tok_s_trend`, `soak.memory_creep_bytes`, `soak.release_ms_trend`
+  - decode tok/s over time (sustained factor, slope, equilibrium)
+  - 20 release cycles are exercised by HQ-REL-01 (`faults --release-cycles 20`)
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-04"`; metrics `sustained.initial_decode_tok_s`, `sustained.final_decode_tok_s`, `sustained.factor`, `sustained.slope_pct_per_min`, `sustained.time_to_equilibrium_s`
 - **Decision affected:** PERF-04 acceptance.
+- **Not yet measurable by `clusterlm-bench`:**
+  - RSS/commit/VRAM sampling per cycle
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-STRONG-01
 
@@ -397,8 +450,10 @@ Windows pinned-memory behaviour.
   - decode/prefill tok/s
   - acceptance
   - residency
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-STRONG-01"`; metrics `decode_tok_s.median`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-STRONG-01"`; metrics `q<q>.decode_tok_s`, `q<q>.accepted_per_round`
 - **Decision affected:** Strong tier claims.
+- **Not yet measurable by `clusterlm-bench`:**
+  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-FAST-01
 

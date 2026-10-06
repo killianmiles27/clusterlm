@@ -16,6 +16,11 @@ namespace clusterlm::bench {
 struct Distribution {
   std::vector<double> samples;
   void add(double v) { samples.push_back(v); }
+  bool empty() const { return samples.empty(); }
+  double mean() const;
+  double stddev() const;               // sample standard deviation (0 for fewer than two samples)
+  double percentile(double p) const;   // linear interpolation, p in [0,1]; 0 when empty
+  double median() const { return percentile(0.5); }
   nlohmann::json to_json(const std::string& unit) const;
 };
 
@@ -24,6 +29,10 @@ class BenchmarkResult {
   BenchmarkResult(std::string experiment, const HostInfo& host);
 
   void set_measured() { provenance_ = "Measured"; }
+  // "development-host" (default), "father" or "node"; the latter two only when the operator asserts the run is on
+  // that target machine (--on-target). The tool cannot verify it; qualification review does.
+  void set_host_role(const std::string& role, const std::string& machine_id);
+  void set_gpu(const std::string& name, const std::string& driver);
   void mark_simulated(const std::string& key, nlohmann::json value);
   void config(const std::string& key, nlohmann::json value) { doc_["configuration"][key] = std::move(value); }
   void metric(const std::string& key, nlohmann::json value) { doc_["metrics"][key] = std::move(value); }
