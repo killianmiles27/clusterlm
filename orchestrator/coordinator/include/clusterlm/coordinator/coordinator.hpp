@@ -77,7 +77,7 @@ struct CoordinatorConfig {
   std::chrono::milliseconds window_timeout{30'000};
   std::chrono::milliseconds prepare_timeout{600'000};
   int provision_retries = 3;          // bulk-channel reconnects within one uninterrupted lease
-  int commit_retries = 1;             // idempotent CommitWindow resends after an acknowledgement timeout
+  int commit_retries = 2;             // idempotent CommitWindow resends after an acknowledgement timeout (backoff x2)
 };
 
 struct NodeProvisionReport {

@@ -35,6 +35,9 @@ class Rng {
   std::uint64_t s_[4];
 };
 
+// Combine two values into a well-mixed 64-bit seed (independent streams for nearby inputs).
+std::uint64_t mix_seed(std::uint64_t a, std::uint64_t b);
+
 std::int32_t argmax_token(std::span<const float> logits);
 // Target distribution after temperature, top-k and top-p (probabilities sum to 1; filtered tokens are 0).
 std::vector<float> distribution(std::span<const float> logits, const SamplingParams& params);

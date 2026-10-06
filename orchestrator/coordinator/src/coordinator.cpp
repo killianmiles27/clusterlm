@@ -157,6 +157,8 @@ class Inbox {
  public:
   void push(ReceivedMessage m) {
     std::lock_guard lock(mu_);
+    if (m.correlation != 0 && std::find(discarded_.begin(), discarded_.end(), m.correlation) != discarded_.end())
+      return;
     items_.push_back(std::move(m));
     cv_.notify_all();
   }
@@ -164,6 +166,15 @@ class Inbox {
     std::lock_guard lock(mu_);
     closed_ = std::move(why);
     cv_.notify_all();
+  }
+  // Remember a correlation whose reply (if it ever arrives) is no longer wanted.
+  void discard_correlation(std::uint64_t corr) {
+    std::lock_guard lock(mu_);
+    items_.erase(std::remove_if(items_.begin(), items_.end(),
+                                [corr](const ReceivedMessage& m) { return m.correlation == corr; }),
+                 items_.end());
+    discarded_.push_back(corr);
+    if (discarded_.size() > 64) discarded_.erase(discarded_.begin());
   }
   // Drop everything queued (results and loss notices of a previous plan's streams).
   void clear() {
@@ -193,6 +204,7 @@ class Inbox {
   std::mutex mu_;
   std::condition_variable cv_;
   std::deque<ReceivedMessage> items_;
+  std::vector<std::uint64_t> discarded_;
   std::optional<Status> closed_;
 };
 
@@ -689,19 +701,27 @@ struct Coordinator::Impl {
     }
     for (auto& p : pending) {
       Result<ReceivedMessage> reply = make_error(ErrorCode::kDeadlineExceeded, "no ack");
+      std::vector<std::uint64_t> corrs{p.corr};
+      auto timeout = cfg.request_timeout;
       for (int attempt = 0;; ++attempt) {
-        const auto want = p.corr;
-        reply = p.node->control->inbox.wait([want](const ReceivedMessage& r) { return r.correlation == want; },
-                                            cfg.request_timeout);
+        // Either the original commit's ack (merely delayed) or a replay's ack settles the outcome.
+        reply = p.node->control->inbox.wait(
+            [&corrs](const ReceivedMessage& r) {
+              return std::find(corrs.begin(), corrs.end(), r.correlation) != corrs.end();
+            },
+            timeout);
         if (reply.is_ok() || reply.status().code() != ErrorCode::kDeadlineExceeded || attempt >= cfg.commit_retries)
           break;
-        // Unknown commit outcome: resend the same commit. Replays are idempotent on the Node.
+        // Unknown commit outcome: resend the same commit (idempotent on the Node) and wait longer.
         log::warn("commit_ack_timeout_retry", {{"node", p.node->endpoint.name}, {"window", req.window.str()}});
-        p.corr = p.node->control->stream->next_correlation();
-        CLM_RETURN_IF_ERROR(p.node->control->stream->send(protocol::CommitWindow{c, p.stage}, p.corr));
+        corrs.push_back(p.node->control->stream->next_correlation());
+        CLM_RETURN_IF_ERROR(p.node->control->stream->send(protocol::CommitWindow{c, p.stage}, corrs.back()));
         ++trace.commit_retries;
         ++trace.control_messages;
+        timeout *= 2;
       }
+      // Drop whichever duplicate ack arrives later for this commit.
+      for (auto corr : corrs) p.node->control->inbox.discard_correlation(corr);
       if (!reply.is_ok()) return reply.status();
       ++trace.control_messages;
       if (auto* e = std::get_if<protocol::ErrorMessage>(&reply->message)) return make_error(e->code, e->message);
@@ -968,7 +988,8 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
   GenerationResult out;
   out.epoch = cs.epoch;
   out.session = cs.session;
-  domain::Rng rng(request.sampling.seed ^ cs.session.value);
+  // A non-zero seed makes the turn reproducible; seed 0 derives one from the session (still deterministic).
+  domain::Rng rng(request.sampling.seed != 0 ? request.sampling.seed : domain::mix_seed(cs.session.value, cs.position));
   Stopwatch total;
 
   // Distributed failures invalidate the session everywhere; Father keeps its history for a re-prefill.

@@ -34,6 +34,13 @@ std::uint64_t Rng::next() {
 
 double Rng::uniform() { return static_cast<double>(next() >> 11) * 0x1.0p-53; }
 
+std::uint64_t mix_seed(std::uint64_t a, std::uint64_t b) {
+  std::uint64_t x = a;
+  std::uint64_t h = splitmix(x);
+  x = b ^ 0xD1B54A32D192ED03ull;
+  return h ^ (splitmix(x) * 0x9E3779B97F4A7C15ull);
+}
+
 std::int32_t argmax_token(std::span<const float> logits) {
   std::size_t best = 0;
   for (std::size_t i = 1; i < logits.size(); ++i)

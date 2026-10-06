@@ -1,0 +1,2 @@
+clusterlm_test(test_transactions SOURCES test_transactions.cpp test_sampling.cpp
+  DEPS clusterlm_coordinator clusterlm_node_worker clusterlm_domain clusterlm_objects)
