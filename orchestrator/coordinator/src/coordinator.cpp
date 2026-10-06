@@ -237,6 +237,9 @@ struct RemoteNode {
   std::unique_ptr<StreamWithInbox> provision;
   std::optional<StagePlan> stage;
   NodeProvisionReport provision_report;
+  // Set when the Node released its lease on its own (local activity, fault) — Father learns it from an
+  // unsolicited ReleaseComplete. The plan is no longer executable on this Node.
+  std::optional<protocol::ReleaseComplete> self_released;
 };
 
 struct Coordinator::Impl {
@@ -278,6 +281,39 @@ struct Coordinator::Impl {
     n.lease = ack.lease;
     if (start_reader) s->start();
     return s;
+  }
+
+  // Apply unsolicited Node events: new resource offers (next lease generation) and self-initiated releases.
+  void drain_events(RemoteNode& n) {
+    if (!n.control) return;
+    while (true) {
+      auto ev = n.control->inbox.wait(
+          [](const ReceivedMessage& r) {
+            return r.correlation == 0 && (std::holds_alternative<protocol::OfferResources>(r.message) ||
+                                          std::holds_alternative<protocol::ReleaseComplete>(r.message));
+          },
+          0ms);
+      if (!ev.is_ok()) return;
+      if (auto* offer = std::get_if<protocol::OfferResources>(&ev->message)) {
+        n.offer = *offer;
+        n.lease = offer->lease;
+      } else if (auto* rc = std::get_if<protocol::ReleaseComplete>(&ev->message)) {
+        log::warn("node_released_lease", {{"node", n.endpoint.name}, {"lease", rc->lease.str()},
+                                           {"storage_cleaned", rc->storage_cleaned ? "1" : "0"}});
+        n.self_released = *rc;
+      }
+    }
+  }
+
+  Status check_nodes_ready() {
+    for (const auto* s : remote_stages()) {
+      auto& n = node_for(*s);
+      drain_events(n);
+      if (n.self_released)
+        return make_error(ErrorCode::kUnavailable, "Node " + n.endpoint.name + " released its lease");
+      if (!n.control || !n.activation) return make_error(ErrorCode::kUnavailable, "Node " + n.endpoint.name + " lost");
+    }
+    return Status::ok();
   }
 
   RemoteNode& node_for(const StagePlan& s) { return *nodes.at(static_cast<std::size_t>(s.domain)); }
@@ -554,6 +590,10 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan) {
   const auto& m = im.store->manifest();
   CLM_RETURN_IF_ERROR(plan.validate(m.geometry, im.nodes.size()));
   if (im.prepared) return make_error(ErrorCode::kFailedPrecondition, "release the current plan first");
+  for (auto& n : im.nodes) {
+    im.drain_events(*n);
+    n->self_released.reset();
+  }
   Stopwatch sw;
   im.plan = plan;
   im.plan_hash = plan.hash(m.root_hash());
@@ -608,6 +648,7 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
   if (request.q > 1 && !request.drafter) return make_error(ErrorCode::kInvalidArgument, "q > 1 requires a drafter");
   const std::uint32_t chunk = std::min(request.prefill_chunk, im.plan->max_window);
   const auto vocab = im.store->manifest().geometry.vocab_size;
+  CLM_RETURN_IF_ERROR(im.check_nodes_ready());
 
   GenerationResult out;
   im.epoch = im.epoch.next();
@@ -718,14 +759,18 @@ Result<ReleaseReport> Coordinator::release() {
   auto& im = *impl_;
   ReleaseReport report;
   for (auto& n : im.nodes) {
-    if (!n->control) continue;
+    if (!n->control || !n->stage) continue;
+    im.drain_events(*n);
     Stopwatch sw;
     if (n->activation) n->activation->shutdown();
     n->activation.reset();
     if (n->provision) n->provision->shutdown();
     n->provision.reset();
-    auto rc = n->control->call<protocol::ReleaseComplete>(
-        protocol::ReleaseLease{n->lease, protocol::ReleaseReason::kFatherRequest}, im.cfg.request_timeout);
+    Result<protocol::ReleaseComplete> rc =
+        n->self_released ? Result<protocol::ReleaseComplete>(*n->self_released)
+                         : n->control->call<protocol::ReleaseComplete>(
+                               protocol::ReleaseLease{n->lease, protocol::ReleaseReason::kFatherRequest},
+                               im.cfg.request_timeout);
     ReleaseReport::NodeRelease nr;
     nr.node = n->endpoint.name;
     nr.release_ms = sw.elapsed_ms();
@@ -736,14 +781,23 @@ Result<ReleaseReport> Coordinator::release() {
       nr.errors = rc->errors;
     } else {
       nr.errors = rc.status().to_string();
+      if (rc.status().code() == ErrorCode::kUnavailable) {
+        // The Node is gone (crash / Father-side link loss). Its own restart runs orphan recovery; Father
+        // reconnects on the next connect().
+        n->control->shutdown();
+        n->control.reset();
+      }
     }
-    // The Node re-offers under its next lease generation.
-    auto offer = n->control->inbox.wait(
-        [](const ReceivedMessage& r) { return std::holds_alternative<protocol::OfferResources>(r.message); }, 2s);
-    if (offer.is_ok()) {
-      n->offer = std::get<protocol::OfferResources>(offer->message);
-      n->lease = n->offer.lease;
+    // An Available Node re-offers under its next lease generation (a Busy one offers later).
+    if (!n->self_released && n->control) {
+      auto offer = n->control->inbox.wait(
+          [](const ReceivedMessage& r) { return std::holds_alternative<protocol::OfferResources>(r.message); }, 2s);
+      if (offer.is_ok()) {
+        n->offer = std::get<protocol::OfferResources>(offer->message);
+        n->lease = n->offer.lease;
+      }
     }
+    n->self_released.reset();
     n->stage.reset();
     report.nodes.push_back(std::move(nr));
   }

@@ -775,8 +775,11 @@ NodeStatus NodeWorker::status() const {
   std::lock_guard lock(impl_->mu);
   NodeStatus s = impl_->counters;
   s.state = impl_->state;
+  // Application-owned staged bytes: everything under the staging root except the content-free journal.
   auto census = platform::allocated_bytes_under(impl_->store->root());
-  s.staging_census_bytes = census.is_ok() ? census.value() : ~std::uint64_t{0};
+  std::error_code ec;
+  const auto journal = std::filesystem::file_size(impl_->store->root() / "journal.log", ec);
+  s.staging_census_bytes = !census.is_ok() ? ~std::uint64_t{0} : census.value() - (ec ? 0 : std::min(journal, census.value()));
   return s;
 }
 
