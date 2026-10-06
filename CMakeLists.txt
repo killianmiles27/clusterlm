@@ -48,6 +48,7 @@ foreach(module
     orchestrator/coordinator
     orchestrator/planning
     node/worker
+    node/service
     bench
     apps)
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${module}/CMakeLists.txt)

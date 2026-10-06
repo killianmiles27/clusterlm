@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "cli.hpp"
 #include "clusterlm/common/log.hpp"
@@ -81,11 +82,14 @@ int main(int argc, char** argv) {
       cfg.faults->add_rule(r.value());
     }
   }
-  if (args.has("crash-at")) {
-    // Fault-injection hook for ClusterLM Bench: terminate abruptly at a lifecycle phase, as a crash would.
-    const std::string at = args.get("crash-at");
-    cfg.phase_hook = [at](std::string_view phase) {
-      if (phase == at) std::_Exit(42);
+  if (args.has("crash-at") || args.has("hang-at")) {
+    // Fault-injection hooks for ClusterLM Bench: terminate abruptly (crash) or block forever (hung driver /
+    // stuck worker) at a lifecycle phase. Never used in production.
+    const std::string crash = args.get("crash-at"), hang = args.get("hang-at");
+    cfg.phase_hook = [crash, hang](std::string_view phase) {
+      if (phase == crash) std::_Exit(42);
+      if (phase == hang)
+        for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
     };
   }
 

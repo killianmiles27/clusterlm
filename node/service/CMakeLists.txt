@@ -1,0 +1,1 @@
+clusterlm_module(clusterlm_node_service SOURCES src/supervisor.cpp DEPS clusterlm_platform clusterlm_common)
