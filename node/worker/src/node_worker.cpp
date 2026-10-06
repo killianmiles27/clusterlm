@@ -12,6 +12,7 @@
 #include "clusterlm/common/log.hpp"
 #include "clusterlm/domain/backend_adapter.hpp"
 #include "clusterlm/lease/lease_store.hpp"
+#include "clusterlm/platform/fs_safety.hpp"
 #include "clusterlm/protocol/wire.hpp"
 
 namespace clusterlm::node {
@@ -106,8 +107,10 @@ struct NodeWorker::Impl {
 
   // ---- helpers ---------------------------------------------------------------------------------------
 
+  // Lifecycle phases are reported through the lease store so its crash hook (and the bench's
+  // --crash-at fault injection) sees every phase exactly once per occurrence.
   void phase(std::string_view name) {
-    if (cfg.phase_hook) cfg.phase_hook(name);
+    if (store) store->notify_phase(name);
   }
 
   std::unique_ptr<transport::Connection> wrap(std::unique_ptr<transport::Connection> c) {
@@ -316,7 +319,8 @@ struct NodeWorker::Impl {
       auto created = store->create_object(a.object_index, obj.byte_size, obj.object_digest, placement);
       if (!created.is_ok()) {
         (void)store->release();
-        return created;
+        lease = lease.next();
+        return created.status();
       }
     }
     plan = p;
@@ -417,7 +421,9 @@ struct NodeWorker::Impl {
     std::lock_guard lock(mu);
     if (c.lease != lease || state != NodeState::kPreparing)
       return make_error(ErrorCode::kStaleEpoch, "chunk for a stale or inactive lease");
-    CLM_RETURN_IF_ERROR(store->write_chunk(c.object_index, c.offset, c.data, c.chunk_digest));
+    auto* writer = store->find_object(c.object_index);
+    if (writer == nullptr) return make_error(ErrorCode::kNotFound, "chunk for an object not in the plan");
+    CLM_RETURN_IF_ERROR(writer->write_chunk(c.offset, c.data, c.chunk_digest));
     counters.provisioned_bytes += c.data.size();
     return Status::ok();
   }
@@ -432,7 +438,9 @@ struct NodeWorker::Impl {
       const auto& obj = plan->manifest.objects.at(s.object_index);
       if (s.total_length != obj.byte_size || s.object_digest != obj.object_digest)
         return make_error(ErrorCode::kDataLoss, "seal does not match the plan manifest");
-      CLM_RETURN_IF_ERROR(store->seal(s.object_index));
+      auto* writer = store->find_object(s.object_index);
+      if (writer == nullptr) return make_error(ErrorCode::kNotFound, "seal for an object not in the plan");
+      CLM_RETURN_IF_ERROR(writer->seal());
       complete = ++sealed_count == plan->assignments.size();
     }
     if (complete) finish_prepare();
@@ -741,8 +749,10 @@ Result<std::unique_ptr<NodeWorker>> NodeWorker::start(NodeConfig config) {
   CLM_ASSIGN_OR_RETURN(impl->store, lease::LeaseStore::open(impl->cfg.staging_root, opts));
 
   CLM_ASSIGN_OR_RETURN(impl->listener, transport::listen(impl->cfg.listen, impl->cfg.security));
-  impl->lease = LeaseGeneration{1};
-  impl->counters.lease_generation = 1;
+  // Lease generations strictly increase across restarts (the journal remembers the highest one), so a
+  // message naming any earlier lease is stale even after a crash.
+  impl->lease = LeaseGeneration{impl->store->last_generation() + 1};
+  impl->counters.lease_generation = impl->lease.value;
   impl->set_state(impl->cfg.start_busy ? NodeState::kBusy : NodeState::kAvailable);
   Impl* raw = impl.get();
   impl->accept_thread = std::thread([raw] { raw->accept_loop(); });
@@ -761,7 +771,7 @@ NodeStatus NodeWorker::status() const {
   std::lock_guard lock(impl_->mu);
   NodeStatus s = impl_->counters;
   s.state = impl_->state;
-  auto census = impl_->store->census();
+  auto census = platform::allocated_bytes_under(impl_->store->root());
   s.staging_census_bytes = census.is_ok() ? census.value() : ~std::uint64_t{0};
   return s;
 }
