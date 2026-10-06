@@ -27,8 +27,8 @@ class DeviceIdentity {
   static Result<DeviceIdentity> load(const std::filesystem::path& dir);
   // Loads the identity from `dir`, or generates and saves one if `dir` holds none (first run / pairing).
   static Result<DeviceIdentity> load_or_generate(const std::filesystem::path& dir, std::string_view common_name);
-  // Writes both PEM files (creating `dir`). The key file is mode 0600 on POSIX; on Windows it inherits the
-  // ACL of the (per-user) directory, which the caller must choose accordingly.
+  // Writes both PEM files (creating `dir`). The key file is created owner-only: mode 0600 on POSIX; on Windows a
+  // protected DACL granting only the calling account and SYSTEM (platform::write_owner_only_file, ADR 0133).
   Status save(const std::filesystem::path& dir) const;
 
   // Lowercase hex SHA-256 of the DER certificate: the device_id.

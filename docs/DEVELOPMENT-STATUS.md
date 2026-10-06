@@ -45,11 +45,12 @@ Father, G14 or 3060 machines.
 | llama.cpp RPC baseline | `runtime/backends/llama` skeleton; analysis in `docs/backends/llama-rpc.md` (P0-A) |
 | Windows adapters | Real Win32 implementations for activity, power, Job Objects, DXGI budget and file mapping, plus mocks for tests. They compile only on Windows |
 | Node service supervisor | `node/service`: policy (idle, lock, AC, power saver), cooperative revocation with 2 s deadline, Job Object termination + relaunch with orphan recovery |
-| Windows service host, tray, installer, firewall rules, session-helper IPC | Not yet implemented — product surfaces after the runtime lifecycle |
+| Windows service host, session helper, named-pipe IPC, power/session notifications, firewall rules, key/staging ACLs | Implemented against Win32/COM (SCM host, `\\.\pipe` IPC with DACL and peer checks, WTS/power notifications, `INetFwPolicy2`, owner-only DACLs); logic tested on Linux with mocks and Unix sockets, Win32 code type-checked with MinGW/MSVC only. Real behaviour is pending `HQ-WIN-01`..`HQ-WIN-04`. See `docs/windows-architecture.md` |
+| Tray icon, installer, pairing UX | Not yet implemented — product surfaces after the runtime lifecycle |
 
 ## Known gaps / next engineering steps (no hardware required)
 
-1. ~~Node service supervisor~~ — done: `node/service` (`NodeSupervisor`, `clusterlm-node-service`), tested with a real worker incl. forced termination at the deadline. Remaining: Windows service host + session helper IPC.
+1. ~~Node service supervisor~~ — done: `node/service` (`NodeSupervisor`, `clusterlm-node-service`), tested with a real worker incl. forced termination at the deadline. Windows service host, session helper and IPC are now implemented (see `docs/windows-architecture.md`); real-Windows verification pending.
 2. **Prefill chunk pipelining across stages.** Chunks currently flow sequentially, which is correct but not overlapped.
 3. **Streamed provisioning reads on Father.** Objects are read whole before chunking. Bounded streaming reads are
    needed for very large dense objects.
@@ -57,8 +58,7 @@ Father, G14 or 3060 machines.
 5. **Stochastic speculative acceptance.** Greedy verification only so far.
 6. **A runtime-reported allocation ledger from the real backend** (`describe_requirements`) feeding placement
    admission.
-7. **Windows key-file ACL.** The device private key is written with POSIX mode 0600; on Windows it inherits the
-   directory ACL. Restrict it explicitly (owner + SYSTEM only) before pairing ships.
+7. ~~Windows key-file ACL~~ — done: the key is written owner-only (owner account + SYSTEM, protected DACL) via `platform::write_owner_only_file`; ADR 0133. Real ACL inspection pending `HQ-WIN-04`.
 8. **Product surfaces** (Father UI, tray, installer, pairing UX) after the lifecycle above is exercised on hardware.
 
 ## Pending hardware qualification

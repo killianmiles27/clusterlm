@@ -718,6 +718,149 @@
       },
       "decision_affected": "Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.",
       "status": "pending"
+    },
+    {
+      "id": "HQ-WIN-01",
+      "title": "Node Windows service install, start, stop and recovery",
+      "purpose": "Verify on real Windows 11 that the ClusterLM Node service installs under LocalService with delayed auto start, supervises the worker in a Job Object, stops and shuts down cleanly and recovers from crashes.",
+      "command": "manual: docs/windows-architecture.md#hq-win-01 (elevated PowerShell on each Node; clusterlm-node-service.exe --install)",
+      "machines": [
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (fixture worker, no model)",
+      "measurements": [
+        "Install: `clusterlm-node-service.exe --install --port 47600`, then `sc qc ClusterLMNode` shows START_TYPE AUTO_START (DELAYED) and SERVICE_START_NAME NT AUTHORITY\\LocalService; `sc qfailure ClusterLMNode` shows RESTART at 5000/30000/60000 ms with reset period 86400 s; `sc qsidtype ClusterLMNode` shows UNRESTRICTED; `sc qpreshutdowninfo ClusterLMNode` shows 15000 ms",
+        "Reboot without logging in: after the delayed-start window `sc query ClusterLMNode` is RUNNING and Process Explorer shows clusterlm-node.exe as a member of the job `ClusterLM-Node-Worker`",
+        "`sc stop ClusterLMNode`: STOP_PENDING then STOPPED (record seconds), clusterlm-node.exe is gone, the staging root holds 0 bytes, the Event Log shows no service error",
+        "`taskkill /F /IM clusterlm-node.exe`: the service relaunches the worker (record seconds) and it reports Busy with 0 staged bytes",
+        "`taskkill /F /IM clusterlm-node-service.exe`: SCM restarts the service after about 5 s; the old worker is gone (kill-on-job-close) and the new worker starts Busy",
+        "Orderly OS shutdown/restart while an offered Node holds a lease: the staging root is empty at next boot before the service listens (preshutdown handler)",
+        "`clusterlm-node-service.exe --uninstall` removes the service; running `--install` twice is idempotent"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-WIN-01",
+        "metrics": [
+          "service.start_type",
+          "service.account",
+          "service.stop_seconds",
+          "service.worker_relaunch_seconds",
+          "service.crash_restart_seconds",
+          "service.staged_bytes_after_shutdown"
+        ]
+      },
+      "decision_affected": "Service account, recovery policy, preshutdown timeout and wait hints (ADR 0131).",
+      "acceptance": "every step behaves as written on both Nodes; stop <= 5 s; worker relaunch <= 2 s; no staged bytes after any stop, crash or shutdown; no orphan clusterlm-node.exe after any service termination",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-WIN-02",
+      "title": "Session helper activity, lock, suspend/resume and AC/battery transitions",
+      "purpose": "Verify that the per-session helper reports real input idle time and lock state to the service, that the Node fails closed when the helper is silent, and that suspend, resume and power-source changes revoke and re-offer as designed.",
+      "command": "manual: docs/windows-architecture.md#hq-win-02 (service running with --idle-seconds 60; helper started at logon without --stdin)",
+      "machines": [
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (fixture worker, no model)",
+      "measurements": [
+        "Helper start: log on interactively; within 5 s `tasklist /FI \"IMAGENAME eq clusterlm-node-helper.exe\"` lists exactly one helper in the session (a second simultaneous session gets its own); the service reports fresh helper reports",
+        "Idle: leave keyboard and mouse untouched for 60 s: the service emits `offered`; move the mouse once: `revoked` with latency_ms and residual_bytes 0 (record latency)",
+        "Lock: press Win+L; within 2 s the helper reports locked and the Node offers although idle < 60 s (participate_when_locked); unlock: the next report clears the lock state; touching the keyboard revokes",
+        "Remote desktop / fast user switching: connect and disconnect a second session; the logged-off session no longer counts and the Node is not pinned Busy by its stale report",
+        "Helper silence: `taskkill /F /IM clusterlm-node-helper.exe` while offered: within the stale window (5 s) the service revokes (record seconds); with no helper running the Node stays Busy; the helper returns at next logon (ADR 0132)",
+        "Unauthorized client: a helper copy started by a second standard user, and a process in session 0 (PsExec -s), are refused by the pipe ACL / AuthPolicy; a report naming another session is rejected",
+        "Suspend: offer a Node holding a lease, then `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` (or close the lid): after wake the staging root is empty, no Father involvement was needed (the Node released locally), the Node resumes Busy and offers again only after fresh helper reports satisfy policy",
+        "AC/battery (G14): unplug AC while offered: revoked within 1 s (record); plug in: offers again once policy is satisfied; Battery Saver on: Node unavailable under the default policy",
+        "Hibernate and modern standby where available: same expectations as suspend; record which PBT events arrived (service log at debug level)"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-WIN-02",
+        "metrics": [
+          "helper.report_latency_ms",
+          "revocation.input_latency_ms",
+          "revocation.helper_silence_seconds",
+          "revocation.suspend_residual_bytes",
+          "revocation.power_source_latency_ms",
+          "helper.unauthorized_connections_accepted"
+        ]
+      },
+      "decision_affected": "Staleness window, report interval, idle default, whether suspend revocation needs a deadline shorter than 2 s, and whether modern standby needs extra handling.",
+      "acceptance": "input-to-Busy <= 2 s at p95 over 20 trials; helper-silence revocation <= stale window + 1 s; zero staged bytes after every revocation and every resume; zero unauthorized connections accepted; no offer ever made while policy is unsatisfied",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-WIN-03",
+      "title": "Firewall rule scope verification",
+      "purpose": "Verify that the inbound Node rule installed through INetFwPolicy2 is scoped exactly as specified (program, TCP port, profiles, remote addresses) and blocks everything else.",
+      "command": "manual: docs/windows-architecture.md#hq-win-03 (`clusterlm-node-service.exe --install --port 47600 --remote <father-ip>`, then PowerShell Get-NetFirewallRule)",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (fixture worker, no model)",
+      "measurements": [
+        "`Get-NetFirewallRule -DisplayName 'ClusterLM Node data (TCP-In)'` with Get-NetFirewallApplicationFilter / PortFilter / AddressFilter: Direction Inbound, Action Allow, Protocol TCP, LocalPort 47600, Program = the installed clusterlm-node.exe, Profile Domain+Private (not Public), RemoteAddress = the given Father address (LocalSubnet when none), EdgeTraversal Block",
+        "Network profile Private: Father connects to the Node data port and the mutual-TLS handshake completes",
+        "Network profile Public (change the adapter category): the same connection from Father times out (`Test-NetConnection <node> -Port 47600` fails)",
+        "Address scope: from a third machine on the same subnet that is not the paired Father (when --remote was given) the connection is refused or times out; with the LocalSubnet default a machine on another subnet cannot connect",
+        "Program scope: a different program listening on 47600 (for example `python -m http.server 47600`) is not reachable from Father",
+        "Idempotence: re-running the installer leaves exactly one rule of that name; uninstall removes it; a rule edited by hand is corrected by the next ensure",
+        "The Windows Security Alert 'allow access' prompt never appears for the worker"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-WIN-03",
+        "metrics": [
+          "firewall.rule_count",
+          "firewall.profiles",
+          "firewall.remote_scope_enforced",
+          "firewall.public_profile_blocked",
+          "firewall.other_program_blocked"
+        ]
+      },
+      "decision_affected": "Default remote scope (LocalSubnet vs paired peers), profile policy, whether Father needs its own inbound rule for direct peer forwarding.",
+      "acceptance": "properties match the spec exactly; a connection succeeds only from the allowed address on Private/Domain profiles to the ClusterLM program; every other combination fails; one rule after repeated installs, none after uninstall",
+      "status": "pending"
+    },
+    {
+      "id": "HQ-WIN-04",
+      "title": "Key and staging ACL verification",
+      "purpose": "Verify with icacls that the device private key and the Node staging root are accessible only to the owning account and SYSTEM, do not inherit, and cannot be read by other users or by administrators without an audited ownership change.",
+      "command": "manual: docs/windows-architecture.md#hq-win-04 (`icacls`, `Get-Acl`; a standard test user `clm-probe`)",
+      "machines": [
+        "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
+        "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
+        "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
+      ],
+      "model": "none (fixture worker, no model)",
+      "measurements": [
+        "Node: `icacls \"%ProgramData%\\ClusterLM\\Node\\identity\\device_key.pem\"` lists only `NT AUTHORITY\\LOCAL SERVICE:(F)` and `NT AUTHORITY\\SYSTEM:(F)`: no `(I)` inherited entries, no BUILTIN\\Users, no BUILTIN\\Administrators",
+        "Node: the same check on `...\\Node\\staging`, `...\\Node\\identity` and a file the worker created below `staging` (children carry the owner+SYSTEM entries as `(OI)(CI)(F)`)",
+        "Father: `icacls \"%LOCALAPPDATA%\\ClusterLM\\identity\\device_key.pem\"` lists only the user and SYSTEM",
+        "As standard user `clm-probe`: `type` of every path above fails with Access denied; as an elevated Administrator `type` also fails until ownership is taken (an audited, deliberate act)",
+        "Delete and re-save the identity (re-pair): Procmon shows device_key.pem created with the protected DACL (no CreateFile with an inherited DACL first)",
+        "Widen the ACL of a key file (`icacls ... /grant Users:R`): the next save tightens it again",
+        "`platform::is_owner_only` agrees with icacls for every path above (run the test_ipc key test built with MSVC on the target)",
+        "A copy or backup of the staging root made by another account contains no model objects while the Node is Busy"
+      ],
+      "output": {
+        "schema": "bench/schema/benchmark-result.schema.json",
+        "experiment": "HQ-WIN-04",
+        "metrics": [
+          "acl.key_principals",
+          "acl.key_inherited_entries",
+          "acl.staging_principals",
+          "acl.standard_user_read_denied",
+          "acl.admin_read_denied_without_takeown"
+        ]
+      },
+      "decision_affected": "Whether owner+SYSTEM-only is sufficient or DPAPI at-rest protection (ADR 0133) is required; whether administrators need a recovery path.",
+      "acceptance": "principal sets are exactly {service account or user, SYSTEM}; no inherited entries; standard users and administrators without takeown are denied; a widened ACL is corrected by the next save",
+      "status": "pending"
     }
   ]
 }

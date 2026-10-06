@@ -123,9 +123,9 @@ Result<std::vector<SupervisorEvent>> NodeSupervisor::tick() {
     CLM_RETURN_IF_ERROR(launch());
     events.push_back({SupervisorEventKind::kWorkerRestarted, 0, 0, "worker exited"});
   }
-  // Fail closed: if policy cannot be read, treat the machine as in use.
+  // Fail closed: if policy cannot be read, treat the machine as in use. A suspended machine is never eligible.
   auto eligible = policy_eligible();
-  const bool now_eligible = eligible.is_ok() && eligible.value();
+  const bool now_eligible = !suspended_ && eligible.is_ok() && eligible.value();
   if (now_eligible && !eligible_) {
     CLM_RETURN_IF_ERROR(worker_->write_line("idle"));
     eligible_ = true;
@@ -135,6 +135,31 @@ Result<std::vector<SupervisorEvent>> NodeSupervisor::tick() {
     CLM_ASSIGN_OR_RETURN(auto ev, revoke());
     events.push_back(std::move(ev));
   }
+  return events;
+}
+
+Result<std::vector<SupervisorEvent>> NodeSupervisor::on_suspend() {
+  std::vector<SupervisorEvent> events;
+  suspended_ = true;
+  // No worker to revoke (never started, or died and not relaunched yet): nothing can be offered anyway.
+  if (!worker_ || !worker_->running()) {
+    eligible_ = false;
+    return events;
+  }
+  if (eligible_) {
+    eligible_ = false;
+    CLM_ASSIGN_OR_RETURN(auto ev, revoke());
+    events.push_back(std::move(ev));
+  }
+  return events;
+}
+
+Result<std::vector<SupervisorEvent>> NodeSupervisor::on_resume() {
+  std::vector<SupervisorEvent> events;
+  suspended_ = false;
+  eligible_ = false;
+  // Whatever happened around the sleep, make sure the worker is Busy; "activity" is idempotent on a Busy worker.
+  if (worker_ && worker_->running()) CLM_RETURN_IF_ERROR(worker_->write_line("activity"));
   return events;
 }
 
