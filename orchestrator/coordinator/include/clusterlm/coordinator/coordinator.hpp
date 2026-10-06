@@ -32,6 +32,7 @@
 
 namespace clusterlm::domain {
 class Drafter;
+class BackendAdapter;
 }
 
 namespace clusterlm::coordinator {
@@ -67,6 +68,9 @@ struct ClusterPlan {
 
 struct CoordinatorConfig {
   std::filesystem::path model_dir;      // canonical model directory (manifest.json + shards)
+  // Backend that hosts Father's local prefix/tail domains. Null = the deterministic reference backend. A Father-only
+  // backend such as the llama.cpp Fast backend is supplied here; it is shared, so it must outlive the Coordinator.
+  std::shared_ptr<domain::BackendAdapter> backend;
   transport::SecurityConfig security;
   std::vector<NodeEndpoint> nodes;
   bool direct_peer = true;              // Node->Node activation forwarding instead of Father relay
