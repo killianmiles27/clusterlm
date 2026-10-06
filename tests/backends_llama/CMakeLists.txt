@@ -4,7 +4,9 @@ if(NOT TARGET clusterlm_backend_llama)
 endif()
 clusterlm_test(test_llama_backend
   SOURCES test_llama_backend.cpp
-  DEPS clusterlm_backend_llama clusterlm_llama_tiny_model clusterlm_coordinator clusterlm_domain clusterlm_objects llama)
-# llama.h is a third-party header: keep the project's warning policy off it.
-get_target_property(_llama_inc llama INTERFACE_INCLUDE_DIRECTORIES)
-target_include_directories(test_llama_backend SYSTEM PRIVATE ${_llama_inc})
+  DEPS clusterlm_backend_llama clusterlm_llama_tiny_model clusterlm_coordinator clusterlm_domain clusterlm_objects clusterlm_llama_client)
+
+clusterlm_test(test_baseline_llama_rpc SLOW
+  SOURCES test_baseline_llama_rpc.cpp
+  DEPS clusterlm_backend_llama clusterlm_llama_tiny_model clusterlm_coordinator clusterlm_platform clusterlm_objects clusterlm_llama_client)
+add_dependencies(test_baseline_llama_rpc clusterlm-bench)

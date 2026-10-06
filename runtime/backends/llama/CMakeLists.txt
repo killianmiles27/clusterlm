@@ -58,6 +58,13 @@ target_link_libraries(clusterlm-llama-rpc-server PRIVATE ggml)
 target_compile_features(clusterlm-llama-rpc-server PRIVATE cxx_std_17)
 set_target_properties(clusterlm-llama-rpc-server PROPERTIES OUTPUT_NAME ggml-rpc-server)
 
+# The pinned llama.cpp's C API for code that drives it directly (tests, the P0-A baseline harness): headers as
+# SYSTEM includes so the project's warning policy does not apply to them.
+add_library(clusterlm_llama_client INTERFACE)
+target_link_libraries(clusterlm_llama_client INTERFACE llama ggml)
+target_include_directories(clusterlm_llama_client SYSTEM INTERFACE ${_llama_src}/include ${_llama_src}/ggml/include)
+target_compile_definitions(clusterlm_llama_client INTERFACE CLUSTERLM_LLAMA_PIN="${_llama_pin}")
+
 # Writers for a tiny random-weight llama-architecture GGUF (tests and the bench proof run). Pure GGUF bytes:
 # no llama.cpp dependency.
 clusterlm_module(clusterlm_llama_tiny_model

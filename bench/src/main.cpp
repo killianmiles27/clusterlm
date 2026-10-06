@@ -44,6 +44,8 @@ int dispatch(const std::string& cmd, const cli::Args& args) {
   if (cmd == "faults") return bench::cmd_faults(args);
   if (cmd == "placement") return bench::cmd_placement(args);
   if (cmd == "qualification") return bench::cmd_qualification(args);
+  if (cmd == "baseline" && !args.positional().empty() && args.positional().front() == "llama-rpc")
+    return bench::cmd_baseline_llama(args);
   return bench::cmd_hardware_only(cmd, args);
 }
 }  // namespace

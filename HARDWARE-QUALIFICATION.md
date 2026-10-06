@@ -330,7 +330,7 @@ Windows pinned-memory behaviour.
 **Stock/pinned llama.cpp RPC baseline** — status: `pending`
 
 - **Purpose:** Establish the existing-runtime baseline with persistent RPC caches disabled; record allocation ownership and where spill executes.
-- **Command:** `clusterlm-bench baseline llama-rpc --pin third_party/upstream.json --model <model> --nodes <g14>,<3060> --out results/p0a.json`
+- **Command:** `clusterlm-bench baseline llama-rpc --pin third_party/upstream.json --model <model> --nodes <g14>:50052,<3060>:50052 --node-fs-report <g14-report>,<3060-report> --on-target --out results/p0a.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Fast, Strong and Ultra artifacts
 - **Measurements:**

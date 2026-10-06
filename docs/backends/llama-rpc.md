@@ -76,3 +76,26 @@ MEMSET_TENSOR`.
   proportions (`--tensor-split`), and the benchmark network isolation.
 * Not verified here: actual throughput, Windows build behaviour of the pinned RPC server, RPC behaviour with MoE
   expert offload flags.
+
+## Baseline harness (`clusterlm-bench baseline llama-rpc`)
+
+Implemented in `bench/src/cmd_baseline_llama.cpp` (needs `-DCLUSTERLM_ENABLE_LLAMA=ON`; otherwise exit 3). It drives the
+pinned llama.cpp in-process through the library API (`ggml_backend_rpc_add_server`, devices passed in
+`llama_model_params`), no shell. Verified at the pin: `rpc-server` caches only with `-c` (default off,
+`rpc-server.cpp:97,156`); the harness and `scripts/run_rpc_server.ps1` never pass it.
+
+```
+clusterlm-bench baseline llama-rpc --model m.gguf --nodes 10.0.0.2:50052,10.0.0.3:50052 \
+    --node-fs-report g14.json,3060.json --prompt-tokens 512 --n-predict 64 --repeat 5 --out results/p0a.json
+clusterlm-bench baseline llama-rpc --model tiny.gguf --spawn-local 2 --verify-local   # local proof (Synthetic)
+```
+
+Each Node connection is relayed through a counting TCP proxy inside the harness, which parses only the request framing
+(`cmd | size | payload`) to report bytes in both directions and calls per RPC command, per phase (load, prefill,
+decode): `rpc.bytes_per_token`, `rpc.graph_calls_per_token`, `rpc.load`. RDMA is disabled (`GGML_RPC_NO_RDMA=1`). It also
+records `prefill_tok_s`, `decode_tok_s`, per-Node device memory used by the load, client resident memory, and whether
+the cache directory stays empty (watched directly for `--spawn-local`; remote Nodes report through
+`run_rpc_server.ps1 -Report` into `--node-fs-report`; with neither, the run fails `remote_node_filesystem_inspected`).
+`--control-with-cache` starts servers with `-c` as a negative control. Token IDs on the RPC wire are synthetic.
+Provenance is Synthetic for loopback Nodes or the tiny fixture; Measured only with `--on-target`, remote Nodes and a
+real model; never Qualified.
