@@ -298,6 +298,10 @@ struct NodeWorker::Impl {
     if (p.backend_build != backend->info().build_hash)
       return make_error(ErrorCode::kVersionMismatch, "backend build mismatch: Node has " + backend->info().build_hash);
     CLM_RETURN_IF_ERROR(p.manifest.validate());
+    // Nodes host token-free middle stages only; refuse before any weight is transferred.
+    for (const auto& st : p.stages)
+      if (st.role != domain::StageRole::kMiddle)
+        return make_error(ErrorCode::kPermissionDenied, "Nodes host token-free middle stages only");
 
     std::uint64_t ram = 0, vram = 0, disk = 0;
     for (const auto& a : p.assignments) {
