@@ -90,8 +90,10 @@ if ($Package -eq 'Node') {
   Check 'recovery: reset period 86400 s' ($qf -match 'RESET_PERIOD[^:]*:\s*86400')
   $sid = Sc-Out @('qsidtype', $svc)
   Check 'service SID type is UNRESTRICTED' ($sid -match 'UNRESTRICTED') $sid
-  $pre = Sc-Out @('qpreshutdowninfo', $svc)
-  Check 'preshutdown timeout is 15000 ms' ($pre -match '15000') $pre
+  # SERVICE_CONFIG_PRESHUTDOWN_INFO is stored as the service key's PreshutdownTimeout (DWORD, ms); sc.exe has no
+  # query verb that prints it on every Windows build, so read the value the SCM persisted.
+  $pre = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$svc" -Name PreshutdownTimeout -ErrorAction SilentlyContinue).PreshutdownTimeout
+  Check 'preshutdown timeout is 15000 ms' ($pre -eq 15000) "PreshutdownTimeout=$pre"
 
   # Firewall: the rule the service created with the same code as `clusterlm-node-service --print-firewall-specs`.
   $rule = Get-NetFirewallRule -DisplayName 'ClusterLM Node data (TCP-In)' -ErrorAction SilentlyContinue
