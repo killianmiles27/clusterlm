@@ -1260,6 +1260,7 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
     f.trace = &trace;
     trace.positions = q;
     trace.proposed = q - 1;
+    const auto window_req = f.req;  // f is moved into `flights` below; the commit needs the request afterwards
     std::vector<Impl::Flight> flights;
     auto launched = im.launch(f, window_tokens);
     if (!launched.is_ok()) return fail(launched.status());
@@ -1312,7 +1313,7 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
       }
     }
     const std::uint32_t accepted = accepted_drafts + 1;  // positions committed: next_token + accepted drafts
-    if (auto st = im.commit_round(f.req, accepted, trace); !st.is_ok()) return fail(st);
+    if (auto st = im.commit_round(window_req, accepted, trace); !st.is_ok()) return fail(st);
     cs.position += accepted;
     cs.state = cs.state.next();
     cs.committed.insert(cs.committed.end(), window_tokens.begin(), window_tokens.begin() + accepted);

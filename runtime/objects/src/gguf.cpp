@@ -112,7 +112,7 @@ Status read_scalar(Cursor& c, GgufValueType t, GgufValue& v) {
   v.type = t;
   switch (t) {
     case GgufValueType::kU8: { std::uint8_t x = 0; CLM_RETURN_IF_ERROR(c.u(x)); v.u = x; return Status::ok(); }
-    case GgufValueType::kI8: { std::uint8_t x = 0; CLM_RETURN_IF_ERROR(c.u(x)); v.i = static_cast<std::int8_t>(x); return Status::ok(); }
+    case GgufValueType::kI8: { std::uint8_t x = 0; CLM_RETURN_IF_ERROR(c.u(x)); v.i = static_cast<std::int8_t>(x); return Status::ok(); }  // NOLINT(bugprone-signed-char-misuse): I8 sign-extends by design
     case GgufValueType::kU16: { std::uint16_t x = 0; CLM_RETURN_IF_ERROR(c.u(x)); v.u = x; return Status::ok(); }
     case GgufValueType::kI16: { std::uint16_t x = 0; CLM_RETURN_IF_ERROR(c.u(x)); v.i = static_cast<std::int16_t>(x); return Status::ok(); }
     case GgufValueType::kU32: { std::uint32_t x = 0; CLM_RETURN_IF_ERROR(c.u(x)); v.u = x; return Status::ok(); }

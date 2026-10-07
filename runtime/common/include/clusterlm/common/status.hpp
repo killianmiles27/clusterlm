@@ -96,7 +96,9 @@ class [[nodiscard]] Result {
 
 // Assign the value of a Result<T> or propagate its Status.
 #define CLM_ASSIGN_OR_RETURN(lhs, expr) CLM_ASSIGN_OR_RETURN_IMPL(CLM_CONCAT(clm_result_, __LINE__), lhs, expr)
+// NOLINTBEGIN(bugprone-macro-parentheses): `lhs` may be a declaration ("auto x") and cannot be parenthesized.
 #define CLM_ASSIGN_OR_RETURN_IMPL(tmp, lhs, expr) \
   auto tmp = (expr);                              \
   if (!tmp.is_ok()) return tmp.status();          \
   lhs = std::move(tmp).value()
+// NOLINTEND(bugprone-macro-parentheses)
