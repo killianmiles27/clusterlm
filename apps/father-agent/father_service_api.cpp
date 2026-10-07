@@ -195,6 +195,8 @@ Status FatherServiceApi::rebuild_service() {
   deps.assignment.bind(std::string(catalog::kRoleFather), cfg_.father_name);
   for (const auto& [role, fp] : s.assignments) deps.assignment.bind(role, fp);
   deps.tokenizer = cfg_.tokenizer;
+  if (cfg_.tokenizers)
+    deps.tokenizer_for_tier = [p = cfg_.tokenizers](const catalog::TierEntry& tier) { return p->get(tier); };
   deps.readiness = cfg_.readiness;
   deps.deployments = cfg_.deployments;
   deps.options = cfg_.options;

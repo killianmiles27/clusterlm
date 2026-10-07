@@ -194,7 +194,11 @@ struct PrepareObserver {
 struct ServiceDeps {
   catalog::Catalog catalog;
   catalog::TierAssignment assignment;
-  std::shared_ptr<Tokenizer> tokenizer;
+  std::shared_ptr<Tokenizer> tokenizer;  // used for every tier unless tokenizer_for_tier is set
+  // Per-tier tokenizer (the tier model's real tokenizer, see TierTokenizerProvider). An error makes that tier's chat
+  // fail with the reason; there is never a fallback to a different tokenizer. A tier with a different vocabulary
+  // than the failing one is not a downgrade target for an in-flight answer.
+  std::function<Result<std::shared_ptr<Tokenizer>>(const catalog::TierEntry&)> tokenizer_for_tier;
   std::shared_ptr<ReadinessSource> readiness;
   std::shared_ptr<DeploymentProvider> deployments;
   ServiceOptions options;

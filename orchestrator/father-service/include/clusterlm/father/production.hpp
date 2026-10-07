@@ -27,6 +27,7 @@
 
 #include "clusterlm/config/store.hpp"
 #include "clusterlm/father/service.hpp"
+#include "clusterlm/father/tier_tokenizer.hpp"
 #include "clusterlm/transport/security.hpp"
 
 namespace clusterlm::father {
@@ -84,6 +85,9 @@ struct ProductionOptions {
   // backend can run. Marks the backend available, auto-confirms the unpinned model and labels everything.
   bool dev_fixture_model = false;
   std::shared_ptr<DetailsBoard> details = std::make_shared<DetailsBoard>();
+  // Real per-tier tokenizers: a tier whose tokenizer cannot be built is Unavailable with the reason. Null (and always
+  // under dev_fixture_model) skips the check.
+  std::shared_ptr<TierTokenizerProvider> tokenizers;
   std::function<SessionPhase()> session_phase = [] { return SessionPhase::kNone; };
   std::function<catalog::PowerState()> father_power = [] { return catalog::PowerState{}; };
   std::function<std::optional<catalog::ProvisioningProgress>(const std::string& tier_id)> provisioning;

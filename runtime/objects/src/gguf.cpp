@@ -144,7 +144,7 @@ Status read_scalar(Cursor& c, GgufValueType t, GgufValue& v) {
   }
 }
 
-Status read_value(Cursor& c, GgufValueType t, GgufValue& v, const GgufLimits& limits) {
+Status read_value(Cursor& c, GgufValueType t, GgufValue& v, const GgufLimits& limits, bool retain_all) {
   if (static_cast<std::uint32_t>(t) > static_cast<std::uint32_t>(GgufValueType::kF64))
     return err(ErrorCode::kInvalidArgument, "unknown metadata value type " + std::to_string(static_cast<std::uint32_t>(t)));
   if (t == GgufValueType::kString) {
@@ -164,8 +164,14 @@ Status read_value(Cursor& c, GgufValueType t, GgufValue& v, const GgufLimits& li
   if (v.count > limits.max_array_elements)
     return err(ErrorCode::kResourceExhausted, "array of " + std::to_string(v.count) + " elements exceeds the " +
                                                   std::to_string(limits.max_array_elements) + "-element limit");
-  const std::size_t keep = static_cast<std::size_t>(std::min<std::uint64_t>(v.count, GgufValue::kRetainedArrayItems));
+  if (retain_all && v.count > limits.max_retained_array_elements)
+    return err(ErrorCode::kResourceExhausted, "array of " + std::to_string(v.count) + " elements exceeds the " +
+                                                  std::to_string(limits.max_retained_array_elements) + "-element retention limit");
+  const std::size_t keep = static_cast<std::size_t>(
+      retain_all ? v.count : std::min<std::uint64_t>(v.count, GgufValue::kRetainedArrayItems));
   if (v.elem_type == GgufValueType::kString) {
+    // Every string carries at least its 8-byte length: a count the file cannot hold is rejected before reserving.
+    if (retain_all) CLM_RETURN_IF_ERROR(c.check(v.count * 8));
     v.items.reserve(keep);
     for (std::uint64_t i = 0; i < v.count; ++i) {
       if (i < keep) {
@@ -309,7 +315,9 @@ Result<GgufFile> parse_gguf(GgufSource& src, const GgufLimits& limits, std::stri
     std::uint32_t t = 0;
     CLM_RETURN_IF_ERROR(c.u(t));
     GgufValue v;
-    CLM_RETURN_IF_ERROR(read_value(c, static_cast<GgufValueType>(t), v, limits));
+    const bool retain_all = std::find(limits.retain_full_arrays.begin(), limits.retain_full_arrays.end(), key) !=
+                            limits.retain_full_arrays.end();
+    CLM_RETURN_IF_ERROR(read_value(c, static_cast<GgufValueType>(t), v, limits, retain_all));
     if (!f.metadata.emplace(std::move(key), std::move(v)).second)
       return err(ErrorCode::kInvalidArgument, "duplicate metadata key");
   }
@@ -352,6 +360,8 @@ Result<GgufFile> parse_gguf(GgufSource& src, const GgufLimits& limits, std::stri
     f.alignment = *v;
   }
   f.data_start = (f.header_bytes + f.alignment - 1) / f.alignment * f.alignment;
+  // With allow_vocab_only_tail, a file without tensors may end right after the header without the alignment padding.
+  if (limits.allow_vocab_only_tail && f.data_start > f.file_size && f.tensors.empty()) f.data_start = f.file_size;
   if (f.data_start > f.file_size)
     return err(ErrorCode::kOutOfRange, "data section starts at " + std::to_string(f.data_start) + ", past the end of the " +
                                            std::to_string(f.file_size) + "-byte file");

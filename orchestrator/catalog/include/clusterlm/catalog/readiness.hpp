@@ -63,6 +63,9 @@ struct PlanReadiness {
 
 struct ReadinessInputs {
   std::uint32_t context_tokens = 4096;
+  // Non-empty: the tier's real tokenizer / chat template could not be built from its model (the tier is Unavailable
+  // with this reason; Father never falls back to a byte tokenizer).
+  std::string tokenizer_problem;
   ModelAvailability model;
   BackendAvailability backend;
   std::vector<MachineInputs> machines;

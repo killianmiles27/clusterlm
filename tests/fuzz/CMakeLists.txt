@@ -48,6 +48,9 @@ endif()
 # GGUF header parser + manifest builder (runtime/objects/gguf*).
 clusterlm_fuzz_target(gguf SOURCE fuzz_gguf.cpp DEPS clusterlm_objects)
 
+# Father's GGUF byte-level BPE tokenizer on a synthetic vocabulary (tests/father_service/synthetic_vocab.hpp).
+clusterlm_fuzz_target(gguf_bpe_tokenizer SOURCE fuzz_gguf_bpe_tokenizer.cpp DEPS clusterlm_father_service clusterlm_objects)
+
 # GGUF seed generator: header-only GGUF files from the writer (`gen_gguf_seeds tests/fuzz/corpus/gguf`).
 add_executable(gen_gguf_seeds gen_gguf_seeds.cpp)
 target_link_libraries(gen_gguf_seeds PRIVATE clusterlm_objects)
