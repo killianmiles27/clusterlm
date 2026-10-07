@@ -84,7 +84,9 @@ cmake --install build-pkg --config Release --component father --prefix stage/fat
 cmake --install build-pkg --config Release --component node   --prefix stage/node
 packaging/check-dependencies.ps1 -Stage stage/father, stage/node
 packaging/build-msi.ps1 -StageRoot stage -OpenSslLicense $env:VCPKG_ROOT/installed/x64-windows-static/share/openssl/copyright
-wix msi validate packaging/out/ClusterLM-Node-0.1.0-x64-UNSIGNED.msi
+wix msi validate -sice ICE38 -sice ICE43 -sice ICE57 packaging/out/ClusterLM-Node-0.1.0-x64-UNSIGNED.msi
+# ICE38/43/57 are suppressed only because they misread the all-users Start menu of a per-machine package as a
+# per-user location; every other ICE is enforced.
 packaging/smoke-test.ps1 -Package Node -Msi packaging/out/ClusterLM-Node-0.1.0-x64-UNSIGNED.msi
 ```
 

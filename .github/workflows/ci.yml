@@ -183,7 +183,10 @@ jobs:
         run: |
           Get-ChildItem packaging/out -Filter *.msi | ForEach-Object {
             Write-Host "== $($_.Name)"
-            wix msi validate $_.FullName
+            # ICE38/ICE43/ICE57 are known false positives for a per-machine package: they treat ProgramMenuFolder as a
+            # per-user location, but with Scope="perMachine" (ALLUSERS=1) it is the all-users Start menu, and the
+            # shortcut's HKLM KeyPath is correct. Every other ICE stays enforced (docs/packaging.md).
+            wix msi validate -sice ICE38 -sice ICE43 -sice ICE57 $_.FullName
             if ($LASTEXITCODE -ne 0) { throw "ICE validation failed for $($_.Name)" }
           }
       - name: Upload MSI packages
