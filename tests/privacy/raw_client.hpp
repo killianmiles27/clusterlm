@@ -21,7 +21,7 @@ using namespace std::chrono_literals;
 inline std::filesystem::path privacy_temp_dir(const char* name) {
   auto p = std::filesystem::temp_directory_path() /
            (std::string("clm-privacy-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-  std::filesystem::remove_all(p);
+  { std::error_code ec_rm; std::filesystem::remove_all(p, ec_rm); }
   std::filesystem::create_directories(p);
   return p;
 }

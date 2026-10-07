@@ -490,7 +490,7 @@ TEST_CASE("diagnostics from a synthetic client are labelled Synthetic") {
 TEST_CASE("export honours the include-conversation flag and writes the file; the flag never leaks into the preview") {
   namespace fs = std::filesystem;
   const fs::path dir = fs::temp_directory_path() / "clm-ui-export";
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
 
   Env e;
   e.client.set_diagnostics(DiagnosticsExport{"snapshot-body", false, "plan: 4 stages", {{"G14 4-9", 5.0}}});
@@ -521,7 +521,7 @@ TEST_CASE("export honours the include-conversation flag and writes the file; the
   }
   e.vm->refresh_diagnostics();
   CHECK(e.client.last_export_include_text() == std::optional<bool>(false));  // preview stays redacted
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
 }
 
 TEST_CASE("export without a configured destination fails visibly") {

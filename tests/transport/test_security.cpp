@@ -73,10 +73,10 @@ TEST_CASE("device identity save/load round trip keeps the fingerprint") {
     std::filesystem::copy_file(dir2 / "device_key.pem", dir / "device_key.pem",
                                std::filesystem::copy_options::overwrite_existing);
     CHECK(DeviceIdentity::load(dir).status().code() == ErrorCode::kDataLoss);
-    std::filesystem::remove_all(dir2);
+    { std::error_code ec_rm; std::filesystem::remove_all(dir2, ec_rm); }
   }
   CHECK_FALSE(DeviceIdentity::load(dir / "missing").is_ok());
-  std::filesystem::remove_all(dir);
+  { std::error_code ec_rm; std::filesystem::remove_all(dir, ec_rm); }
 }
 
 TEST_CASE("mutual TLS with pinned identities") {

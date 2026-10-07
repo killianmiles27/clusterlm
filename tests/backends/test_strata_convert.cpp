@@ -82,7 +82,7 @@ struct Model {
       std::ofstream(pack / names[id], std::ios::binary).write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
     std::ofstream(pack / "index.txt") << index;
   }
-  ~Model() { fs::remove_all(dir); }
+  ~Model() { { std::error_code ec_rm; fs::remove_all(dir, ec_rm); } }
 
   // the GGUF payload bytes of tensor `name` in [off, off+n)
   Bytes payload(const std::string& name, std::uint64_t off, std::uint64_t n) const {

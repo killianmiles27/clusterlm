@@ -90,7 +90,7 @@ struct SyntheticPack {
     for (auto& [id, b] : files) std::ofstream(dir / names[id], std::ios::binary).write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
     std::ofstream(dir / "index.txt") << index;
   }
-  ~SyntheticPack() { std::filesystem::remove_all(dir); }
+  ~SyntheticPack() { { std::error_code ec_rm; std::filesystem::remove_all(dir, ec_rm); } }
 };
 
 objects::ManifestObject dense_object(std::string name, objects::ObjectKind kind) {

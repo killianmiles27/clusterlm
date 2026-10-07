@@ -48,7 +48,7 @@ struct Agent {
 
   explicit Agent(const char* name) {
     root = fs::temp_directory_path() / (std::string("clm-uie2e-") + name);
-    fs::remove_all(root);
+    { std::error_code ec_rm; fs::remove_all(root, ec_rm); }
     fs::create_directories(root);
     auto manifest = objects::write_fixture_model(objects::FixtureSpec{}, root / "model");
     REQUIRE_MESSAGE(manifest.is_ok(), manifest.status().to_string());

@@ -47,7 +47,7 @@ void set_env(const char* k, const std::string& v) {
 
 fs::path temp_dir(const char* name) {
   auto p = fs::temp_directory_path() / (std::string("clm-e2e-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-  fs::remove_all(p);
+  { std::error_code ec_rm; fs::remove_all(p, ec_rm); }
   fs::create_directories(p);
   return p;
 }

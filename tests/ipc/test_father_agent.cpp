@@ -14,10 +14,10 @@ namespace {
 struct TempDir {
   fs::path path;
   explicit TempDir(const char* name) : path(fs::temp_directory_path() / (std::string("clm-agent-") + name)) {
-    fs::remove_all(path);
+    { std::error_code ec_rm; fs::remove_all(path, ec_rm); }
     fs::create_directories(path);
   }
-  ~TempDir() { fs::remove_all(path); }
+  ~TempDir() { { std::error_code ec_rm; fs::remove_all(path, ec_rm); } }
 };
 
 // Echoes the payload reversed; "fail" payloads return an error.

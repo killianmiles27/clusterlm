@@ -21,7 +21,7 @@ struct TempDir {
   explicit TempDir(const char* name)
       : path(fs::temp_directory_path() /
              (std::string("clm-config-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))) {
-    fs::remove_all(path);
+    { std::error_code ec_rm; fs::remove_all(path, ec_rm); }
     fs::create_directories(path);
   }
   ~TempDir() {

@@ -38,7 +38,7 @@ std::string quote(const fs::path& p) { return "\"" + p.string() + "\""; }
 struct Dir {
   fs::path path;
   explicit Dir(const char* name) : path(fs::temp_directory_path() / (std::string("clm-packaging-") + name)) {
-    fs::remove_all(path);
+    { std::error_code ec_rm; fs::remove_all(path, ec_rm); }
     fs::create_directories(path);
   }
   ~Dir() {

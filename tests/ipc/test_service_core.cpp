@@ -32,7 +32,7 @@ struct Rig {
 
   explicit Rig(const char* name, std::chrono::milliseconds stale = 5000ms) {
     dir = fs::temp_directory_path() / (std::string("clm-core-") + name);
-    fs::remove_all(dir);
+    { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
     fs::create_directories(dir);
     node::ServiceCoreConfig cfg;
     cfg.supervisor.worker_binary = CLUSTERLM_NODE_BINARY;
@@ -59,7 +59,7 @@ struct Rig {
   ~Rig() {
     helper.reset();
     core.reset();
-    fs::remove_all(dir);
+    { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
   }
   // The helper reports and the service evaluates policy once.
   std::vector<node::SupervisorEvent> report(std::uint32_t idle, bool locked = false) {

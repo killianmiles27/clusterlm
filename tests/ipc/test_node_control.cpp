@@ -57,7 +57,7 @@ struct Rig {
 
   explicit Rig(const char* name, RigOptions o = {}) {
     dir = fs::temp_directory_path() / (std::string("clm-ctl-") + name);
-    fs::remove_all(dir);
+    { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
     fs::create_directories(dir);
     auto st = config::NodeSettingsStore::open(dir / "node-settings.json");
     REQUIRE_MESSAGE(st.is_ok(), st.status().to_string());
@@ -339,7 +339,7 @@ TEST_CASE("allow-when-idle off pauses the Node and on resumes it") {
 
 TEST_CASE("a service without a settings store answers plainly") {
   fs::path dir = fs::temp_directory_path() / "clm-ctl-nostore";
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
   fs::create_directories(dir);
   platform::MockPowerMonitor power;
   node::ServiceCoreConfig cfg;
@@ -352,7 +352,7 @@ TEST_CASE("a service without a settings store answers plainly") {
   CHECK(core.settings_view().status().code() == ErrorCode::kFailedPrecondition);
   CHECK(core.apply_settings({}).code() == ErrorCode::kFailedPrecondition);
   core.stop();
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
 }
 
 // ---- pairing mode ------------------------------------------------------------------------------------------------

@@ -19,11 +19,11 @@ struct Fixture {
   platform::MockPowerMonitor power;
   explicit Fixture(const char* name) {
     dir = fs::temp_directory_path() / (std::string("clm-supervisor-power-") + name);
-    fs::remove_all(dir);
+    { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
     fs::create_directories(dir);
     activity.current.idle_seconds = 0;
   }
-  ~Fixture() { fs::remove_all(dir); }
+  ~Fixture() { { std::error_code ec_rm; fs::remove_all(dir, ec_rm); } }
   node::SupervisorConfig config() {
     node::SupervisorConfig c;
     c.worker_binary = CLUSTERLM_NODE_BINARY;

@@ -21,14 +21,14 @@ namespace {
 class FakeService {
  public:
   explicit FakeService(const char* name) : dir_(fs::temp_directory_path() / (std::string("clm-ui-") + name)) {
-    fs::remove_all(dir_);
+    { std::error_code ec_rm; fs::remove_all(dir_, ec_rm); }
     fs::create_directories(dir_);
     endpoint_ = {ipc::kNodeHelperPipeName, dir_};
     start();
   }
   ~FakeService() {
     stop();
-    fs::remove_all(dir_);
+    { std::error_code ec_rm; fs::remove_all(dir_, ec_rm); }
   }
   void start() {
     ipc::ServerOptions so;
@@ -152,7 +152,7 @@ TEST_CASE("IpcNodeClient pause and resume reach the service; a refusal is report
 
 TEST_CASE("IpcNodeClient treats an absent service as a state, and reconnects when it returns") {
   fs::path dir = fs::temp_directory_path() / "clm-ui-absent";
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
   fs::create_directories(dir);
   auto c = make_client(ipc::Endpoint{ipc::kNodeHelperPipeName, dir});
   auto st = c.status();
@@ -160,7 +160,7 @@ TEST_CASE("IpcNodeClient treats an absent service as a state, and reconnects whe
   CHECK(st->state == NodeUiState::kUnreachable);
   CHECK_FALSE(st->detail.empty());
   CHECK_FALSE(c.pause().is_ok());
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
 
   FakeService svc("reconnect");
   auto c2 = make_client(svc.endpoint());
@@ -235,12 +235,12 @@ TEST_CASE("IpcNodeClient settings against a service without a settings store, or
   CHECK(c.set_settings(NodeSettings{}).code() == ErrorCode::kFailedPrecondition);
   CHECK(svc.settings_updates == 0);
   fs::path dir = fs::temp_directory_path() / "clm-ui-nosvc";
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
   fs::create_directories(dir);
   auto absent = make_client(ipc::Endpoint{ipc::kNodeHelperPipeName, dir});
   CHECK_FALSE(absent.get_settings().is_ok());
   CHECK_FALSE(absent.enter_pairing_mode().is_ok());
-  fs::remove_all(dir);
+  { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
 }
 
 TEST_CASE("IpcNodeClient pairing mode returns the code line; refusals come back as errors") {

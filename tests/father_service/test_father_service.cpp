@@ -25,7 +25,7 @@ namespace {
 
 fs::path temp_dir(const char* name) {
   auto p = fs::temp_directory_path() / (std::string("clm-father-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-  fs::remove_all(p);
+  { std::error_code ec_rm; fs::remove_all(p, ec_rm); }
   fs::create_directories(p);
   return p;
 }
@@ -178,7 +178,10 @@ struct Fixture {
     svc.reset();
     if (g14) g14->stop();
     if (n3060) n3060->stop();
-    fs::remove_all(dir);
+    // Destroy the workers (open journal files) before deleting their directories: Windows cannot delete open files.
+    g14.reset();
+    n3060.reset();
+    { std::error_code ec_rm; fs::remove_all(dir, ec_rm); }
   }
 
   const catalog::TierEntry& tier(const char* id) const { return *cat.find(id); }

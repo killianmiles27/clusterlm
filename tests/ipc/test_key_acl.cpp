@@ -18,9 +18,9 @@ namespace {
 struct TempDir {
   fs::path path;
   explicit TempDir(const char* name) : path(fs::temp_directory_path() / (std::string("clm-key-") + name)) {
-    fs::remove_all(path);
+    { std::error_code ec_rm; fs::remove_all(path, ec_rm); }
   }
-  ~TempDir() { fs::remove_all(path); }
+  ~TempDir() { { std::error_code ec_rm; fs::remove_all(path, ec_rm); } }
 };
 }  // namespace
 
