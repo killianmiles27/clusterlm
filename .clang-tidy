@@ -1,0 +1,20 @@
+# Static analysis policy (CI job linux-clang-tidy). High-signal checks only: bug patterns, the Clang static
+# analyzer, and performance. Every remaining finding is either fixed or suppressed inline with a reason.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-branch-clone,
+  -bugprone-exception-escape,
+  -bugprone-unchecked-optional-access,
+  clang-analyzer-*,
+  -clang-analyzer-optin.performance.Padding,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  performance-*,
+  -performance-enum-size,
+  -performance-avoid-endl
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^.*/(runtime|node|orchestrator|apps|bench|ui|experimental)/.*'
+FormatStyle: none
