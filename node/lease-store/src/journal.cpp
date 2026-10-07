@@ -133,6 +133,17 @@ Status Journal::append_file(LeaseGeneration gen, std::string_view name) {
   return append_line("F " + gen.str() + " " + std::string(name) + "\n");
 }
 
+Status Journal::append_files(LeaseGeneration gen, const std::vector<std::string>& names) {
+  std::string lines;
+  for (const auto& name : names) {
+    if (!is_valid_lease_file_name(name))
+      return make_error(ErrorCode::kInvalidArgument, "journal accepts only store-generated file names");
+    lines += "F " + gen.str() + " " + name + "\n";
+  }
+  if (lines.empty()) return Status::ok();
+  return append_line(lines);
+}
+
 Status Journal::append_released(LeaseGeneration gen) { return append_line("R " + gen.str() + "\n"); }
 
 Status Journal::compact(std::uint64_t max_generation) {

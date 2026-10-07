@@ -55,6 +55,8 @@ class Journal {
 
   Status append_begin(LeaseGeneration gen);
   Status append_file(LeaseGeneration gen, std::string_view name);
+  // Several file records in one durable append (one sync): plan admission journals every disk object up front.
+  Status append_files(LeaseGeneration gen, const std::vector<std::string>& names);
   Status append_released(LeaseGeneration gen);
 
   // Atomically rewrites the journal to a single "G <max_generation>" record. Only legal when no lease is

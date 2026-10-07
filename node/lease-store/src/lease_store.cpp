@@ -363,6 +363,48 @@ Result<ObjectWriter*> LeaseStore::create_object(std::uint32_t index, std::uint64
   return raw;
 }
 
+Status LeaseStore::create_objects(const std::vector<ObjectSpec>& specs) {
+  std::lock_guard lock(mu_);
+  if (state_ != LeaseState::kPreparing)
+    return make_error(ErrorCode::kFailedPrecondition, "objects can only be created while preparing a lease");
+  // 1. Validate everything before touching the journal or the disk.
+  std::uint64_t ram = ram_used_, disk = disk_used_;
+  std::vector<std::uint32_t> seen;
+  seen.reserve(specs.size());
+  std::vector<std::string> names;
+  std::vector<std::filesystem::path> paths(specs.size());
+  for (std::size_t i = 0; i < specs.size(); ++i) {
+    const auto& sp = specs[i];
+    if (objects_.count(sp.index) != 0 || std::find(seen.begin(), seen.end(), sp.index) != seen.end())
+      return make_error(ErrorCode::kAlreadyExists, "object index already created");
+    seen.push_back(sp.index);
+    std::uint64_t& used = sp.placement == Placement::kRam ? ram : disk;
+    const std::uint64_t cap = sp.placement == Placement::kRam ? budget_.ram_bytes : budget_.disk_bytes;
+    if (sp.size > cap || used > cap - sp.size)
+      return make_error(ErrorCode::kResourceExhausted,
+                        std::string(sp.placement == Placement::kRam ? "RAM" : "disk") + " lease budget exceeded");
+    used += sp.size;
+    if (sp.placement == Placement::kDisk) {
+      names.push_back(lease_file_name(sp.index));
+      auto path = plat::resolve_under_root(root_, store_path({"leases", generation_.str(), names.back()}));
+      if (!path.is_ok()) return path.status();
+      paths[i] = *path;
+    }
+  }
+  // 2. One durable journal append for every file this lease will create (BEFORE any file exists).
+  CLM_RETURN_IF_ERROR(journal_.append_files(generation_, names));
+  // 3. Allocate. On failure the lease is released by the caller; every created file is journaled.
+  for (std::size_t i = 0; i < specs.size(); ++i) {
+    const auto& sp = specs[i];
+    std::unique_ptr<ObjectWriter> w(new ObjectWriter(sp.index, sp.size, sp.expected_digest, sp.placement,
+                                                     &options_.crash_hook));
+    CLM_RETURN_IF_ERROR(sp.placement == Placement::kRam ? w->init_ram() : w->init_disk(paths[i]));
+    (sp.placement == Placement::kRam ? ram_used_ : disk_used_) += sp.size;
+    objects_.emplace(sp.index, std::move(w));
+  }
+  return Status::ok();
+}
+
 ObjectWriter* LeaseStore::find_object(std::uint32_t index) {
   std::lock_guard lock(mu_);
   auto it = objects_.find(index);

@@ -314,3 +314,56 @@ TEST_CASE("crash hook sees the documented phases in order") {
                                              "allocation", "ready", "inference", "cleanup"};
   CHECK(phases == expected);
 }
+
+TEST_CASE("create_objects: one journal append for every disk object, all-or-nothing validation, recovery deletes them") {
+  std::vector<LeaseStore::ObjectSpec> specs;
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    Bytes data(4096, static_cast<std::uint8_t>(i));
+    specs.push_back({i, data.size(), Sha256::of(ByteSpan(data)), i % 2 == 0 ? Placement::kDisk : Placement::kRam});
+  }
+  {
+    Fixture f;
+    REQUIRE(f.store->begin_lease(LeaseGeneration(1), budget(1 << 20, 1 << 20)).is_ok());
+    // A spec list that exceeds the disk budget creates nothing at all.
+    auto too_big = specs;
+    too_big.push_back({99, 2u << 20, Digest256{}, Placement::kDisk});
+    CHECK(f.store->create_objects(too_big).code() == ErrorCode::kResourceExhausted);
+    CHECK(f.store->find_object(0) == nullptr);
+    // A duplicate index creates nothing either.
+    auto dup = specs;
+    dup.push_back(specs.front());
+    CHECK(f.store->create_objects(dup).code() == ErrorCode::kAlreadyExists);
+    CHECK(f.store->find_object(0) == nullptr);
+
+    REQUIRE(f.store->create_objects(specs).is_ok());
+    for (const auto& sp : specs) {
+      auto* w = f.store->find_object(sp.index);
+      REQUIRE(w != nullptr);
+      Bytes data(4096, static_cast<std::uint8_t>(sp.index));
+      REQUIRE(write_all(*w, data, 1000).is_ok());
+      REQUIRE(w->seal().is_ok());
+    }
+    // Journal: every disk object has a file record.
+    std::ifstream j(f.root() / "journal.log");
+    std::string journal((std::istreambuf_iterator<char>(j)), std::istreambuf_iterator<char>());
+    std::size_t file_records = 0;
+    for (std::size_t pos = 0; (pos = journal.find("\nF ", pos)) != std::string::npos; ++pos) ++file_records;
+    CHECK(file_records == 20);
+    CHECK(census_bytes(f.root()) > 0);
+    // Simulated crash: a snapshot of the root taken while the lease is live (journal + files, nothing released)
+    // is what a restart after a crash finds. Recovery must delete every journaled file.
+    const fs::path snapshot = f.dir.path() / "crashed";
+    std::error_code ec;
+    fs::copy(f.root(), snapshot, fs::copy_options::recursive, ec);
+    if (ec) {
+      MESSAGE("skipped the recovery half: the platform does not allow copying open lease files (" << ec.message() << ")");
+    } else {
+      auto reopened = LeaseStore::open(snapshot);
+      REQUIRE(reopened.is_ok());
+      CHECK(reopened.value()->recovery_report().files_removed == 20);
+      CHECK(reopened.value()->recovery_report().clean());
+      CHECK(census_bytes(snapshot) == 0);
+    }
+    CHECK(f.store->release().storage_cleaned);
+  }
+}

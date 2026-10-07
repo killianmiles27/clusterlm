@@ -152,6 +152,16 @@ class LeaseStore {
   // before the file is created.
   Result<ObjectWriter*> create_object(std::uint32_t index, std::uint64_t size, const Digest256& expected_digest,
                                       Placement placement);
+  // Creates every object of a plan at once. Budgets and indices are checked for all of them first; the file
+  // records of all disk objects are then made durable in one journal append (one sync) before any file exists.
+  // Equivalent to create_object per spec, but plan admission stays fast with thousands of disk-backed objects.
+  struct ObjectSpec {
+    std::uint32_t index = 0;
+    std::uint64_t size = 0;
+    Digest256 expected_digest;
+    Placement placement = Placement::kRam;
+  };
+  Status create_objects(const std::vector<ObjectSpec>& specs);
   ObjectWriter* find_object(std::uint32_t index);
 
   bool is_sealed(std::uint32_t index) const;

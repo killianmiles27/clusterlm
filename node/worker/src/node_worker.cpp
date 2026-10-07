@@ -468,16 +468,19 @@ struct NodeWorker::Impl {
       return make_error(ErrorCode::kResourceExhausted, "plan requires disk staging beyond allowance");
 
     CLM_RETURN_IF_ERROR(store->begin_lease(lease, lease::LeaseBudget{ram, disk}));
+    std::vector<lease::LeaseStore::ObjectSpec> specs;
+    specs.reserve(p.assignments.size());
     for (const auto& a : p.assignments) {
       const auto& obj = p.manifest.objects[a.object_index];
-      const auto placement = a.target == objects::AllocationTarget::kTemporaryBacking ? lease::Placement::kDisk
-                                                                                       : lease::Placement::kRam;
-      auto created = store->create_object(a.object_index, obj.byte_size, obj.object_digest, placement);
-      if (!created.is_ok()) {
-        (void)store->release();
-        lease = lease.next();
-        return created.status();
-      }
+      specs.push_back({a.object_index, obj.byte_size, obj.object_digest,
+                       a.target == objects::AllocationTarget::kTemporaryBacking ? lease::Placement::kDisk
+                                                                                : lease::Placement::kRam});
+    }
+    // One journal sync for all disk objects, so admission stays fast for plans with thousands of objects.
+    if (auto created = store->create_objects(specs); !created.is_ok()) {
+      (void)store->release();
+      lease = lease.next();
+      return created;
     }
     plan = p;
     sealed_count = 0;
@@ -587,11 +590,13 @@ struct NodeWorker::Impl {
         break;
       }
       if (auto* chunk = std::get_if<protocol::ProvisionChunk>(&received->message)) {
-        auto st = provision_chunk(*chunk);
+        auto st = provision_chunk(*chunk, stream.get());
+        if (st.code() == ErrorCode::kAborted) break;  // superseded by a resumed provision channel
         // Chunks are acknowledged only on failure; flow control is the transport's bounded buffers.
         if (!st.is_ok()) (void)stream->send(error_reply(st, protocol::MessageType::kProvisionChunk), received->correlation);
       } else if (auto* seal = std::get_if<protocol::SealObject>(&received->message)) {
-        auto st = seal_object(*seal);
+        auto st = seal_object(*seal, stream.get());
+        if (st.code() == ErrorCode::kAborted) break;  // superseded by a resumed provision channel
         (void)stream->send(st.is_ok() ? Message(protocol::ObjectSealed{seal->lease, seal->object_index})
                                       : error_reply(st, protocol::MessageType::kSealObject),
                            received->correlation);
@@ -623,9 +628,19 @@ struct NodeWorker::Impl {
     return s.send(status);
   }
 
-  Status provision_chunk(const protocol::ProvisionChunk& c) {
+  // A resumed transfer replaces the provision stream. Frames the old stream had already received must not be applied
+  // after the new one reported ProvisionStatus (Father would then resend an object the old frames just sealed), so
+  // every chunk and seal is accepted only from the current stream, checked under the lock that switches streams.
+  Status superseded(const MessageStream* from) const {
+    if (from != nullptr && provision.get() != from)
+      return make_error(ErrorCode::kAborted, "provision stream superseded by a resumed transfer");
+    return Status::ok();
+  }
+
+  Status provision_chunk(const protocol::ProvisionChunk& c, const MessageStream* from = nullptr) {
     phase("transfer");
     std::lock_guard lock(mu);
+    CLM_RETURN_IF_ERROR(superseded(from));
     if (c.lease != lease || state != NodeState::kPreparing)
       return make_error(ErrorCode::kStaleEpoch, "chunk for a stale or inactive lease");
     auto* writer = store->find_object(c.object_index);
@@ -638,11 +653,12 @@ struct NodeWorker::Impl {
     return Status::ok();
   }
 
-  Status seal_object(const protocol::SealObject& s) {
+  Status seal_object(const protocol::SealObject& s, const MessageStream* from = nullptr) {
     phase("hashing");
     bool complete = false;
     {
       std::lock_guard lock(mu);
+      CLM_RETURN_IF_ERROR(superseded(from));
       if (s.lease != lease || state != NodeState::kPreparing || !plan)
         return make_error(ErrorCode::kStaleEpoch, "seal for a stale or inactive lease");
       if (s.object_index >= plan->manifest.objects.size())
