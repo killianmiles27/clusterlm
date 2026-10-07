@@ -579,7 +579,7 @@ int cmd_faults(const cli::Args& args) {
   // Either way the Node must be offered again and the next lease must generate correctly; two cycles each. The service's
   // events are counted (forced terminations, relaunches, revocations, offers).
   auto supervised_scenario = [&](const std::string& name, LocalNodeOptions faulty, bool expect_forced) {
-    constexpr int kCycles = 2;
+    static constexpr int kCycles = 2;  // static: MSVC reports a constexpr used only in a nested lambda as unused (C4189)
     faulty.name = "node0";
     faulty.disk_gib = 1.0;  // Node 0 stages its objects in files under its staging root, so a dead worker leaves orphans behind
     run_scenario(name, {faulty}, [&](LocalCluster& cl, coordinator::Coordinator& c, const coordinator::ClusterPlan& base_plan) {
