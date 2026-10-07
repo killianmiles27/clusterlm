@@ -13,9 +13,11 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command dumpbin.exe -ErrorAction SilentlyContinue)) { throw 'dumpbin.exe not found (run inside a Visual Studio developer environment)' }
 
 # DLLs present on every supported Windows 11 installation (system32), plus API sets and the Universal CRT forwarders.
+# d3d11 and d3dcompiler_47 (the UI shells) ship in System32 since Windows 10; no DirectX redistributable is needed.
 $allowed = '^(kernel32|kernelbase|user32|advapi32|ws2_32|mswsock|crypt32|ole32|oleaut32|shell32|shlwapi|bcrypt|ncrypt|' +
            'secur32|sechost|rpcrt4|ntdll|dxgi|powrprof|wtsapi32|userenv|iphlpapi|version|win32u|gdi32|imm32|msvcrt|ucrtbase|' +
-           'netapi32|wininet|winhttp|cfgmgr32|setupapi|api-ms-win-.*|ext-ms-win-.*)\.dll$'
+           'netapi32|wininet|winhttp|cfgmgr32|setupapi|d3d11|d3dcompiler_47|dwmapi|comctl32|comdlg32|' +
+           'api-ms-win-.*|ext-ms-win-.*)\.dll$'
 $bad = @()
 foreach ($root in $Stage) {
   foreach ($f in Get-ChildItem -Recurse -File $root | Where-Object { $_.Extension -in '.exe', '.dll' }) {
