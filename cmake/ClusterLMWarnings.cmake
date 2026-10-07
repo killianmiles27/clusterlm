@@ -3,6 +3,9 @@ function(clusterlm_set_warnings target)
   if(MSVC)
     # C4324: "structure was padded due to alignment specifier" is the intended effect of alignas.
     target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /wd4324)
+    # C4996 "unsafe" CRT functions (getenv, sscanf, ...): the portable standard functions are used deliberately; the
+    # MSVC-only *_s replacements would fork the code per platform.
+    target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
     if(CLUSTERLM_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE /WX)
     endif()
