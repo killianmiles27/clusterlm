@@ -21,6 +21,7 @@ int cmd_calibrate(const cli::Args& args);
 int cmd_transport(const cli::Args& args);
 int cmd_placement(const cli::Args& args);
 int cmd_placement_inputs(const cli::Args& args);
+int cmd_placement_validate(const cli::Args& args);
 int cmd_qualification(const cli::Args& args);
 int cmd_cluster(const cli::Args& args);
 int cmd_faults(const cli::Args& args);
@@ -28,10 +29,14 @@ int cmd_faults(const cli::Args& args);
 int cmd_nvml(const cli::Args& args);
 int cmd_storage_census(const cli::Args& args);
 // `faults --only`: the scenario names (crash_<phase>, father_lost, local_activity, link_loss, stall, release_cycles) and the
-// selection of them. `only` is a comma list of scenario names, lifecycle phases (selects crash_<phase>) or the group
-// "crash"; empty selects everything. An unknown name is kInvalidArgument. The result is in canonical order.
+// selection of them. `only` is a comma list of scenario names, lifecycle phases (selects crash_<phase>) or the groups
+// "crash" and "supervised"; empty selects every scenario of fault_scenario_names() (plus the supervised ones with
+// `include_supervised`, i.e. `faults --supervised`). An unknown name is kInvalidArgument. The result is in canonical order.
 std::vector<std::string> fault_scenario_names();
-Result<std::vector<std::string>> select_fault_scenarios(const std::string& only);
+// The scenarios that run the Nodes under clusterlm-node-service (HQ-REL-01): supervised_forced_termination,
+// supervised_crash_recovery. Selected explicitly (--only) or with --supervised.
+std::vector<std::string> supervised_fault_scenario_names();
+Result<std::vector<std::string>> select_fault_scenarios(const std::string& only, bool include_supervised = false);
 int cmd_hardware_only(const std::string& command, const cli::Args& args);
 // `baseline llama-rpc` (P0-A, HQ-P0A-01): real with -DCLUSTERLM_ENABLE_LLAMA=ON, otherwise reports (exit 3) that it needs it.
 int cmd_baseline_llama(const cli::Args& args);

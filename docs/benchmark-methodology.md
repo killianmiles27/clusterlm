@@ -111,7 +111,43 @@ Build with `-DCLUSTERLM_BENCH_CUDA=ON` and the CUDA toolkit installed (`cudart`,
 ### Runtime (`cluster`)
 
 Father in-process, Nodes as separate `clusterlm-node` processes, fixture model, reference backend: always Synthetic.
-It measures the software path and gives the harness for the real runs.
+It measures the software path and gives the harness for the real runs; the same command, pointed at the real artifact and
+backend, is the real run (WP21, docs/adr/0350-bench-drives-real-backends.md):
+
+- `--backend reference|strata|llama` with the option flags of `clusterlm-father`/`clusterlm-node` (`--cuda-device`,
+  `--vram-reserve-mib`, `--strata-cpu-threads`, `--strata-ple-gguf FILE`, `--strata-mtp-dir DIR`, `--llama-gpu-layers`;
+  `apps/common/backend_cli.hpp` parses them for both tools). Father's prefix/tail run on that backend and every spawned Node gets
+  the same engine flags (Father-only options never reach a Node). A backend that is not built (or unknown) is a clear error
+  before a model is written or a process spawned: exit 3 with the CMake option named (`built without
+  CLUSTERLM_ENABLE_STRATA`), exit 2 for an unknown name. A Strata build without a usable CUDA device fails in `prepare`
+  with `kHardwareUnavailable` (exit 3, recorded as the failed `cluster_pass_completed` check). The llama backend is
+  Father-only (`--tier fast`, no Node stages, `--q 1`).
+- `--model DIR` is a converted model directory instead of the generated fixture; Father reads it, Nodes receive only the
+  plan-assigned objects from Father (a Node never takes a model path). `--no-reference` skips the Father-only reference run
+  (needed when the model does not fit on Father alone); the reference runs happen before the cluster starts so a real backend
+  never holds two models in device memory.
+- `--node NAME=HOST:PORT@FINGERPRINT` (repeatable, with `--identity DIR` for Father's persistent identity, which the Nodes pin)
+  uses Nodes that are already running on the other machines instead of spawning localhost processes: real links. Node memory
+  series and the staging census are not available for them (their own release reports - resources released, storage cleaned,
+  residual bytes - are recorded; run `storage-census` on that machine).
+- Provenance: the result is `Measured` only when every input is real: `--model` (not the fixture), a real backend, `--on-target`,
+  the default (not scripted) drafter, no `--impair`, no folded tokenizer ids, and no Node on loopback (`--node` endpoints on
+  other machines, or a Father-only plan, which has no links). Anything simulated is listed under `simulated`
+  (`localhost_cluster`, `fixture_model`, `reference_backend`, `scripted_drafter`, `network_preset`, `tokenizer_ids_folded`) and
+  forces `Synthetic`; `--on-target` with localhost Nodes is not applied (`configuration.on_target_not_applied`). The tool never
+  emits `Qualified`.
+- `--corpus FILE|DIR --tokenizer-gguf FILE` tokenizes the corpus on Father with `father::GgufBpeTokenizer` (docs/tokenizer.md;
+  the GGUF's metadata only). A directory gives one prompt per file; a file longer than twice the prompt length is cut into up
+  to 8 consecutive windows. The text and token ids stay in the Father process: results carry counts only (`corpus`,
+  `corpus_tokenizer`). A tokenizer larger than the model's vocabulary is refused for a real model; on the fixture model its ids
+  fold into the 256-token range and the result says so (`tokenizer_ids_folded`, Synthetic). Without `--tokenizer-gguf` the
+  bytes are the ids (fixture only). `placement-inputs` takes the same flags.
+- Per-domain state (HQ-PERF-02): at release every domain reports the sequence state it actually had allocated (KV, recurrent,
+  PLE) and its per-session window scratch, as the peak over the lease (`ReleaseComplete`, docs/protocol.md): metrics
+  `state.father.stage<S>.bytes` / `.window_bytes`, `state.<node>.stage<S>.bytes` / `.window_bytes`, `state.total_bytes`,
+  `state.total_window_bytes`, `state.max_context`. They are sized at the plan's `max_context` (the lease's allocation, not the
+  prompt in use). The reference domain reports its real buffers; StrataDomain reports Strata's `session_bytes` and
+  `Verifier::init_bytes` (the same carve the engine allocates with; it needs no device to compute).
 
 - Provisioning: per Node `bytes`, `objects`, Father-view `prepare ms`, Node-side prepare time, wire bytes/s;
   `--phase prepare --repeat N` repeats cold prepare/release cycles.
@@ -123,9 +159,10 @@ It measures the software path and gives the harness for the real runs.
   wait = remote wall time minus the Nodes' reported compute; `stage.wait_fraction` is total wait over total round time.
 - `--tier fast|strong|ultra` chooses a layer split (Ultra = Father + two Nodes), `--compare-routing` runs the plan
   with direct Node-to-Node forwarding and with Father relay, `--minutes` runs a sustained generation loop,
-  `--corpus DIR` uses the bytes of each file as a fixture prompt (real corpora need the Father tokenizer).
-- Correctness is checked against a Father-only reference on every run; activation messages are checked to stay
-  within the boundary ABI.
+  `--corpus` as above.
+- Correctness is checked against a Father-only reference on every run (unless `--no-reference`: then no
+  `*_tokens_match_father_only_reference` check is made and `configuration.reference_check` is false); activation messages are
+  checked to stay within the boundary ABI.
 - `--contexts 8192,32768,...` runs a context sweep in one invocation with every result keyed `ctx<N>.q<q>.*` (even for
   one context); `--context` keeps the older keying (prefixed only for more than one). Per-context VRAM margins need the
   backend and are not recorded here.
@@ -150,7 +187,35 @@ It measures the software path and gives the harness for the real runs.
 - `faults --only a,b` runs a subset: scenario names (`crash_<phase>`, `father_lost`, `local_activity`, `link_loss`,
   `stall`, `release_cycles`), a bare lifecycle phase (selects `crash_<phase>`) or `crash` (all of them); an unknown name
   is a usage error (exit 2) and the result records `scenarios_run`. `release_cycles` records the resource series per
-  cycle (`release_cycles.resources.*`).
+  cycle (`release_cycles.resources.*`). `faults` takes `--backend` and its flags and `--model` like `cluster`.
+- `faults --supervised` (or `--only supervised`) adds the HQ-REL-01 scenarios in which Node 0 runs under
+  `clusterlm-node-service --console --simulate-activity` (its own `--helper-pipe` per instance), which supervises the
+  worker as the Windows service does in a Job Object, and the bench counts the service's events:
+  `supervised_forced_termination` (local activity while Ready, the worker hangs in its cleanup, misses the cooperative
+  deadline `--deadline-ms`, default 1500, and is force-terminated and relaunched: `forced_terminations`,
+  `activity_to_forced_termination_ms`, `residual_bytes_at_relaunch`) and `supervised_crash_recovery` (the worker dies in its
+  cleanup after Father's release: `worker_relaunches`, `release_to_relaunch_ms`). In both, node 0 stages its objects on disk
+  (`staged_bytes_before_fault` > 0), the relaunched worker's orphan recovery must leave nothing staged, the Node must be
+  offered again (`offers`) and the next lease must generate correctly; two cycles each. The Job Object itself is Windows-only
+  (docs/windows-service.md); here the supervisor is the same `NodeSupervisor` over a child process.
+
+### Placement prediction vs measurement (`placement-validate`, HQ-PLACE-01)
+
+`clusterlm-bench placement-validate [--top N] [--q Q] [--prompt-len L] [--max-new N] [--repeat R]` runs the placement search
+(profiles as for `placement`, costed for the model that will actually run: `cost_inputs_from_manifest`), takes the top-N
+ranked candidates, converts each to a `ClusterPlan` (`planning::to_cluster_plan`, including its GPU/CPU residency targets and
+the VRAM each Node is planned to use) and runs it through the same cluster pass as `cluster` on a fresh set of Nodes. Per
+candidate `cand<i>.predicted.{decode_tok_s,prefill_s,prepare_s,objective}` sit beside `cand<i>.measured.*` and
+`cand<i>.measured_over_predicted.*`, the pass's own metrics are under `cand<i>.`, and `trace` has one `placement_candidate`
+entry. `rank.{decode_tok_s,prefill_s,prepare_s}.*` says how well the predicted order matches the measured one: Spearman rank
+correlation, the share of concordant candidate pairs and whether the predicted best is the measured best (`valid` is false
+for a constant series or fewer than two candidates). On the fixture model with the Synthetic profiles this is Synthetic and
+exercises the machinery only (localhost processes of one machine are not the target hardware, and the shipped profiles
+describe quantizations the fixture does not use: the fixture's get a Synthetic stand-in throughput). The qualification run
+uses `--model`, `--backend strata`, measured profiles and `--endpoint PROFILE_ID=HOST:PORT@FINGERPRINT` (repeatable, with
+`--identity DIR`): each candidate then runs on the already-running Nodes of the profiles it places, in its own node order,
+over real links, and the result is `Measured` only with `--on-target`, a real model and backend, no loopback endpoint and
+no Synthetic profile field.
 
 ### GPU telemetry (`nvml`, also inside `cpu --sustained`, `calibrate --sustained-minutes`, `cluster --minutes`)
 

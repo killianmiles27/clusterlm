@@ -20,7 +20,8 @@ set(CLUSTERLM_BENCH_HARNESS_SOURCES
   src/expert_kernels.cpp src/expert_providers_external.cpp src/cpu_bench.cpp
   src/memory_probe.cpp src/gpu_probe.cpp src/transport_bench.cpp
   src/bench_profile.cpp src/bench_common.cpp src/schema_check.cpp src/command_specs.cpp
-  src/system_probe.cpp src/nvml_probe.cpp src/storage_census.cpp)
+  src/system_probe.cpp src/nvml_probe.cpp src/storage_census.cpp
+  src/bench_backend.cpp src/corpus_prompts.cpp src/rank_agreement.cpp src/cluster_pass.cpp)
 if(CLUSTERLM_BENCH_CUDA_ENABLED)
   list(APPEND CLUSTERLM_BENCH_HARNESS_SOURCES src/gpu_probe_cuda.cpp)
 endif()
@@ -28,7 +29,7 @@ endif()
 clusterlm_module(clusterlm_bench_harness
   SOURCES ${CLUSTERLM_BENCH_HARNESS_SOURCES}
   DEPS clusterlm_coordinator clusterlm_platform clusterlm_transport clusterlm_placement clusterlm_domain clusterlm_objects
-       clusterlm_third_party Threads::Threads ${CMAKE_DL_LIBS})
+       clusterlm_backend_factory clusterlm_father_service clusterlm_third_party Threads::Threads ${CMAKE_DL_LIBS})
 target_include_directories(clusterlm_bench_harness PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/apps/common)
 if(CLUSTERLM_BENCH_CUDA_ENABLED)
   target_compile_definitions(clusterlm_bench_harness PUBLIC CLUSTERLM_BENCH_HAS_CUDA=1)
@@ -55,4 +56,4 @@ if(TARGET clusterlm_llama_client)
   add_dependencies(clusterlm-bench clusterlm-llama-rpc-server)
 endif()
 # clusterlm-bench spawns clusterlm-node from its own directory.
-add_dependencies(clusterlm-bench clusterlm-node)
+add_dependencies(clusterlm-bench clusterlm-node clusterlm-node-service)

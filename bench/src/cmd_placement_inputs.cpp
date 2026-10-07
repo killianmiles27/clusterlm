@@ -2,12 +2,17 @@
 // the cluster layout — aggregate routing frequencies (layer x expert counts only), Father's per-round draft/
 // verify overhead, and MTP acceptance per verification width — by running a corpus through a Father-only plan.
 //
-// On the fixture model this is Synthetic. On the real artifact with the real backend and a held-out corpus it
-// produces Measured routing aggregates that `planning::load_routing_aggregates` feeds into placement (HQ-PLACE-02).
+// On the fixture model this is Synthetic. On the real artifact (--model) with the real backend (--backend strata|llama
+// and its option flags, as clusterlm-father takes them), the model's tokenizer (--tokenizer-gguf) and a held-out corpus
+// (--corpus, one prompt per line) with --on-target it produces Measured routing aggregates that
+// `planning::load_routing_aggregates` feeds into placement (HQ-PLACE-02). The corpus text and token ids stay in this process.
 #include <cstdio>
 #include <fstream>
 
+#include "bench_backend.hpp"
 #include "bench_common.hpp"
+#include "clusterlm/backends/backend_factory.hpp"
+#include "corpus_prompts.hpp"
 #include "clusterlm/common/clock.hpp"
 #include "clusterlm/coordinator/coordinator.hpp"
 #include "clusterlm/domain/drafter.hpp"
@@ -24,6 +29,11 @@ namespace fs = std::filesystem;
 int cmd_placement_inputs(const cli::Args& args) {
   Stopwatch total;
   BenchmarkResult r(args.get("experiment", "dev-placement-inputs"), probe_host());
+  const RunContext rc = make_run_context(args);
+  if (auto st = backends::check_backend_name(args.get("backend", "reference")); !st.is_ok()) {
+    std::fprintf(stderr, "placement-inputs: %s\n", st.to_string().c_str());
+    return st.code() == ErrorCode::kInvalidArgument ? 2 : 3;
+  }
   const bool fixture = !args.has("model");
   fs::path model_dir;
   if (fixture) {
@@ -37,8 +47,20 @@ int cmd_placement_inputs(const cli::Args& args) {
   } else {
     model_dir = args.get("model");
   }
+  // Calibration runs are Father-only (routing is a property of model and data), so no Node is involved and the llama
+  // backend is allowed as well as strata.
+  auto backend = resolve_backend(args, model_dir, 0);
+  if (!backend.is_ok()) {
+    std::fprintf(stderr, "placement-inputs: %s\n", backend.status().to_string().c_str());
+    return backend.status().code() == ErrorCode::kInvalidArgument ? 2 : (backend.status().code() == ErrorCode::kUnimplemented ? 3 : 1);
+  }
+  r.backend(backend->name, backend->build_hash);
+  r.config("backend", backend->name);
+  apply_run_context(r, rc);  // a Father-only calibration has no links: --on-target says this is the named Father machine
+  if (!backend->real()) r.mark_simulated("reference_backend", true);
   coordinator::CoordinatorConfig cfg;
   cfg.model_dir = model_dir;
+  cfg.backend = backend->father;
   cfg.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;
   auto coord = coordinator::Coordinator::create(cfg);
   if (!coord.is_ok()) {
@@ -70,29 +92,56 @@ int cmd_placement_inputs(const cli::Args& args) {
     corpus = {"The quick brown fox jumps over the lazy dog.", "Distributed inference across idle machines.",
               "int main() { return 0; }", "Explain why the sky is blue in two sentences."};
   }
-  if (!fixture) {
+  std::vector<std::uint32_t> qs_requested = {1, 2, 3, 4};
+  if (args.has("q")) {
+    qs_requested.clear();
+    for (const auto& q : cli::split(args.get("q"), ',')) qs_requested.push_back(static_cast<std::uint32_t>(std::stoul(q)));
+  }
+  // The tokenizer: the real one from the model's GGUF (--tokenizer-gguf), or the byte tokenizer of the fixture model.
+  std::shared_ptr<father::Tokenizer> tok;
+  if (args.has("tokenizer-gguf")) {
+    auto loaded = load_corpus_tokenizer(args.get("tokenizer-gguf"));
+    if (!loaded.is_ok()) {
+      std::fprintf(stderr, "placement-inputs: tokenizer: %s\n", loaded.status().to_string().c_str());
+      return 1;
+    }
+    tok = std::move(loaded).value();
+    if (tok->vocab_size() > m.geometry.vocab_size) {
+      if (!fixture) {
+        std::fprintf(stderr, "placement-inputs: the tokenizer's vocabulary (%u) is larger than the model's (%u)\n", tok->vocab_size(),
+                     m.geometry.vocab_size);
+        return 1;
+      }
+      r.mark_simulated("tokenizer_ids_folded", true);  // a real vocabulary on the fixture model: ids fold into its range
+    }
+  } else if (!fixture) {
     r.check("tokenizer_available", false,
-            "the real model's tokenizer is provided by its backend; this build has no tokenizer for it");
+            "the real model's tokenizer comes from its GGUF: give --tokenizer-gguf FILE (the first shard of the model)");
     r.pending("HQ-PLACE-02");
     return emit(args, r, total.elapsed_ms() / 1000.0, 3);
+  } else {
+    auto bytes = father::FixtureByteTokenizer::create(m.geometry.vocab_size);
+    if (!bytes.is_ok()) return 1;
+    tok = std::move(bytes).value();
   }
-  auto tok = father::FixtureByteTokenizer::create(m.geometry.vocab_size);
-  auto store = objects::CanonicalModelStore::open(model_dir);
-  auto drafter = store.is_ok() ? domain::MtpFixtureDrafter::create(m, *store.value())
-                               : Result<std::unique_ptr<domain::MtpFixtureDrafter>>(store.status());
-  if (!tok.is_ok() || !drafter.is_ok()) return 1;
-  std::shared_ptr<domain::Drafter> d = std::move(drafter).value();
+  const auto vocab = static_cast<std::int32_t>(m.geometry.vocab_size);
+  // The backend's drafter bound to the prepared Father-only plan (the fixture head, or Strata's MTP head on the tail).
+  std::shared_ptr<domain::Drafter> d;
+  if (std::any_of(qs_requested.begin(), qs_requested.end(), [](std::uint32_t q) { return q > 1; })) {
+    auto made = c.make_drafter();
+    if (!made.is_ok()) {
+      std::fprintf(stderr, "placement-inputs: %s\n", made.status().to_string().c_str());
+      return made.status().code() == ErrorCode::kUnimplemented ? 3 : 1;
+    }
+    d = std::move(made).value();
+  }
   const auto max_new = static_cast<std::uint32_t>(args.integer("max-new", 32));
-  std::vector<std::uint32_t> qs = {1, 2, 3, 4};
-  if (args.has("q")) {
-    qs.clear();
-    for (const auto& q : cli::split(args.get("q"), ',')) qs.push_back(static_cast<std::uint32_t>(std::stoul(q)));
-  }
-  for (auto q : qs) {
+  for (auto q : qs_requested) {
     Distribution accepted, round_overhead_ms, draft_ms;
     for (const auto& text : corpus) {
       coordinator::GenerationRequest g;
-      g.prompt = tok.value()->encode(text);
+      g.prompt = tok->encode(text);
+      for (auto& id : g.prompt) id %= vocab;  // no-op for a real model's own tokenizer
       g.max_new_tokens = max_new;
       g.q = q;
       if (q > 1) g.drafter = d;
@@ -124,8 +173,12 @@ int cmd_placement_inputs(const cli::Args& args) {
   out.n_layers = L;
   out.n_experts = m.geometry.n_experts;
   out.n_active = m.geometry.n_active_experts;
-  out.provenance = placement::Provenance::kSynthetic;  // fixture model; a real run on target would be Measured
-  out.source = "bench:placement-inputs fixture";
+  // Measured only for the real artifact on the real backend run on the target machine (--on-target); anything else
+  // (fixture model, reference backend, folded token ids) is Synthetic and says so.
+  const bool measured_run = rc.on_target && !fixture && backend->real() && args.has("corpus");
+  out.provenance = measured_run ? placement::Provenance::kMeasured : placement::Provenance::kSynthetic;
+  out.source = measured_run ? "bench:" + rc.run_id + "@" + rc.machine_id : "bench:placement-inputs fixture";
+  if (measured_run) r.set_measured();
   out.frequencies.assign(L, std::vector<double>(m.geometry.n_experts, 0.0));
   std::uint64_t positions = 0;
   for (const auto& a : agg.value()) {

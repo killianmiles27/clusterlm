@@ -3,6 +3,7 @@
 #include <set>
 #include <sstream>
 
+#include "bench_backend.hpp"
 #include "commands.hpp"
 
 namespace clusterlm::bench {
@@ -39,13 +40,28 @@ std::vector<CommandSpec> build() {
                                               "window-timeout-ms", "tokens", "max-new", "prompt-len", "context", "repeat", "q",
                                               "drafter", "prefill-chunk", "interleave", "phase", "corpus", "minutes", "work", "keep-work",
                                               // sweep, OS observers (NIC counters, process memory, NVML, cache census)
-                                              "contexts", "nic", "no-resources", "sample-ms", "sample-s", "census"}})});
+                                              "contexts", "nic", "no-resources", "sample-ms", "sample-s", "census",
+                                              // real text prompts (Father tokenizer) and the Father-only reference
+                                              "tokenizer-gguf", "no-reference",
+                                              // Nodes that are already running on other machines (real links)
+                                              "node", "identity"},
+                                     backend_flags()})});
   s.push_back({"faults", {}, join({kCommon, {"plan", "model", "seed", "insecure", "window-timeout-ms", "max-new", "release-cycles",
-                                             "work", "keep-work", "impair", "only", "no-resources", "no-census"}})});
+                                             "work", "keep-work", "impair", "only", "no-resources", "no-census",
+                                             // Nodes under clusterlm-node-service (HQ-REL-01) and the backend of the run
+                                             "supervised", "deadline-ms", "no-reference"},
+                                    backend_flags()})});
   s.push_back({"nvml", {}, join({kCommon, {"minutes", "sample-s"}})});
   s.push_back({"storage-census", {}, join({kCommon, {"before", "after", "diff", "snapshot", "against", "root", "staging-root", "exclude"}})});
   s.push_back({"placement", {}, join({kCommon, {"profiles", "father", "node", "network", "context", "q"}})});
-  s.push_back({"placement-inputs", {}, join({kCommon, {"model", "corpus", "q", "max-new", "routing-out", "work"}})});
+  s.push_back({"placement-inputs", {}, join({kCommon, {"model", "corpus", "q", "max-new", "routing-out", "work", "tokenizer-gguf"},
+                                             backend_flags()})});
+  s.push_back({"placement-validate", {}, join({kCommon, {"profiles", "father", "node", "network", "top", "q", "model", "seed", "insecure",
+                                                         "max-new", "prompt-len", "prefill-chunk", "repeat", "granularity", "work",
+                                                         "keep-work", "window-timeout-ms", "no-resources", "no-reference",
+                                                         // already-running Nodes, one per profile id (real links)
+                                                         "endpoint", "identity"},
+                                                backend_flags()})});
   s.push_back({"qualification", {}, kCommon});
   s.push_back({"domain",
                {"cpu-experts", "sustained", "gpu-layers", "vram-ledger", "grouped-experts"},
@@ -92,13 +108,22 @@ std::vector<std::string> fault_scenario_names() {
   return out;
 }
 
-Result<std::vector<std::string>> select_fault_scenarios(const std::string& only) {
-  const auto all = fault_scenario_names();
-  if (only.empty()) return all;
+std::vector<std::string> supervised_fault_scenario_names() {
+  return {"supervised_forced_termination", "supervised_crash_recovery"};
+}
+
+Result<std::vector<std::string>> select_fault_scenarios(const std::string& only, bool include_supervised) {
+  const auto base = fault_scenario_names();
+  const auto supervised = supervised_fault_scenario_names();
+  auto all = base;
+  all.insert(all.end(), supervised.begin(), supervised.end());
+  if (only.empty()) return include_supervised ? all : base;
   std::set<std::string> want;
   for (const auto& tok : split_csv(only)) {
     if (tok == "crash") {  // every crash_<phase>
       for (const auto& p : kCrashPhases) want.insert("crash_" + p);
+    } else if (tok == "supervised") {  // the scenarios that run the Nodes under clusterlm-node-service
+      want.insert(supervised.begin(), supervised.end());
     } else if (std::find(all.begin(), all.end(), tok) != all.end()) {
       want.insert(tok);
     } else if (std::find(kCrashPhases.begin(), kCrashPhases.end(), tok) != kCrashPhases.end()) {
@@ -107,7 +132,7 @@ Result<std::vector<std::string>> select_fault_scenarios(const std::string& only)
       std::string valid;
       for (const auto& n : all) valid += (valid.empty() ? "" : ", ") + n;
       return make_error(ErrorCode::kInvalidArgument,
-                        "unknown fault scenario or phase '" + tok + "' (scenarios: " + valid + "; groups: crash; phases: " +
+                        "unknown fault scenario or phase '" + tok + "' (scenarios: " + valid + "; groups: crash, supervised; phases: " +
                             [&] {
                               std::string ph;
                               for (const auto& p : kCrashPhases) ph += (ph.empty() ? "" : ", ") + p;

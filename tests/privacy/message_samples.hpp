@@ -157,7 +157,7 @@ inline std::vector<protocol::Message> sample_messages(std::uint32_t positions = 
   out.emplace_back(CommitAckMessage{StageId{1}, domain::CommitAck{SessionId{5}, WindowId{9}, 14, StateVersion{5}}});
   out.emplace_back(AbortSession{Epoch{2}, SessionId{5}, "operator requested"});
   out.emplace_back(ReleaseLease{LeaseGeneration{7}, ReleaseReason::kLocalActivity});
-  out.emplace_back(ReleaseComplete{LeaseGeneration{7}, true, true, 0, 555, "none"});
+  out.emplace_back(ReleaseComplete{LeaseGeneration{7}, true, true, 0, 555, "none", {{StageId{2}, 1u << 20, 4096}}});
   out.emplace_back(ErrorMessage{ErrorCode::kStaleEpoch, "stale lease", MessageType::kRunWindow});
   out.emplace_back(Ping{42});
   out.emplace_back(Pong{42});

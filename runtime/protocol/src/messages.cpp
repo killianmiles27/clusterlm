@@ -405,10 +405,25 @@ void encode_body(ByteWriter& w, const ReleaseComplete& m) {
   w.u64(m.residual_bytes);
   w.u64(m.release_ns);
   w.str(m.errors);
+  w.u32(static_cast<std::uint32_t>(m.domain_state.size()));
+  for (const auto& d : m.domain_state) {
+    put(w, d.stage);
+    w.u64(d.state_bytes_peak);
+    w.u64(d.window_bytes_peak);
+  }
 }
 bool decode_body(ByteReader& r, ReleaseComplete& m, const DecodeLimits& l) {
-  return get(r, m.lease) && r.boolean(m.resources_released) && r.boolean(m.storage_cleaned) &&
-         r.u64(m.residual_bytes) && r.u64(m.release_ns) && r.str(m.errors, l.max_string);
+  if (!(get(r, m.lease) && r.boolean(m.resources_released) && r.boolean(m.storage_cleaned) &&
+        r.u64(m.residual_bytes) && r.u64(m.release_ns) && r.str(m.errors, l.max_string)))
+    return false;
+  // Optional trailing per-domain state sizes (absent from a Node built before they existed).
+  if (r.remaining() == 0) return true;
+  std::uint32_t n = 0;
+  if (!r.u32(n) || n > kMaxStages || r.remaining() / 20 < n) return false;  // u32 + 2 x u64 per entry
+  m.domain_state.resize(n);
+  for (auto& d : m.domain_state)
+    if (!(get(r, d.stage) && r.u64(d.state_bytes_peak) && r.u64(d.window_bytes_peak))) return false;
+  return true;
 }
 
 void encode_body(ByteWriter& w, const ErrorMessage& m) {

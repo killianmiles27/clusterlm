@@ -256,6 +256,14 @@ struct GenerationResult {
   }
 };
 
+// What one domain actually had allocated for its open sessions, as the domain reports it - the largest value seen over the
+// lease: sequence state (KV / recurrent / PLE) and the per-session window scratch. Sizes only (HQ-PERF-02).
+struct DomainStateReport {
+  std::uint32_t stage = 0;   // stage id in the plan
+  std::uint64_t state_bytes_peak = 0;
+  std::uint64_t window_bytes_peak = 0;
+};
+
 struct ReleaseReport {
   struct NodeRelease {
     std::string node;
@@ -264,8 +272,12 @@ struct ReleaseReport {
     std::uint64_t residual_bytes = 0;
     double release_ms = 0;
     std::string errors;
+    // Per domain this Node hosted. Empty when the Node predates the field or released on its own (crash, local activity).
+    std::vector<DomainStateReport> domain_state;
   };
   std::vector<NodeRelease> nodes;
+  // Father's own prefix/tail domains.
+  std::vector<DomainStateReport> father_domain_state;
 };
 
 class Coordinator {

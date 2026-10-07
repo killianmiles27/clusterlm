@@ -12,18 +12,28 @@
 #include <set>
 #include <thread>
 
+#include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/common/clock.hpp"
 #include "clusterlm/domain/drafter.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
 #include "clusterlm/objects/fixture_model.hpp"
+#include "clusterlm/placement/placement.hpp"
+#include "clusterlm/placement/profile.hpp"
+#include "clusterlm/planning/planning.hpp"
+#include "clusterlm/platform/fs_safety.hpp"
 #include "clusterlm/platform/process.hpp"
 #include "clusterlm/protocol/messages.hpp"
+#include "bench_backend.hpp"
 #include "bench_common.hpp"
+#include "cluster_pass.hpp"
 #include "commands.hpp"
+#include "corpus_prompts.hpp"
 #include "local_cluster.hpp"
 #include "nvml_probe.hpp"
+#include "rank_agreement.hpp"
 #include "storage_census.hpp"
 #include "system_probe.hpp"
+#include "cluster_pass.hpp"
 
 namespace clusterlm::bench {
 
@@ -34,121 +44,6 @@ namespace {
 
 constexpr const char* kDefaultPlan = "0-4@father,4-10@0,10-13@1,13-16@father";
 
-struct ClusterSetup {
-  fs::path work;
-  fs::path model_dir;
-  std::unique_ptr<LocalCluster> cluster;
-  std::optional<transport::NetworkConditions> impairment;
-};
-
-fs::path default_work_dir(const std::string& name) {
-  return fs::temp_directory_path() / ("clusterlm-bench-" + name + "-" + std::to_string(monotonic_ns()));
-}
-
-Result<fs::path> ensure_model(const cli::Args& args, const fs::path& work) {
-  if (args.has("model")) return fs::path(args.get("model"));
-  const fs::path dir = work / "fixture-model";
-  objects::FixtureSpec spec;
-  spec.seed = args.integer("seed", spec.seed);
-  CLM_RETURN_IF_ERROR(objects::write_fixture_model(spec, dir).status());
-  return dir;
-}
-
-Result<ClusterSetup> setup(const cli::Args& args, const fs::path& work, const fs::path& model_dir, std::size_t nodes,
-                           const std::vector<LocalNodeOptions>& overrides = {}) {
-  ClusterSetup s;
-  s.work = work;
-  s.model_dir = model_dir;
-  LocalClusterOptions opts;
-  opts.work_dir = s.work;
-  opts.tls = !args.has("insecure");
-  for (std::size_t i = 0; i < nodes; ++i) {
-    LocalNodeOptions n = i < overrides.size() ? overrides[i] : LocalNodeOptions{};
-    if (n.name.empty()) n.name = "node" + std::to_string(i);
-    if (args.has("impair")) n.impair = args.get("impair");
-    opts.nodes.push_back(n);
-  }
-  if (args.has("impair")) {
-    CLM_ASSIGN_OR_RETURN(auto preset, transport::network_preset(args.get("impair")));
-    s.impairment = preset;
-  }
-  CLM_ASSIGN_OR_RETURN(s.cluster, LocalCluster::start(opts));
-  return s;
-}
-
-coordinator::CoordinatorConfig father_config(const ClusterSetup& s, const cli::Args& args,
-                                             std::optional<bool> direct_peer = std::nullopt) {
-  coordinator::CoordinatorConfig cfg;
-  cfg.model_dir = s.model_dir;
-  cfg.security = s.cluster ? s.cluster->father_security() : transport::SecurityConfig{};
-  if (!s.cluster) cfg.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;
-  if (s.cluster) cfg.nodes = s.cluster->endpoints();
-  cfg.direct_peer = direct_peer.value_or(!args.has("relay"));
-  cfg.impairment = s.impairment;
-  cfg.window_timeout = std::chrono::milliseconds(args.integer("window-timeout-ms", 10'000));
-  return cfg;
-}
-
-Result<std::shared_ptr<domain::Drafter>> make_drafter(const fs::path& model_dir, const objects::ModelManifest& m,
-                                                       std::unique_ptr<objects::CanonicalModelStore>& keep) {
-  CLM_ASSIGN_OR_RETURN(keep, objects::CanonicalModelStore::open(model_dir));
-  CLM_ASSIGN_OR_RETURN(auto d, domain::MtpFixtureDrafter::create(m, *keep));
-  return std::shared_ptr<domain::Drafter>(std::move(d));
-}
-
-std::vector<std::int32_t> prompt_tokens(std::uint32_t n, std::uint32_t vocab) {
-  std::vector<std::int32_t> out;
-  for (std::uint32_t i = 0; i < n; ++i) out.push_back(static_cast<std::int32_t>((i * 7919u + 13u) % vocab));
-  return out;
-}
-
-// Father-only execution of the same model: the correctness reference for every distributed run.
-Result<std::vector<std::int32_t>> reference_tokens(const fs::path& model_dir, const std::vector<std::int32_t>& prompt,
-                                                   std::uint32_t max_new, std::uint32_t max_context = 2048) {
-  coordinator::CoordinatorConfig cfg;
-  cfg.model_dir = model_dir;
-  cfg.security.mode = transport::SecurityConfig::Mode::kInsecureLoopbackOnly;
-  CLM_ASSIGN_OR_RETURN(auto c, coordinator::Coordinator::create(cfg));
-  const auto n = c->manifest().geometry.n_layers;
-  CLM_ASSIGN_OR_RETURN(auto plan, coordinator::ClusterPlan::parse("0-" + std::to_string(n / 2) + "@father," +
-                                                                      std::to_string(n / 2) + "-" + std::to_string(n) +
-                                                                      "@father",
-                                                                  n));
-  plan.max_context = std::max(plan.max_context, max_context);
-  CLM_RETURN_IF_ERROR(c->prepare(plan).status());
-  coordinator::GenerationRequest req;
-  req.prompt = prompt;
-  req.max_new_tokens = max_new;
-  CLM_ASSIGN_OR_RETURN(auto gen, c->generate(req));
-  CLM_RETURN_IF_ERROR(c->release().status());
-  return gen.tokens;
-}
-
-std::size_t remote_count(const coordinator::ClusterPlan& p) {
-  std::size_t n = 0;
-  for (const auto& s : p.stages) n += s.domain != coordinator::kFatherDomain;
-  return n;
-}
-
-void record_census(BenchmarkResult& r, LocalCluster& cluster, const std::string& label) {
-  bool clean = true;
-  std::string detail;
-  for (std::size_t i = 0; i < cluster.size(); ++i) {
-    auto st = cluster.status(i);
-    if (!st.is_ok()) {
-      clean = false;
-      detail += "node" + std::to_string(i) + ": " + st.status().to_string() + "; ";
-      continue;
-    }
-    if (st->census_bytes != 0) clean = false;
-    detail += "node" + std::to_string(i) + "=" + std::to_string(st->census_bytes) + "B(" + st->state + ") ";
-  }
-  r.check(label, clean, detail);
-}
-
-}  // namespace
-
-namespace {
 
 // Layer split for a tier on a model with `n` layers: Ultra = Father + two Nodes, Strong = Father + one Node,
 // Fast = Father only. Prefix and tail always stay on Father (token IDs never leave it).
@@ -160,454 +55,36 @@ std::string plan_for_tier(const std::string& tier, std::uint32_t n) {
          "@father";
 }
 
-// Fixture tokenization of a corpus file: bytes folded into the vocabulary. Real corpora need the Father tokenizer
-// (HQ-MTP-01 stays pending until the real model is in play).
-std::vector<std::vector<std::int32_t>> corpus_prompts(const std::string& dir, std::uint32_t len, std::uint32_t vocab) {
-  std::vector<std::filesystem::path> files;
+
+}  // namespace
+
+namespace {
+
+// Exit code for a backend/hardware problem: 2 for a usage error (unknown backend), 3 for "this build or machine cannot do
+// that" (a backend that is not built, a device that is not there), 1 otherwise.
+int exit_code_for(const Status& st) {
+  switch (st.code()) {
+    case ErrorCode::kInvalidArgument: return 2;
+    case ErrorCode::kUnimplemented:
+    case ErrorCode::kHardwareUnavailable: return 3;
+    default: return 1;
+  }
+}
+
+// Application-owned bytes staged under a Node staging root (everything but the content-free journal), as the Node's own
+// status line counts them; all-ones when the root cannot be read.
+std::uint64_t staged_bytes(const fs::path& root) {
+  auto total = platform::allocated_bytes_under(root);
+  if (!total.is_ok()) return ~std::uint64_t{0};
   std::error_code ec;
-  for (const auto& e : fs::directory_iterator(dir, ec))
-    if (e.is_regular_file()) files.push_back(e.path());
-  std::sort(files.begin(), files.end());
-  std::vector<std::vector<std::int32_t>> out;
-  for (const auto& f : files) {
-    std::ifstream in(f, std::ios::binary);
-    std::vector<std::int32_t> p;
-    char c;
-    while (p.size() < len && in.get(c)) p.push_back(static_cast<std::int32_t>(static_cast<unsigned char>(c)) % static_cast<std::int32_t>(vocab));
-    const std::size_t n0 = p.size();
-    while (n0 > 0 && p.size() < len) p.push_back(p[p.size() % n0]);
-    if (!p.empty()) out.push_back(std::move(p));
-  }
-  return out;
+  const auto journal = fs::file_size(root / "journal.log", ec);
+  return total.value() - (ec ? 0 : std::min<std::uint64_t>(journal, total.value()));
 }
 
-struct Cfg {
-  std::uint32_t q = 1;
-  std::uint32_t context = 0;  // prompt length
-  std::string key;
-  std::vector<std::vector<std::int32_t>> prompts;
-  std::vector<std::vector<std::int32_t>> references;  // Father-only tokens per prompt
-  std::vector<std::shared_ptr<domain::Drafter>> drafters;
-  Distribution round_ms, tok_s, ttft, ttft_cold, ttft_warm, accepted, bytes_per_token, prefill_ms, prefill_tok_s;
-  Distribution draft_ms, verify_ms, commit_ms, wait_ms, father_compute_ms;
-  std::map<std::size_t, Distribution> node_compute_ms, node_cpu_expert_ms;
-  // Inter-token gaps of the streamed output (on_tokens deliveries): per token (members of one delivery are 0 apart)
-  // and per delivery (the stall a reader of the stream actually sees). HQ-MTP-01 / HQ-PERF-01.
-  Distribution token_gap_ms, delivery_gap_ms;
-  std::uint64_t payload_bytes_total = 0;  // boundary payload over every round incl. prefill (for the NIC comparison)
-  std::uint64_t proposed = 0, accepted_draft = 0, rounds = 0, tokens_emitted = 0;
-  double wait_total_ms = 0, round_total_ms = 0;
-  bool tokens_ok = true, bounded_payload = true, failed = false;
-  coordinator::GenerationRequest request;
-};
-
-struct PassContext {
-  const cli::Args& args;
-  BenchmarkResult& r;
-  std::string prefix;
-  fs::path work, model_dir;
-  std::string plan_text;
-  std::vector<std::uint32_t> qs, contexts;
-  std::uint32_t max_new = 64, prefill_chunk = 16;
-  int repeat = 3;
-  bool direct_peer = true;
-  bool fixture = true;
-  bool keyed_contexts = false;  // --contexts: results are keyed ctx<N>. even for a single context
-  bool resources = true;        // process RSS/commit (+ VRAM) series; --no-resources
-  double sample_ms = 200;       // minimum spacing of per-round resource samples (--sample-ms; 0 = every round)
-  double telemetry_s = 5;       // NVML interval during --minutes runs (--sample-s)
-  bool census = false;          // --census: cache/temp before/after
-};
-
-// Folds one generation into a config's distributions.
-void record_generation(Cfg& c, const coordinator::GenerationResult& gen, const domain::BoundaryLayout& boundary,
-                       const std::vector<std::int32_t>& reference, int rep, bool first_config_first_rep, BenchmarkResult& r,
-                       const std::string& trace_prefix) {
-  c.tokens_ok = c.tokens_ok && gen.tokens == reference;
-  c.ttft.add(gen.first_token_ms);
-  (rep == 0 ? c.ttft_cold : c.ttft_warm).add(gen.first_token_ms);
-  c.prefill_ms.add(gen.prefill_ms);
-  if (gen.prefill_ms > 0) c.prefill_tok_s.add(1000.0 * static_cast<double>(c.context) / gen.prefill_ms);
-  if (gen.decode_ms > 0) c.tok_s.add(1000.0 * gen.decode_tokens / gen.decode_ms);
-  std::uint64_t decode_bytes = 0;
-  for (const auto& rd : gen.rounds) {
-    c.payload_bytes_total += rd.boundary_payload_bytes;
-    if (rd.prefill) continue;
-    c.round_ms.add(rd.total_ms);
-    c.accepted.add(rd.accepted);
-    ++c.rounds;
-    c.tokens_emitted += rd.accepted;
-    // positions-1 draft tokens are proposed in a round; accepted-1 of them were verified correct (the first
-    // position is the model's own next token and is always accepted).
-    if (rd.positions > 0) c.proposed += rd.positions - 1;
-    if (rd.accepted > 0) c.accepted_draft += rd.accepted - 1;
-    c.draft_ms.add(rd.draft_ms);
-    c.commit_ms.add(rd.commit_ms);
-    c.verify_ms.add(rd.prefix_ms + rd.remote_ms + rd.tail_ms);
-    decode_bytes += rd.boundary_payload_bytes;
-    // Compute vs wait per stage: Father's prefix/tail are local compute; the remote section's wall time minus the
-    // Nodes' reported compute is wait (link, queueing, pipeline dependency). Tolerant of missing timings.
-    c.father_compute_ms.add(rd.prefix_ms + rd.tail_ms);
-    double remote_compute = 0;
-    for (std::size_t i = 0; i < rd.remote_timings.size(); ++i) {
-      const double comp = static_cast<double>(rd.remote_timings[i].compute_ns) * 1e-6;
-      c.node_compute_ms[i].add(comp);
-      c.node_cpu_expert_ms[i].add(static_cast<double>(rd.remote_timings[i].cpu_expert_ns) * 1e-6);
-      remote_compute += comp;
-    }
-    if (!rd.remote_timings.empty()) {
-      const double wait = std::max(0.0, rd.remote_ms - remote_compute);
-      c.wait_ms.add(wait);
-      c.wait_total_ms += wait;
-    }
-    c.round_total_ms += rd.total_ms;
-    // NET-01: every activation message is the boundary payload plus bounded fixed fields — there is no room for
-    // token IDs or other per-position content.
-    const std::uint64_t activation = std::uint64_t{rd.positions} * boundary.bytes_per_position();
-    const std::uint64_t per_message_overhead = 512;
-    if (rd.boundary_payload_bytes > rd.boundary_messages * (activation + per_message_overhead)) c.bounded_payload = false;
-    if (first_config_first_rep)
-      r.trace({{"kind", "round"}, {"q", c.q}, {"positions", rd.positions}, {"accepted", rd.accepted}, {"total_ms", rd.total_ms},
-               {"draft_ms", rd.draft_ms}, {"prefix_ms", rd.prefix_ms}, {"remote_ms", rd.remote_ms}, {"tail_ms", rd.tail_ms},
-               {"commit_ms", rd.commit_ms}, {"boundary_messages", rd.boundary_messages},
-               {"boundary_payload_bytes", rd.boundary_payload_bytes}, {"scope", trace_prefix}});
-  }
-  if (gen.decode_tokens > 0) c.bytes_per_token.add(static_cast<double>(decode_bytes) / gen.decode_tokens);
-}
-
-void emit_cfg(BenchmarkResult& r, const std::string& prefix, const Cfg& c) {
-  const std::string k = prefix + c.key;
-  r.check(k + "_tokens_match_father_only_reference", c.tokens_ok);
-  r.check(k + "_activation_messages_bounded_by_boundary_abi", c.bounded_payload);
-  r.metric(k + ".round_ms", c.round_ms, "ms");
-  r.metric(k + ".decode_tok_s_fixture", c.tok_s, "tok/s");
-  r.metric(k + ".decode_tok_s", c.tok_s, "tok/s");
-  r.metric(k + ".ttft_ms", c.ttft, "ms");
-  r.metric(k + ".ttft_cold_ms", c.ttft_cold, "ms");
-  r.metric(k + ".ttft_warm_ms", c.ttft_warm, "ms");
-  r.metric(k + ".prefill_ms", c.prefill_ms, "ms");
-  r.metric(k + ".prefill_tok_s", c.prefill_tok_s, "tok/s");
-  r.metric(k + ".accepted_per_round", c.accepted, "tokens");
-  r.metric(k + ".boundary_bytes_per_emitted_token", c.bytes_per_token, "bytes");
-  r.metric(k + ".draft_ms", c.draft_ms, "ms");
-  r.metric(k + ".verify_ms", c.verify_ms, "ms");
-  r.metric(k + ".commit_ms", c.commit_ms, "ms");
-  r.metric(k + ".mtp.proposed_positions", c.proposed);
-  r.metric(k + ".mtp.accepted_positions", c.accepted_draft);
-  r.metric(k + ".mtp.acceptance_rate", c.proposed > 0 ? static_cast<double>(c.accepted_draft) / static_cast<double>(c.proposed) : 0.0);
-  r.metric(k + ".mtp.accepted_tokens_per_round", c.rounds > 0 ? static_cast<double>(c.tokens_emitted) / static_cast<double>(c.rounds) : 0.0);
-  r.metric(k + ".inter_token_gap_ms", c.token_gap_ms, "ms");
-  r.metric(k + ".inter_delivery_gap_ms", c.delivery_gap_ms, "ms");
-  r.metric(k + ".stage.father.compute_ms", c.father_compute_ms, "ms");
-  for (const auto& [i, d] : c.node_compute_ms) r.metric(k + ".stage.node" + std::to_string(i) + ".compute_ms", d, "ms");
-  for (const auto& [i, d] : c.node_cpu_expert_ms) r.metric(k + ".stage.node" + std::to_string(i) + ".cpu_expert_ms", d, "ms");
-  r.metric(k + ".stage.remote_wait_ms", c.wait_ms, "ms");
-  r.metric(k + ".stage.wait_fraction", c.round_total_ms > 0 ? c.wait_total_ms / c.round_total_ms : 0.0);
-}
-
-// One pass over a freshly started cluster. Metric keys are prefixed with `ctx.prefix` ("" for a single pass,
-// "direct." / "relay." when comparing routing).
-Status run_cluster_pass(PassContext& pc) {
-  BenchmarkResult& r = pc.r;
-  const cli::Args& args = pc.args;
-  const std::string& P = pc.prefix;
-
-  std::size_t nodes = 0;
-  for (const auto& item : cli::split(pc.plan_text, ','))
-    if (item.find("@father") == std::string::npos) ++nodes;
-  CLM_ASSIGN_OR_RETURN(auto s, setup(args, pc.work / (P.empty() ? "pass" : P.substr(0, P.size() - 1)), pc.model_dir, nodes));
-  CLM_ASSIGN_OR_RETURN(auto coord, coordinator::Coordinator::create(father_config(s, args, pc.direct_peer)));
-  auto& c = *coord;
-
-  // ---- OS-level observers around this pass (HQ-NET-02, HQ-PERF-04, HQ-PERF-02, HQ-GPU-03, HQ-STORE-01) ----
-  // NIC byte counters of the interface routed to the first Node (or --nic), over the whole pass and over generation
-  // only; process RSS/commit of Father and every Node process; NVML when the driver library is present.
-  const std::string first_host = s.cluster->size() > 0 ? s.cluster->endpoints().front().endpoint.host : std::string();
-  NicWindow nic_pass(args.get("nic"), first_host), nic_gen(args.get("nic"), first_host);
-  nic_pass.begin();
-  ResourceSampler sampler;
-  sampler.add_process("father", [] { return std::int64_t{0}; });
-  for (std::size_t i = 0; i < s.cluster->size(); ++i)
-    sampler.add_process("node" + std::to_string(i), [&s, i] { return s.cluster->pid(i); });
-  auto nvml = NvmlTelemetry::open();
-  std::unique_ptr<TelemetryRecorder> telemetry;
-  if (nvml.is_ok()) {
-    sampler.set_gpu(nvml.value().get());
-    if (args.has("minutes")) {
-      telemetry = std::make_unique<TelemetryRecorder>(*nvml.value(), pc.telemetry_s);
-      telemetry->start();
-    }
-  } else {
-    emit_gpu_telemetry_unavailable(r, nvml.status().message(), P + "nvml.");
-  }
-  std::optional<CensusSnapshot> census_before;
-  std::vector<CensusRoot> census_roots;
-  std::int64_t census_start_ns = 0;
-  if (pc.census) {
-    std::vector<CensusRoot> staging;
-    for (std::size_t i = 0; i < s.cluster->size(); ++i) {
-      CensusRoot root;
-      root.label = "node_staging_" + std::to_string(i);
-      root.path = s.cluster->staging_root(i);
-      staging.push_back(std::move(root));
-    }
-    census_roots = default_census_roots(staging, {pc.work});
-    census_before = take_census(census_roots);
-    census_start_ns = census_before->taken_ns;
-  }
-  if (pc.resources) sampler.sample("start");
-  const auto& m = c.manifest();
-  CLM_ASSIGN_OR_RETURN(auto plan, coordinator::ClusterPlan::parse(pc.plan_text, m.geometry.n_layers));
-  std::uint32_t max_ctx = 0;
-  for (auto ctxlen : pc.contexts) max_ctx = std::max(max_ctx, ctxlen);
-  plan.max_context = std::max(plan.max_context, max_ctx + pc.max_new + 8);
-  r.config(P + "plan", plan.describe());
-  r.config(P + "direct_peer", pc.direct_peer);
-  CLM_RETURN_IF_ERROR(c.connect());
-
-  // ---- provisioning / load time per node ----
-  const bool prepare_only = args.get("phase") == "prepare";
-  Distribution prepare_total;
-  std::map<std::string, Distribution> node_ms, node_prepare_ms, node_bytes_per_s;
-  // HQ-PROV-01: where a Node's prepare time goes. Father: source read vs. digest vs. send (transfer, including
-  // transport backpressure). Node: chunk verify+write vs. whole-object hash at seal vs. domain build.
-  struct Breakdown {
-    Distribution father_read_ms, father_digest_ms, father_send_ms, node_write_ms, node_hash_ms, node_build_ms;
-    Distribution father_read_bytes_per_s, father_send_bytes_per_s;
-  };
-  std::map<std::string, Breakdown> breakdown;
-  auto record_prepare = [&](const coordinator::PrepareReport& prep) {
-    prepare_total.add(prep.total_ms);
-    for (const auto& n : prep.nodes) {
-      node_ms[n.node].add(n.prepare_ms);
-      node_prepare_ms[n.node].add(static_cast<double>(n.node_prepare_ns) * 1e-6);
-      if (n.prepare_ms > 0) node_bytes_per_s[n.node].add(static_cast<double>(n.bytes) / (n.prepare_ms / 1000.0));
-      auto& b = breakdown[n.node];
-      b.father_read_ms.add(static_cast<double>(n.father_source_read_ns) * 1e-6);
-      b.father_digest_ms.add(static_cast<double>(n.father_chunk_digest_ns) * 1e-6);
-      b.father_send_ms.add(static_cast<double>(n.father_send_ns) * 1e-6);
-      b.node_write_ms.add(static_cast<double>(n.node_chunk_write_ns) * 1e-6);
-      b.node_hash_ms.add(static_cast<double>(n.node_seal_hash_ns) * 1e-6);
-      b.node_build_ms.add(static_cast<double>(n.node_build_ns) * 1e-6);
-      if (n.father_source_read_ns > 0) b.father_read_bytes_per_s.add(static_cast<double>(n.bytes) / (static_cast<double>(n.father_source_read_ns) * 1e-9));
-      if (n.father_send_ns > 0) b.father_send_bytes_per_s.add(static_cast<double>(n.bytes) / (static_cast<double>(n.father_send_ns) * 1e-9));
-    }
-    if (pc.resources) sampler.sample("prepare_cycle");
-  };
-  CLM_ASSIGN_OR_RETURN(auto prep, c.prepare(plan));
-  record_prepare(prep);
-  std::uint64_t provisioned = 0;
-  for (const auto& n : prep.nodes) {
-    provisioned += n.bytes;
-    r.metric(P + "prepare.node." + n.node + ".bytes", n.bytes);
-    r.metric(P + "prepare.node." + n.node + ".objects", n.objects);
-  }
-  r.metric(P + "prepare.father_resident_bytes", prep.father_resident_bytes);
-  r.metric(P + "model.total_object_bytes", [&] {
-    std::uint64_t t = 0;
-    for (const auto& o : m.objects) t += o.byte_size;
-    return t;
-  }());
-  std::uint64_t expected = 0;
-  for (const auto& st : plan.stages)
-    if (st.domain != coordinator::kFatherDomain) expected += m.total_bytes(st.layers);
-  r.check(P + "provisioned_only_assigned_layers", provisioned == expected,
-          std::to_string(provisioned) + " bytes provisioned, " + std::to_string(expected) + " assigned");
-
-  if (prepare_only) {
-    // PROV-01 shape: repeated release + prepare cycles; every cycle is a cold provisioning of the plan.
-    for (int i = 1; i < pc.repeat; ++i) {
-      CLM_RETURN_IF_ERROR(c.release().status());
-      CLM_RETURN_IF_ERROR(c.connect());
-      CLM_ASSIGN_OR_RETURN(auto again, c.prepare(plan));
-      record_prepare(again);
-    }
-  }
-
-  const auto boundary = domain::BoundaryLayout::for_geometry(m.geometry);
-  std::unique_ptr<objects::CanonicalModelStore> drafter_store;
-  std::shared_ptr<domain::Drafter> mtp_drafter;
-  if (!prepare_only) {
-    CLM_ASSIGN_OR_RETURN(mtp_drafter, make_drafter(pc.model_dir, m, drafter_store));
-  }
-
-  // ---- generation configurations ----
-  std::vector<Cfg> cfgs;
-  if (!prepare_only) {
-    for (auto ctxlen : pc.contexts)
-      for (auto q : pc.qs) {
-        Cfg cfg;
-        cfg.q = q;
-        cfg.context = ctxlen;
-        cfg.key = (pc.contexts.size() > 1 || pc.keyed_contexts ? "ctx" + std::to_string(ctxlen) + "." : std::string()) + "q" + std::to_string(q);
-        if (args.has("corpus")) {
-          cfg.prompts = corpus_prompts(args.get("corpus"), ctxlen, m.geometry.vocab_size);
-          if (cfg.prompts.empty()) return make_error(ErrorCode::kNotFound, "corpus '" + args.get("corpus") + "' has no readable files");
-        } else {
-          cfg.prompts.push_back(prompt_tokens(ctxlen, m.geometry.vocab_size));
-        }
-        for (const auto& pr : cfg.prompts) {
-          CLM_ASSIGN_OR_RETURN(auto ref, reference_tokens(pc.model_dir, pr, pc.max_new, plan.max_context));
-          cfg.references.push_back(std::move(ref));
-          if (q > 1) {
-            // --drafter mtp (default): the fixture MTP head — random weights, so it is almost never accepted.
-            // --drafter scripted:RATE: replays the reference continuation with deterministic corruption at RATE,
-            // exercising every acceptance length. Acceptance on the real model is HQ-MTP-01.
-            const std::string kind = args.get("drafter", "mtp");
-            if (kind.rfind("scripted", 0) == 0) {
-              domain::ScriptedDrafter::Config dc;
-              dc.vocab = m.geometry.vocab_size;
-              dc.corruption_rate = kind.size() > 9 ? std::stod(kind.substr(9)) : 0.3;
-              std::vector<std::int32_t> seq = pr;
-              seq.insert(seq.end(), cfg.references.back().begin(), cfg.references.back().end());
-              cfg.drafters.push_back(std::make_shared<domain::ScriptedDrafter>(std::move(seq), dc));
-            } else {
-              cfg.drafters.push_back(mtp_drafter);
-            }
-          } else {
-            cfg.drafters.push_back(nullptr);
-          }
-        }
-        cfg.request.max_new_tokens = pc.max_new;
-        cfg.request.q = q;
-        cfg.request.prefill_chunk = pc.prefill_chunk;
-        cfgs.push_back(std::move(cfg));
-      }
-  }
-
-  auto run_one = [&](Cfg& cfg, int rep, bool trace) -> Status {
-    const std::size_t pi = static_cast<std::size_t>(rep) % cfg.prompts.size();
-    coordinator::GenerationRequest req = cfg.request;
-    req.prompt = cfg.prompts[pi];
-    req.drafter = cfg.drafters[pi];
-    // Streamed-token timing: counts and timestamps only, never the tokens themselves.
-    struct StreamClock {
-      bool have = false;
-      std::uint64_t last_ns = 0;
-    } stream;
-    req.on_tokens = [&](std::span<const std::int32_t> tokens) {
-      const std::uint64_t now = monotonic_ns();
-      if (!tokens.empty()) {
-        if (stream.have) {
-          const double gap = static_cast<double>(now - stream.last_ns) * 1e-6;
-          cfg.delivery_gap_ms.add(gap);
-          cfg.token_gap_ms.add(gap);
-        } else {
-          stream.have = true;
-        }
-        for (std::size_t i = 1; i < tokens.size(); ++i) cfg.token_gap_ms.add(0.0);  // same delivery: no wait between
-        stream.last_ns = now;
-      }
-      if (pc.resources) sampler.sample_throttled("round", pc.sample_ms);
-    };
-    if (pc.resources) sampler.sample("generation_start");
-    auto gen = c.generate(req);
-    if (pc.resources) sampler.sample("generation_end");
-    if (!gen.is_ok()) {
-      r.check(P + cfg.key + "_generate", false, gen.status().to_string());
-      cfg.failed = true;
-      cfg.tokens_ok = false;
-      return gen.status();
-    }
-    record_generation(cfg, gen.value(), boundary, cfg.references[pi], rep, trace, r, P.empty() ? "cluster" : P);
-    return Status::ok();
-  };
-  // Order: --interleave runs repetition r of every configuration before repetition r+1 of any (drift hits all
-  // configurations alike); otherwise each configuration completes its repetitions in turn.
-  nic_gen.begin();
-  if (args.has("interleave")) {
-    for (int rep = 0; rep < pc.repeat; ++rep)
-      for (std::size_t i = 0; i < cfgs.size(); ++i)
-        if (!cfgs[i].failed) (void)run_one(cfgs[i], rep, rep == 0 && i == 0);
-  } else {
-    for (std::size_t i = 0; i < cfgs.size(); ++i)
-      for (int rep = 0; rep < pc.repeat && !cfgs[i].failed; ++rep) (void)run_one(cfgs[i], rep, rep == 0 && i == 0);
-  }
-  for (const auto& cfg : cfgs) emit_cfg(r, P, cfg);
-  if (!cfgs.empty() && !args.has("minutes")) nic_gen.end();
-
-  // ---- sustained generation (--minutes): decode rate over time, thermal/leak derate ----
-  if (!cfgs.empty() && args.has("minutes")) {
-    const double minutes = args.number("minutes", 0);
-    Cfg& cfg = cfgs.front();
-    SustainedReport sus;
-    sus.minutes = minutes;
-    sus.sample_interval_s = 0;
-    Stopwatch total;
-    int rep = pc.repeat;
-    while (total.elapsed_ms() / 1000.0 < minutes * 60.0) {
-      const std::size_t before = cfg.tok_s.samples.size();
-      if (!run_one(cfg, rep++, false).is_ok()) break;
-      if (cfg.tok_s.samples.size() > before) sus.samples.push_back({total.elapsed_ms() / 1000.0, cfg.tok_s.samples.back(), std::nullopt});
-    }
-    summarize_sustained(sus);
-    nic_gen.end();
-    r.metric(P + "sustained.minutes", minutes);
-    r.metric(P + "sustained.samples", sus.samples.size());
-    r.metric(P + "sustained.initial_decode_tok_s", sus.initial_bytes_per_s);
-    r.metric(P + "sustained.final_decode_tok_s", sus.final_bytes_per_s);
-    r.metric(P + "sustained.factor", sus.sustained_factor);
-    r.metric(P + "sustained.slope_pct_per_min", sus.slope_pct_per_min);
-    r.metric(P + "sustained.time_to_equilibrium_s", sus.time_to_equilibrium_s);
-    r.check(P + "sustained_all_generations_correct", cfg.tokens_ok);
-    if (minutes < kMinSustainedMinutes) r.pending("HQ-PERF-04");
-  }
-
-  r.metric(P + "prepare.total_ms", prepare_total, "ms");
-  for (const auto& [node, d] : node_ms) r.metric(P + "prepare.node." + node + ".ms", d, "ms");
-  for (const auto& [node, d] : node_prepare_ms) r.metric(P + "prepare.node." + node + ".node_side_ms", d, "ms");
-  for (const auto& [node, d] : node_bytes_per_s) r.metric(P + "prepare.node." + node + ".provision_bytes_per_s", d, "bytes/s");
-  r.metric(P + "boundary.bytes_per_position", boundary.bytes_per_position());
-  r.metric(P + "boundary.remote_stages", remote_count(plan));
-  for (const auto& [node, b] : breakdown) {
-    const std::string k = P + "prepare.node." + node + ".";
-    r.metric(k + "father_source_read_ms", b.father_read_ms, "ms");
-    r.metric(k + "father_chunk_digest_ms", b.father_digest_ms, "ms");
-    r.metric(k + "father_send_ms", b.father_send_ms, "ms");
-    r.metric(k + "node_chunk_write_ms", b.node_write_ms, "ms");
-    r.metric(k + "node_seal_hash_ms", b.node_hash_ms, "ms");
-    r.metric(k + "node_build_ms", b.node_build_ms, "ms");
-    r.metric(k + "father_source_read_bytes_per_s", b.father_read_bytes_per_s, "bytes/s");
-    r.metric(k + "father_send_bytes_per_s", b.father_send_bytes_per_s, "bytes/s");
-  }
-  {
-    std::uint64_t payload_total = 0;
-    for (const auto& cfg : cfgs) payload_total += cfg.payload_bytes_total;
-    r.metric(P + "boundary.payload_bytes_total", payload_total);
-    nic_gen.emit(r, P + "generation.");
-    if (nic_gen.available() && payload_total > 0)
-      r.metric(P + "generation.nic.wire_bytes_per_boundary_payload_byte",
-               static_cast<double>(nic_gen.delta().rx_bytes + nic_gen.delta().tx_bytes) / static_cast<double>(payload_total));
-  }
-
-  // Release: every Node must report resources released and storage cleaned with zero residual bytes.
-  auto rel = c.release();
-  if (!rel.is_ok()) {
-    r.check(P + "release", false, rel.status().to_string());
-  } else {
-    Distribution release_ms;
-    for (const auto& n : rel->nodes) {
-      r.check(P + "release_" + n.node + "_storage_cleaned", n.resources_released && n.storage_cleaned && n.residual_bytes == 0, n.errors);
-      r.metric(P + "release." + n.node + ".ms", n.release_ms);
-      release_ms.add(n.release_ms);
-    }
-  }
-  record_census(r, *s.cluster, P + "post_release_census_zero");
-  if (pc.resources) {
-    sampler.sample("released");
-    sampler.emit(r, P + "resources.");
-  }
-  nic_pass.end();
-  nic_pass.emit(r, P);
-  if (telemetry && nvml.is_ok()) {
-    const auto samples = telemetry->stop();
-    emit_gpu_telemetry(r, *nvml.value(), samples, P + "nvml.");
-  }
-  if (census_before) {
-    const auto after = take_census(census_roots);
-    emit_census_diff(r, diff_census(*census_before, after, census_start_ns, after.taken_ns), P);
-  }
-  return Status::ok();
+void cleanup_work(const cli::Args& args, const fs::path& work) {
+  if (args.has("keep-work") || args.has("work")) return;
+  std::error_code ec;
+  fs::remove_all(work, ec);
 }
 
 }  // namespace
@@ -616,16 +93,18 @@ int cmd_cluster(const cli::Args& args) {
   Stopwatch total;
   const RunContext rc = make_run_context(args);
   BenchmarkResult r(args.get("experiment", "dev-cluster"), probe_host());
-  apply_run_context(r, RunContext{rc.run_id, rc.machine_id, rc.role, false});  // localhost: never a target machine
-  r.mark_simulated("localhost_cluster", true);
-  r.mark_simulated("fixture_model", !args.has("model"));
-  if (args.has("impair")) r.mark_simulated("network_preset", args.get("impair"));
-  r.backend("reference", "reference");
+
+  // A backend this binary was built without (or an unknown one) fails here, before a model is written or a process spawned.
+  if (auto st = backends::check_backend_name(args.get("backend", "reference")); !st.is_ok()) {
+    std::fprintf(stderr, "cluster: %s\n", st.to_string().c_str());
+    return exit_code_for(st);
+  }
 
   const fs::path work = args.has("work") ? fs::path(args.get("work")) : default_work_dir("cluster");
   auto model_dir = ensure_model(args, work);
   if (!model_dir.is_ok()) {
     std::fprintf(stderr, "model: %s\n", model_dir.status().to_string().c_str());
+    cleanup_work(args, work);
     return 1;
   }
   std::uint32_t n_layers = 0;
@@ -633,20 +112,27 @@ int cmd_cluster(const cli::Args& args) {
     auto store = objects::CanonicalModelStore::open(model_dir.value());
     if (!store.is_ok()) {
       std::fprintf(stderr, "%s\n", store.status().to_string().c_str());
+      cleanup_work(args, work);
       return 1;
     }
     n_layers = store.value()->manifest().geometry.n_layers;
   }
 
-  PassContext pc{args, r, "", work, model_dir.value(), {}, {}, {}, 64, 16, 3, !args.has("relay"), !args.has("model")};
+  PassContext pc(args, r);
+  pc.work = work;
+  pc.model_dir = model_dir.value();
+  pc.direct_peer = !args.has("relay");
+  pc.fixture = !args.has("model");
   if (args.has("plan")) pc.plan_text = args.get("plan");
   else pc.plan_text = plan_for_tier(args.get("tier", "ultra"), n_layers);
+  const std::size_t remote_stages = remote_stage_count(pc.plan_text);
   pc.max_new = static_cast<std::uint32_t>(args.integer("tokens", args.integer("max-new", 64)));
   pc.repeat = static_cast<int>(args.integer("repeat", 3));
   pc.prefill_chunk = static_cast<std::uint32_t>(args.integer("prefill-chunk", 16));
   pc.qs = args.has("q") ? parse_u32_list(args.get("q")) : std::vector<std::uint32_t>{1, 4};
   if (args.has("contexts") && args.has("context")) {
     std::fprintf(stderr, "--contexts and --context are mutually exclusive\n");
+    cleanup_work(args, work);
     return 2;
   }
   // --contexts runs the whole sweep in one invocation with every result keyed ctx<N>.q<q>.* (even for one context);
@@ -661,8 +147,59 @@ int cmd_cluster(const cli::Args& args) {
   pc.census = args.has("census");
   if (pc.qs.empty() || pc.contexts.empty() || pc.repeat < 1) {
     std::fprintf(stderr, "q, context and repeat must be non-empty/positive\n");
+    cleanup_work(args, work);
     return 2;
   }
+
+  // --node: Nodes already running on other machines. The plan's node indices refer to them in the order given.
+  auto external = parse_external_nodes(args);
+  if (!external.is_ok() || (!external->empty() && external->size() < remote_stages)) {
+    std::fprintf(stderr, "cluster: %s\n",
+                 external.is_ok() ? ("the plan runs " + std::to_string(remote_stages) + " Node stage(s) but --node names " +
+                                     std::to_string(external->size())).c_str()
+                                  : external.status().to_string().c_str());
+    cleanup_work(args, work);
+    return 2;
+  }
+  auto backend = resolve_backend(args, pc.model_dir, remote_stages);
+  if (!backend.is_ok()) {
+    std::fprintf(stderr, "cluster: %s\n", backend.status().to_string().c_str());
+    cleanup_work(args, work);
+    return exit_code_for(backend.status());
+  }
+  pc.backend = &backend.value();
+  if (backend->name == "llama" && std::any_of(pc.qs.begin(), pc.qs.end(), [](std::uint32_t q) { return q > 1; })) {
+    std::fprintf(stderr, "cluster: the llama backend has no MTP drafter: use --q 1\n");
+    cleanup_work(args, work);
+    return 2;
+  }
+
+  // ---- provenance (docs/benchmark-methodology.md): anything simulated keeps the result Synthetic ----
+  // Real = the converted model of the tier (--model), a real backend, no simulated network, no fixture drafter, and no
+  // localhost Nodes standing in for machines: Nodes started by this command are localhost processes, --node endpoints that
+  // are not loopback are real links, and a Father-only plan has no links at all. --on-target is the operator's assertion
+  // that this is the named machine; localhost Nodes are never the target Nodes, so it is not honoured then.
+  bool localhost_nodes = false;
+  if (remote_stages > 0) {
+    if (external->empty()) localhost_nodes = true;
+    for (const auto& ep : external.value()) localhost_nodes = localhost_nodes || is_loopback_host(ep.endpoint.host);
+  }
+  RunContext effective = rc;
+  effective.on_target = rc.on_target && !localhost_nodes;
+  apply_run_context(r, effective);
+  if (localhost_nodes) r.mark_simulated("localhost_cluster", true);
+  r.config("external_nodes", external->size());
+  if (pc.fixture) r.mark_simulated("fixture_model", true);
+  if (!backend->real()) r.mark_simulated("reference_backend", true);
+  if (args.has("impair")) r.mark_simulated("network_preset", args.get("impair"));
+  if (args.get("drafter", "mtp").rfind("scripted", 0) == 0) r.mark_simulated("scripted_drafter", true);
+  if (rc.on_target && localhost_nodes)
+    r.config("on_target_not_applied", "the plan runs Nodes as localhost processes: not the target machines (use --node HOST:PORT@FINGERPRINT)");
+  if (effective.on_target && !pc.fixture && backend->real()) r.set_measured();  // finish() overrides it when anything above was marked
+  r.backend(backend->name, backend->build_hash);
+
+  r.config("backend", backend->name);
+  r.config("model", pc.fixture ? "fixture" : model_dir.value().filename().string());
   r.config("tier", args.get("tier", args.has("plan") ? "custom" : "ultra"));
   r.config("tls", !args.has("insecure"));
   r.config("context", pc.contexts);
@@ -674,6 +211,19 @@ int cmd_cluster(const cli::Args& args) {
   r.config("phase", args.get("phase", "all"));
   r.config("drafter", args.get("drafter", "mtp"));
   r.config("meets_min_repetitions", pc.repeat >= 5);  // qualification runs need >= 5
+
+  // Prompts and Father-only reference outputs first: a real backend must not hold the reference model and the cluster's
+  // Father domains in device memory together. --no-reference skips the references (a model that does not fit Father alone).
+  if (args.get("phase") != "prepare") {
+    auto sets = build_prompt_sets(args, pc.model_dir, backend.value().real() ? &backend.value() : nullptr, pc.contexts, pc.max_new,
+                                  !args.has("no-reference"), r);
+    if (!sets.is_ok()) {
+      std::fprintf(stderr, "cluster: %s\n", sets.status().to_string().c_str());
+      cleanup_work(args, work);
+      return exit_code_for(sets.status());
+    }
+    pc.prompt_sets = std::move(sets).value();
+  }
 
   Status st;
   if (args.has("compare-routing")) {
@@ -692,11 +242,9 @@ int cmd_cluster(const cli::Args& args) {
     r.check("cluster_pass_completed", false, st.to_string());
   }
   for (const char* id : {"HQ-PERF-01", "HQ-NET-02", "HQ-MTP-01", "HQ-PROV-01"}) r.pending(id);
-  const int code = emit(args, r, total.elapsed_ms() / 1000.0);
-  if (!args.has("keep-work") && !args.has("work")) {
-    std::error_code ec;
-    fs::remove_all(work, ec);
-  }
+  int code = emit(args, r, total.elapsed_ms() / 1000.0);
+  if (!st.is_ok() && exit_code_for(st) == 3) code = 3;  // e.g. the Strata engine without a usable CUDA device
+  cleanup_work(args, work);
   return code;
 }
 
@@ -704,7 +252,12 @@ int cmd_cluster(const cli::Args& args) {
 
 int cmd_faults(const cli::Args& args) {
   Stopwatch total;
-  auto selected = select_fault_scenarios(args.get("only"));
+  if (auto st = backends::check_backend_name(args.get("backend", "reference")); !st.is_ok()) {
+    std::fprintf(stderr, "faults: %s\n", st.to_string().c_str());
+    return exit_code_for(st);
+  }
+  // --supervised adds the scenarios that run the Nodes under clusterlm-node-service to the default selection.
+  auto selected = select_fault_scenarios(args.get("only"), args.has("supervised"));
   if (!selected.is_ok()) {
     std::fprintf(stderr, "faults: %s\n", selected.status().message().c_str());
     return 2;
@@ -714,9 +267,9 @@ int cmd_faults(const cli::Args& args) {
   };
   BenchmarkResult r(args.get("experiment", "dev-faults"), probe_host());
   r.config("scenarios_run", nlohmann::json(*selected));
-  r.config("scenario_subset", selected->size() != fault_scenario_names().size());
+  r.config("scenario_subset", selected->size() != fault_scenario_names().size() + (args.has("supervised") ? supervised_fault_scenario_names().size() : 0));
   r.mark_simulated("localhost_cluster", true);
-  r.mark_simulated("fixture_model", !args.has("model"));
+  if (!args.has("model")) r.mark_simulated("fixture_model", true);
   const std::string plan_text = args.get("plan", kDefaultPlan);
   const auto max_new = static_cast<std::uint32_t>(args.integer("max-new", 16));
   const fs::path work = args.has("work") ? fs::path(args.get("work")) : default_work_dir("faults");
@@ -725,6 +278,18 @@ int cmd_faults(const cli::Args& args) {
     std::fprintf(stderr, "%s\n", model_dir.status().to_string().c_str());
     return 1;
   }
+  auto backend = resolve_backend(args, model_dir.value(), remote_stage_count(plan_text));
+  if (!backend.is_ok()) {
+    std::fprintf(stderr, "faults: %s\n", backend.status().to_string().c_str());
+    if (!args.has("keep-work") && !args.has("work")) {
+      std::error_code ec;
+      fs::remove_all(work, ec);
+    }
+    return exit_code_for(backend.status());
+  }
+  if (!backend->real()) r.mark_simulated("reference_backend", true);
+  r.backend(backend->name, backend->build_hash);
+  r.config("backend", backend->name);
   // HQ-STORE-01: cache/temp census around the whole run (the Node staging roots live in the excluded work dir and are
   // covered by the per-scenario census_bytes checks).
   const bool census_on = !args.has("no-census");
@@ -736,24 +301,37 @@ int cmd_faults(const cli::Args& args) {
   }
   std::vector<std::int32_t> prompt;
   std::vector<std::int32_t> reference;
+  const bool have_reference = !args.has("no-reference");  // a real model that does not fit Father alone has no reference
   {
     auto m = objects::CanonicalModelStore::open(model_dir.value());
     if (!m.is_ok()) return 1;
-    prompt = prompt_tokens(24, m.value()->manifest().geometry.vocab_size);
-    auto ref = reference_tokens(model_dir.value(), prompt, max_new);
-    if (!ref.is_ok()) return 1;
-    reference = ref.value();
+    prompt = synthetic_prompt_tokens(24, m.value()->manifest().geometry.vocab_size);
+    if (have_reference) {
+      auto ref = reference_tokens(model_dir.value(), &backend.value(), prompt, max_new);
+      if (!ref.is_ok()) {
+        std::fprintf(stderr, "faults: reference run: %s\n", ref.status().to_string().c_str());
+        return exit_code_for(ref.status());
+      }
+      reference = ref.value();
+    }
   }
+  r.config("reference_check", have_reference);
+
+  // Cooperative release deadline of a supervised Node: a worker that has not reached Busy and clean in this time is
+  // terminated by its service (HQ-REL-01; the product default is 2 s).
+  const auto deadline_ms = static_cast<std::uint32_t>(args.integer("deadline-ms", 1500));
 
   // One scenario = a fresh two-Node cluster. Returns the setup for follow-up checks.
   auto run_scenario = [&](const std::string& name, std::vector<LocalNodeOptions> node_opts,
                           const std::function<void(LocalCluster&, coordinator::Coordinator&,
                                                    const coordinator::ClusterPlan&)>& body,
-                          bool connect_father = true) {
-    cli::Args sub = args;
+                          bool connect_father = true, bool supervised = false) {
     LocalClusterOptions opts;
     opts.work_dir = work / name;
     opts.tls = !args.has("insecure");
+    opts.supervised = supervised;
+    opts.cooperative_deadline = std::chrono::milliseconds(deadline_ms);
+    opts.node_args = backend->node_args;
     for (std::size_t i = 0; i < 2; ++i) {
       LocalNodeOptions n = i < node_opts.size() ? node_opts[i] : LocalNodeOptions{};
       if (n.name.empty()) n.name = "node" + std::to_string(i);
@@ -767,6 +345,7 @@ int cmd_faults(const cli::Args& args) {
     ClusterSetup s;
     s.work = opts.work_dir;
     s.model_dir = model_dir.value();
+    s.backend = backend->father;
     s.cluster = std::move(cluster).value();
     auto cfg = father_config(s, args);
     cfg.window_timeout = 3s;
@@ -812,8 +391,8 @@ int cmd_faults(const cli::Args& args) {
       return;
     }
     auto gen = c.generate(request());
-    r.check(name + "_regenerate_matches_reference", gen.is_ok() && gen->tokens == reference,
-            gen.is_ok() ? "" : gen.status().to_string());
+    r.check(name + (have_reference ? "_regenerate_matches_reference" : "_regenerate_completed"),
+            gen.is_ok() && (!have_reference || gen->tokens == reference), gen.is_ok() ? "" : gen.status().to_string());
     (void)c.release();
     record_census(r, cl, name + "_census_zero_after_release");
   };
@@ -849,6 +428,8 @@ int cmd_faults(const cli::Args& args) {
     const auto eps = cl.endpoints();
     std::vector<std::string> fargs = {"--model", model_dir.value().string(), "--plan", plan_text, "--max-new", "1500",
                                       "--prefill-chunk", "8"};
+    for (const auto& flag : backend_flags())
+      if (args.has(flag)) fargs.insert(fargs.end(), {"--" + flag, args.get(flag)});
     const auto id_dir = (work / "father_lost" / "father-id").string();
     if (!args.has("insecure")) fargs.insert(fargs.end(), {"--identity", id_dir});
     for (std::size_t i = 0; i < eps.size(); ++i)
@@ -968,7 +549,7 @@ int cmd_faults(const cli::Args& args) {
       // Two chats in one Ready lease reuse allocations: no reprovisioning between them.
       for (int chat = 0; chat < 2 && ok; ++chat) {
         auto gen = c.generate(request());
-        ok = gen.is_ok() && gen->tokens == reference;
+        ok = gen.is_ok() && (!have_reference || gen->tokens == reference);
       }
       Stopwatch sw;
       auto rel = c.release();
@@ -986,6 +567,119 @@ int cmd_faults(const cli::Args& args) {
     record_census(r, cl, "release_cycles_final_census_zero");
   });
 
+  // 6. HQ-REL-01 under supervision. Node 0 runs under clusterlm-node-service (console mode, simulated user activity), which
+  // supervises its worker the way the Windows service does (a Job Object there, a child process here):
+  //   supervised_forced_termination  local activity arrives while the lease is Ready, but the worker hangs in its cleanup (a
+  //                                  stuck driver): it misses the cooperative deadline, the service force-terminates it
+  //                                  and relaunches it (event forced_termination; residual_bytes is what the relaunched
+  //                                  worker's orphan recovery left staged);
+  //   supervised_crash_recovery      Father releases the lease and the worker dies in its cleanup, with objects still staged:
+  //                                  the service notices the exit and relaunches it (event worker_restarted), and the
+  //                                  relaunched worker's orphan recovery must delete what the dead one left.
+  // Either way the Node must be offered again and the next lease must generate correctly; two cycles each. The service's
+  // events are counted (forced terminations, relaunches, revocations, offers).
+  auto supervised_scenario = [&](const std::string& name, LocalNodeOptions faulty, bool expect_forced) {
+    constexpr int kCycles = 2;
+    faulty.name = "node0";
+    faulty.disk_gib = 1.0;  // Node 0 stages its objects in files under its staging root, so a dead worker leaves orphans behind
+    run_scenario(name, {faulty}, [&](LocalCluster& cl, coordinator::Coordinator& c, const coordinator::ClusterPlan& base_plan) {
+      coordinator::ClusterPlan plan = base_plan;
+      {
+        const auto& g = c.manifest().geometry;
+        for (const auto& st : plan.stages) {
+          if (st.domain != 0) continue;
+          for (std::uint32_t layer = st.layers.begin; layer < st.layers.end; ++layer) {
+            plan.targets.emplace_back(objects::dense_object_name(layer), objects::AllocationTarget::kTemporaryBacking);
+            if (g.shared_expert_ff > 0)
+              plan.targets.emplace_back(objects::shared_expert_object_name(layer), objects::AllocationTarget::kTemporaryBacking);
+            for (std::uint32_t e = 0; e < g.n_experts; ++e)
+              plan.targets.emplace_back(objects::expert_object_name(layer, e), objects::AllocationTarget::kTemporaryBacking);
+          }
+        }
+      }
+      Distribution terminate_ms, relaunch_ms;
+      bool all_ok = true;
+      std::uint64_t residual_at_relaunch = 0, staged_before_fault = 0;
+      for (int cycle = 1; cycle <= kCycles && all_ok; ++cycle) {
+        const std::string k = name + "_cycle" + std::to_string(cycle);
+        auto prep = c.prepare(plan);
+        auto gen = prep.is_ok() ? c.generate(request()) : Result<coordinator::GenerationResult>(prep.status());
+        const bool generated = gen.is_ok() && (!have_reference || gen->tokens == reference);
+        r.check(k + (have_reference ? "_generate_matches_reference" : "_generate_completed"), generated,
+                gen.is_ok() ? "" : gen.status().to_string());
+        if (!generated) {
+          all_ok = false;
+          break;
+        }
+        const std::size_t offered_before = cl.service_event_count(0, "offered");
+        if (const auto staged = staged_bytes(cl.staging_root(0)); staged != ~std::uint64_t{0}) staged_before_fault = std::max(staged_before_fault, staged);
+        Stopwatch sw;
+        if (expect_forced) {
+          (void)cl.local_activity(0);
+          auto forced = cl.wait_service_event(0, "forced_termination", static_cast<std::size_t>(cycle), 30s);
+          r.check(k + "_forced_termination_observed", forced.is_ok(), forced.status().to_string());
+          if (!forced.is_ok()) {
+            all_ok = false;
+            break;
+          }
+          terminate_ms.add(sw.elapsed_ms());
+          residual_at_relaunch += forced->residual_bytes;
+          r.check(k + "_nothing_staged_at_relaunch", forced->residual_bytes == 0, std::to_string(forced->residual_bytes) + " bytes");
+        } else {
+          (void)c.release();  // the worker dies in its cleanup
+          auto relaunched = cl.wait_service_event(0, "worker_restarted", static_cast<std::size_t>(cycle), 30s);
+          r.check(k + "_worker_relaunched", relaunched.is_ok(), relaunched.status().to_string());
+          if (!relaunched.is_ok()) {
+            all_ok = false;
+            break;
+          }
+          relaunch_ms.add(sw.elapsed_ms());
+        }
+        // Orphan recovery runs when the relaunched worker opens its lease store.
+        bool clean = false;
+        for (int i = 0; i < 100 && !clean; ++i) {
+          clean = staged_bytes(cl.staging_root(0)) == 0;
+          if (!clean) std::this_thread::sleep_for(50ms);
+        }
+        r.check(k + "_staging_clean_after_relaunch", clean);
+        if (expect_forced) {
+          (void)c.release();  // the lease is gone; release what is left on Father and the other Node
+          (void)cl.local_idle(0);  // the simulated user is idle again: the service offers the Node once more
+        }
+        auto offered = cl.wait_service_event(0, "offered", offered_before + 1, 30s);
+        r.check(k + "_offered_again", offered.is_ok(), offered.status().to_string());
+        all_ok = all_ok && offered.is_ok() && c.connect().is_ok();
+      }
+      (void)c.release();
+      const auto forced_count = cl.service_event_count(0, "forced_termination");
+      const auto restart_count = cl.service_event_count(0, "worker_restarted");
+      r.check(name + "_forced_terminations_counted", forced_count == (expect_forced ? std::size_t{kCycles} : std::size_t{0}),
+              std::to_string(forced_count) + " forced terminations in " + std::to_string(kCycles) + " cycles");
+      r.check(name + "_relaunches_counted", restart_count == (expect_forced ? std::size_t{0} : std::size_t{kCycles}),
+              std::to_string(restart_count) + " relaunches after an exit");
+      r.check(name + "_other_node_staging_clean", staged_bytes(cl.staging_root(1)) == 0);
+      r.metric(name + ".forced_terminations", forced_count);
+      r.metric(name + ".worker_relaunches", restart_count);
+      r.metric(name + ".revocations", cl.service_event_count(0, "revoked"));
+      r.metric(name + ".offers", cl.service_event_count(0, "offered"));
+      r.metric(name + ".cooperative_deadline_ms", deadline_ms);
+      r.metric(name + ".residual_bytes_at_relaunch", residual_at_relaunch);
+      r.metric(name + ".staged_bytes_before_fault", staged_before_fault);  // what orphan recovery had to find (0: held in RAM)
+      r.metric(name + ".activity_to_forced_termination_ms", terminate_ms, "ms");
+      r.metric(name + ".release_to_relaunch_ms", relaunch_ms, "ms");
+    }, true, /*supervised=*/true);
+  };
+  if (want("supervised_forced_termination")) {
+    LocalNodeOptions hung;
+    hung.hang_at = "cleanup";
+    supervised_scenario("supervised_forced_termination", hung, true);
+  }
+  if (want("supervised_crash_recovery")) {
+    LocalNodeOptions dying;
+    dying.crash_at = "cleanup";
+    supervised_scenario("supervised_crash_recovery", dying, false);
+  }
+
   if (census_before) {
     const auto after = take_census(census_roots);
     emit_census_diff(r, diff_census(*census_before, after, census_before->taken_ns, after.taken_ns));
@@ -996,6 +690,259 @@ int cmd_faults(const cli::Args& args) {
     fs::remove_all(work, ec);
   }
   return emit(args, r, total.elapsed_ms() / 1000.0);
+}
+
+// ---- placement-validate (HQ-PLACE-01) -----------------------------------------------------------------------------
+//
+// The placement search ranks candidate plans under its cost model. This runs the top-N of them through the local cluster
+// harness (each converted to a ClusterPlan, a fresh LocalCluster per candidate) and puts the model's prediction next to
+// the measurement: decode tok/s, prefill time and prepare time per candidate, the predicted/measured ratio, and how well
+// the predicted order matches the measured order (Spearman rank correlation, share of concordant pairs, whether the
+// predicted best is the measured best). On the fixture model with the Synthetic profiles this only exercises the machinery
+// (localhost processes on one machine are not the target hardware); the same command on the real artifact, real backend and
+// measured profiles is the qualification run once Nodes can be real machines.
+int cmd_placement_validate(const cli::Args& args) {
+  Stopwatch total;
+  const RunContext rc = make_run_context(args);
+  BenchmarkResult r(args.get("experiment", "dev-placement-validate"), probe_host());
+  if (auto st = backends::check_backend_name(args.get("backend", "reference")); !st.is_ok()) {
+    std::fprintf(stderr, "placement-validate: %s\n", st.to_string().c_str());
+    return exit_code_for(st);
+  }
+  const fs::path work = args.has("work") ? fs::path(args.get("work")) : default_work_dir("placement-validate");
+  auto fail = [&](const std::string& what, const Status& st) {
+    std::fprintf(stderr, "placement-validate: %s: %s\n", what.c_str(), st.to_string().c_str());
+    cleanup_work(args, work);
+    return exit_code_for(st);
+  };
+  auto model_dir = ensure_model(args, work);
+  if (!model_dir.is_ok()) return fail("model", model_dir.status());
+  auto store = objects::CanonicalModelStore::open(model_dir.value());
+  if (!store.is_ok()) return fail("model", store.status());
+  const objects::ModelManifest& manifest = store.value()->manifest();
+
+  // ---- the placement request, costed for the model that will actually run ----
+  const std::string profiles_dir = args.get("profiles", source_dir() + "/fixtures/profiles");
+  auto resolve = [&](const std::string& name) { return fs::exists(name) ? name : profiles_dir + "/" + name; };
+  placement::PlacementRequest req;
+  {
+    auto father = placement::load_hardware_profile(resolve(args.get("father", "Father-4060Ti-7600.json")));
+    if (!father.is_ok()) return fail("father profile", father.status());
+    req.father = father.value();
+    for (const auto& n : args.has("node") ? args.all("node")
+                                          : std::vector<std::string>{"Node-G14-4070-8945HS.json", "Node-3060-5600.json"}) {
+      auto p = placement::load_hardware_profile(resolve(n));
+      if (!p.is_ok()) return fail("node profile", p.status());
+      req.nodes.push_back(p.value());
+    }
+    auto net = placement::load_network_profile(resolve(args.get("network", "network-gige-simulated.json")));
+    if (!net.is_ok()) return fail("network profile", net.status());
+    req.network = net.value();
+  }
+  const auto max_new = static_cast<std::uint32_t>(args.integer("max-new", 16));
+  const auto prompt_len = static_cast<std::uint32_t>(args.integer("prompt-len", 32));
+  const auto prefill_chunk = static_cast<std::uint32_t>(args.integer("prefill-chunk", 16));
+  const auto q = static_cast<std::uint32_t>(args.integer("q", 1));
+  const int repeat = static_cast<int>(args.integer("repeat", 2));
+  const auto top = static_cast<std::size_t>(args.integer("top", 4));
+  if (top < 1 || repeat < 1 || prompt_len < 1 || q < 1) {
+    std::fprintf(stderr, "placement-validate: --top, --repeat, --prompt-len and --q must be positive\n");
+    cleanup_work(args, work);
+    return 2;
+  }
+  {
+    auto cost = planning::cost_inputs_from_manifest(manifest);
+    if (!cost.is_ok()) return fail("model cost inputs", cost.status());
+    req.model = cost.value();
+  }
+  // The fixture model's quantizations (f32, q8_0-fixture) have no entry in the shipped Synthetic profiles (they list the
+  // product's IQ types): give each profile a Synthetic stand-in so the search can cost the fixture. A real model with a
+  // quantization the profile lacks is a genuine input gap and is left to the search to reject.
+  if (!args.has("model")) {
+    auto backfill = [&](placement::HardwareProfile& p) {
+      if (p.cpu.expert_bytes_per_s.empty()) return;
+      const double any = p.cpu.expert_bytes_per_s.begin()->second.value;
+      for (const auto& layer : req.model.layers)
+        if (!p.cpu.expert_bytes_per_s.count(layer.quant))
+          p.cpu.expert_bytes_per_s[layer.quant] = placement::Quantity::synthetic(any, "synthetic: fixture model stand-in");
+    };
+    backfill(req.father);
+    for (auto& node : req.nodes) backfill(node);
+  }
+  const std::uint32_t max_context = prompt_len + max_new + 8;
+  req.context_tokens = max_context;
+  req.prompt_tokens = prompt_len;
+  req.output_tokens = max_new;
+  req.q = q;
+  req.prefill_chunk = prefill_chunk;
+  req.granularity = static_cast<std::uint32_t>(args.integer("granularity", 4));
+  auto searched = placement::search_placements(req);
+  if (!searched.is_ok()) return fail("placement search", searched.status());
+  const auto& candidates = searched->candidates;
+  if (candidates.empty()) {
+    std::fprintf(stderr, "placement-validate: the placement search found no feasible plan for this model and these profiles (%zu rejected)\n",
+                 searched->rejected.size());
+    for (std::size_t i = 0; i < searched->rejected.size() && i < 3; ++i)
+      for (const auto& reason : searched->rejected[i].reasons)
+        std::fprintf(stderr, "  %s: %s\n", searched->rejected[i].key.c_str(), reason.c_str());
+    cleanup_work(args, work);
+    return 1;
+  }
+  const std::size_t n = std::min(top, candidates.size());
+
+  // ---- backend, provenance, prompts ----
+  std::size_t max_nodes = 0;
+  for (std::size_t i = 0; i < n; ++i) max_nodes = std::max(max_nodes, candidates[i].node_ids().size());
+  auto backend = resolve_backend(args, model_dir.value(), max_nodes);
+  if (!backend.is_ok()) return fail("backend", backend.status());
+  const bool fixture = !args.has("model");
+  // --endpoint PROFILE_ID=HOST:PORT@FINGERPRINT: the Nodes of the profiles are already running (real links); a candidate uses
+  // the endpoints of the Nodes it places, in its own order. Without them every candidate gets localhost Node processes.
+  auto endpoint_list = parse_node_specs(args.all("endpoint"), "endpoint");
+  if (!endpoint_list.is_ok()) return fail("endpoint", endpoint_list.status());
+  std::map<std::string, coordinator::NodeEndpoint> endpoints;
+  bool localhost_nodes = false;
+  for (const auto& ep : endpoint_list.value()) {
+    endpoints[ep.name] = ep;
+    localhost_nodes = localhost_nodes || is_loopback_host(ep.endpoint.host);
+  }
+  if (endpoints.empty() && max_nodes > 0) localhost_nodes = true;
+  RunContext effective = rc;
+  effective.on_target = rc.on_target && !localhost_nodes;
+  apply_run_context(r, effective);
+  if (localhost_nodes) r.mark_simulated("localhost_cluster", true);
+  r.config("external_nodes", endpoints.size());
+  nlohmann::json synthetic_ids = nlohmann::json::array();
+  auto note_profile = [&](const placement::HardwareProfile& p) {
+    if (placement::weakest_provenance(p) == placement::Provenance::kSynthetic) synthetic_ids.push_back(p.id);
+  };
+  note_profile(req.father);
+  for (const auto& node : req.nodes) note_profile(node);
+  if (placement::weakest_provenance(req.network) == placement::Provenance::kSynthetic) synthetic_ids.push_back("network");
+  if (!synthetic_ids.empty()) r.mark_simulated("synthetic_profiles", synthetic_ids);
+  if (fixture) r.mark_simulated("fixture_model", true);
+  if (!backend->real()) r.mark_simulated("reference_backend", true);
+  if (args.has("impair")) r.mark_simulated("network_preset", args.get("impair"));
+  if (effective.on_target && !fixture && backend->real() && synthetic_ids.empty()) r.set_measured();  // finish() overrides it when anything was marked
+  r.backend(backend->name, backend->build_hash);
+  r.config("backend", backend->name);
+  r.config("candidates_requested", top);
+  r.config("candidates_run", n);
+  r.config("prompt_len", prompt_len);
+  r.config("max_new_tokens", max_new);
+  r.config("q", q);
+  r.config("repeat", repeat);
+  r.config("placement_provenance", std::string(placement::to_string(searched->provenance)));
+  r.config("meets_min_repetitions", repeat >= 5);
+
+  auto sets = build_prompt_sets(args, model_dir.value(), backend.value().real() ? &backend.value() : nullptr, {prompt_len}, max_new,
+                                !args.has("no-reference"), r);
+  if (!sets.is_ok()) return fail("prompts", sets.status());
+
+  // ---- one pass per candidate ----
+  std::vector<double> predicted_decode, measured_decode, predicted_prefill, measured_prefill, predicted_prepare, measured_prepare;
+  std::size_t completed = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto& cand = candidates[i];
+    const std::string tag = "cand" + std::to_string(i);
+    std::map<std::string, int> node_index;
+    for (const auto& id : cand.node_ids())
+      if (!node_index.count(id)) node_index.emplace(id, static_cast<int>(node_index.size()));
+    auto plan = planning::to_cluster_plan(cand, manifest, req.father.id, node_index, max_context, std::max(q, prefill_chunk));
+    if (!plan.is_ok()) {
+      r.check(tag + "_plan_executable", false, plan.status().to_string());
+      continue;
+    }
+    PassSummary summary;
+    PassContext pc(args, r);
+    pc.prefix = tag + ".";
+    pc.work = work;
+    pc.model_dir = model_dir.value();
+    pc.plan_text = plan->describe();
+    pc.plan = plan.value();
+    pc.node_count = node_index.size();
+    if (!endpoints.empty() && !node_index.empty()) {
+      std::vector<coordinator::NodeEndpoint> chosen(node_index.size());
+      bool all_present = true;
+      for (const auto& [id, index] : node_index) {
+        auto it = endpoints.find(id);
+        if (it == endpoints.end()) {
+          r.check(tag + "_endpoint_for_" + id, false, "no --endpoint for the node profile this candidate places");
+          all_present = false;
+          break;
+        }
+        chosen[static_cast<std::size_t>(index)] = it->second;
+        chosen[static_cast<std::size_t>(index)].name = id;
+      }
+      if (!all_present) continue;
+      pc.external = std::move(chosen);
+    }
+    pc.node_options.assign(node_index.size(), LocalNodeOptions{});
+    for (const auto& ledger : cand.ledgers) {  // each Node offers the VRAM its domain is planned to use (plus slack)
+      auto it = node_index.find(ledger.domain_id);
+      if (it != node_index.end())
+        pc.node_options[static_cast<std::size_t>(it->second)].vram_gib =
+            static_cast<double>(ledger.vram_used()) / static_cast<double>(cli::kGiB) + 0.5;
+    }
+    pc.qs = {q};
+    pc.contexts = {prompt_len};
+    pc.prompt_sets = sets.value();
+    pc.max_new = max_new;
+    pc.prefill_chunk = prefill_chunk;
+    pc.repeat = repeat;
+    pc.direct_peer = !args.has("relay");
+    pc.fixture = fixture;
+    pc.resources = !args.has("no-resources");
+    pc.backend = &backend.value();
+    pc.summary = &summary;
+    auto st = run_cluster_pass(pc);
+    if (!st.is_ok()) r.check(tag + "_pass_completed", false, st.to_string());
+    const auto& pm = cand.metrics;
+    r.trace({{"kind", "placement_candidate"}, {"rank", i}, {"plan", cand.key}, {"nodes", node_index.size()},
+             {"predicted_decode_tok_s", pm.decode_tok_s}, {"measured_decode_tok_s", summary.decode_tok_s},
+             {"predicted_prefill_s", pm.prefill_s}, {"measured_prefill_s", summary.prefill_s},
+             {"predicted_prepare_s", pm.prepare_s}, {"measured_prepare_s", summary.prepare_s}, {"completed", summary.completed}});
+    r.metric(tag + ".predicted.decode_tok_s", pm.decode_tok_s);
+    r.metric(tag + ".predicted.prefill_s", pm.prefill_s);
+    r.metric(tag + ".predicted.prepare_s", pm.prepare_s);
+    r.metric(tag + ".predicted.objective", pm.objective);
+    r.metric(tag + ".measured.decode_tok_s", summary.decode_tok_s);
+    r.metric(tag + ".measured.prefill_s", summary.prefill_s);
+    r.metric(tag + ".measured.prepare_s", summary.prepare_s);
+    if (pm.decode_tok_s > 0 && summary.decode_tok_s > 0) r.metric(tag + ".measured_over_predicted.decode", summary.decode_tok_s / pm.decode_tok_s);
+    if (pm.prefill_s > 0 && summary.prefill_s > 0) r.metric(tag + ".measured_over_predicted.prefill", summary.prefill_s / pm.prefill_s);
+    if (pm.prepare_s > 0 && summary.prepare_s > 0) r.metric(tag + ".measured_over_predicted.prepare", summary.prepare_s / pm.prepare_s);
+    r.metric(tag + ".plan", cand.key);
+    if (!summary.completed) continue;
+    ++completed;
+    predicted_decode.push_back(pm.decode_tok_s);
+    measured_decode.push_back(summary.decode_tok_s);
+    predicted_prefill.push_back(pm.prefill_s);
+    measured_prefill.push_back(summary.prefill_s);
+    predicted_prepare.push_back(pm.prepare_s);
+    measured_prepare.push_back(summary.prepare_s);
+  }
+  r.check("every_candidate_executed", completed == n, std::to_string(completed) + " of " + std::to_string(n) + " candidates completed");
+
+  // ---- predicted vs measured order ----
+  auto emit_agreement = [&](const char* what, const std::vector<double>& pred, const std::vector<double>& meas, bool higher_is_better) {
+    const RankAgreement a = compare_rankings(pred, meas, higher_is_better);
+    const std::string k = std::string("rank.") + what;
+    r.metric(k + ".candidates", a.n);
+    r.metric(k + ".valid", a.valid);
+    if (a.valid) {
+      r.metric(k + ".spearman", a.spearman);
+      r.metric(k + ".concordant_pair_fraction", a.concordant_fraction);
+      r.metric(k + ".predicted_best_is_measured_best", a.best_agrees);
+    }
+  };
+  emit_agreement("decode_tok_s", predicted_decode, measured_decode, true);
+  emit_agreement("prefill_s", predicted_prefill, measured_prefill, false);
+  emit_agreement("prepare_s", predicted_prepare, measured_prepare, false);
+  r.pending("HQ-PLACE-01");
+  int code = emit(args, r, total.elapsed_ms() / 1000.0);
+  cleanup_work(args, work);
+  return code;
 }
 
 }  // namespace clusterlm::bench

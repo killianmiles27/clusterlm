@@ -260,6 +260,16 @@ struct ReleaseLease {
   ReleaseReason reason = ReleaseReason::kFatherRequest;
 };
 
+// What one hosted domain actually had allocated for its open sessions, as the domain itself reports it
+// (DomainMetrics::state_bytes and window_bytes): sequence state (KV, recurrent and PLE) and the per-session window scratch.
+// Sizes only: no session, token or position.
+struct DomainStateBytes {
+  StageId stage;
+  std::uint64_t state_bytes_peak = 0;   // largest value observed over the lease (HQ-PERF-02)
+  std::uint64_t window_bytes_peak = 0;
+  friend bool operator==(const DomainStateBytes&, const DomainStateBytes&) = default;
+};
+
 struct ReleaseComplete {
   LeaseGeneration lease;
   bool resources_released = false;
@@ -267,6 +277,9 @@ struct ReleaseComplete {
   std::uint64_t residual_bytes = 0;       // application-owned model bytes still present
   std::uint64_t release_ns = 0;
   std::string errors;
+  // Optional trailing field (HQ-PERF-02): per hosted domain, in stage order. A decoder accepts a body that ends after
+  // `errors` (the list stays empty), so an older Node's ReleaseComplete still decodes. docs/protocol.md "Extending messages".
+  std::vector<DomainStateBytes> domain_state;
 };
 
 // Father -> Node, control channel: "I am unpairing you; stop trusting me." Accepted by a Node only on a channel

@@ -99,6 +99,11 @@ struct NodeWorker::Impl {
   std::uint64_t chunk_write_ns = 0, seal_hash_ns = 0, build_ns = 0;
   std::unique_ptr<LeaseObjectResolver> resolver;
   std::map<std::uint32_t, std::unique_ptr<domain::ExecutionDomain>> domains;  // by stage id
+  // Largest sequence-state size each domain reported while this lease lasted (HQ-PERF-02); reported in ReleaseComplete.
+  struct StatePeak {
+    std::uint64_t state = 0, window = 0;
+  };
+  std::map<std::uint32_t, StatePeak> state_peak;
   std::shared_ptr<MessageStream> control;
   std::shared_ptr<MessageStream> father_activation;
   std::shared_ptr<MessageStream> provision;
@@ -510,7 +515,19 @@ struct NodeWorker::Impl {
     std::lock_guard lock(mu);
     if (state != NodeState::kReady) return make_error(ErrorCode::kFailedPrecondition, "Node is not Ready");
     for (auto& [stage, d] : domains) CLM_RETURN_IF_ERROR(d->open_session(o.epoch, o.session));
+    sample_state();
     return Status::ok();
+  }
+
+  // Caller holds `mu` (or is the only user of `domains`). Domains report what they actually allocated for the open
+  // sessions; the peak over the lease is what Father learns at release.
+  void sample_state() {
+    for (auto& [stage, d] : domains) {
+      auto& peak = state_peak[stage];
+      const auto m = d->read_metrics();
+      peak.state = std::max(peak.state, m.state_bytes);
+      peak.window = std::max(peak.window, m.window_bytes);
+    }
   }
 
   Result<domain::WindowAbortAck> abort_window(const protocol::AbortWindow& a) {
@@ -915,6 +932,9 @@ struct NodeWorker::Impl {
       // service enforces the hard cancellation deadline by terminating this worker's job object.
       std::lock_guard exec(exec_mu);
       std::lock_guard lock(mu);
+      sample_state();
+      for (const auto& [stage, peak] : state_peak) report.domain_state.push_back({StageId{stage}, peak.state, peak.window});
+      state_peak.clear();
       for (auto& [stage, d] : domains) (void)d->release();
       domains.clear();
       resolver.reset();

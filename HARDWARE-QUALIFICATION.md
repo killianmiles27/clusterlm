@@ -214,7 +214,7 @@ Windows pinned-memory behaviour.
 **Direct Node-to-Node forwarding versus Father relay** — status: `pending`
 
 - **Purpose:** Measure per-round latency and Father NIC load of the direct peer path versus relay with real models.
-- **Command:** `clusterlm-bench cluster --plan <plan> --compare-routing --q 1,4 --nic <father-nic> --out results/peer-vs-relay.json`
+- **Command:** `clusterlm-bench cluster --plan <plan> --compare-routing --q 1,4 --nic <father-nic> --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/peer-vs-relay.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -223,15 +223,13 @@ Windows pinned-memory behaviour.
   - per-stage compute vs wait time
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-NET-02"`; metrics `direct.q<q>.round_ms`, `relay.q<q>.round_ms`, `direct.q<q>.boundary_bytes_per_emitted_token`, `relay.q<q>.boundary_bytes_per_emitted_token`, `direct.q<q>.stage.remote_wait_ms`, `direct.generation.nic.tx_bytes`, `relay.generation.nic.tx_bytes`, `direct.boundary.payload_bytes_total`, `relay.boundary.payload_bytes_total`
 - **Decision affected:** Whether the direct peer path is required for qualification (SHOULD HAVE).
-- **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PROV-01
 
 **Provisioning speed of selected objects** — status: `pending`
 
 - **Purpose:** Measure cold preparation time per Node: Father disk reads, wire transfer, hashing, packing, GPU upload.
-- **Command:** `clusterlm-bench cluster --plan <plan> --phase prepare --repeat 5 --out results/provision.json`
+- **Command:** `clusterlm-bench cluster --plan <plan> --phase prepare --repeat 5 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/provision.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -242,15 +240,13 @@ Windows pinned-memory behaviour.
   - repeated cold prepare/release cycles
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PROV-01"`; metrics `prepare.total_ms`, `prepare.node.<node>.ms`, `prepare.node.<node>.node_side_ms`, `prepare.node.<node>.provision_bytes_per_s`, `prepare.node.<node>.bytes`, `prepare.node.<node>.father_source_read_ms`, `prepare.node.<node>.father_source_read_bytes_per_s`, `prepare.node.<node>.father_send_ms`, `prepare.node.<node>.node_seal_hash_ms`, `prepare.node.<node>.node_chunk_write_ms`, `prepare.node.<node>.node_build_ms`
 - **Decision affected:** Lease amortization in placement; UI preparation estimates (PERF-03).
-- **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-REL-01
 
 **Release and cleanup latency under real drivers** — status: `pending`
 
 - **Purpose:** Verify activity-driven release targets: stop new work <=250 ms, cooperative release <1 s, 2 s worker deadline, storage reclaimed <=10 s after termination.
-- **Command:** `clusterlm-bench faults --only release_cycles,local_activity --release-cycles 20 --on-target --machine-id <machine> --out results/release-<machine>.json`
+- **Command:** `clusterlm-bench faults --only release_cycles,local_activity,supervised --release-cycles 20 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --no-reference --on-target --machine-id <machine> --out results/release-<machine>.json`
 - **Machines:** Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -259,10 +255,10 @@ Windows pinned-memory behaviour.
   - forced termination count
   - storage reclaim time
   - p95 and worst case
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-REL-01"`; metrics `release_cycles.release_ms`, `release_cycles.prepare_ms`, `local_activity.release_observed_ms`, `release_cycles.resources.father.rss_growth_bytes`, `release_cycles.resources.node0.commit_growth_bytes`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-REL-01"`; metrics `release_cycles.release_ms`, `release_cycles.prepare_ms`, `local_activity.release_observed_ms`, `release_cycles.resources.father.rss_growth_bytes`, `release_cycles.resources.node0.commit_growth_bytes`, `supervised_forced_termination.forced_terminations`, `supervised_forced_termination.activity_to_forced_termination_ms`, `supervised_crash_recovery.worker_relaunches`, `supervised_crash_recovery.release_to_relaunch_ms`
 - **Decision affected:** REL-01, PERF-04; Job Object deadline values.
 - **Not yet measurable by `clusterlm-bench`:**
-  - forced-termination counts under the real Windows service supervisor (node/service) are exercised by its own tests, not by this command
+  - the Windows Job Object and Service Control Manager are not in the loop: `faults --supervised` supervises the worker through the same NodeSupervisor under `clusterlm-node-service --console` over a child process, so forced-termination and relaunch counts are real but the Job Object termination path is exercised only by the Windows service
 
 ### HQ-STORE-01
 
@@ -304,7 +300,7 @@ Windows pinned-memory behaviour.
 **MTP acceptance and verification cost** — status: `pending`
 
 - **Purpose:** Measure mean emitted tokens per round A and verification cost for q=1..4 on the declared corpus.
-- **Command:** `clusterlm-bench cluster --plan <plan> --q 1,2,3,4 --corpus corpus/mixed --tokens 512 --repeat 5 --out results/mtp.json`
+- **Command:** `clusterlm-bench cluster --plan <plan> --q 1,2,3,4 --corpus corpus/mixed --tokenizer-gguf <ultra-dir>/<first-shard>.gguf --tokens 512 --repeat 5 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/mtp.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -313,16 +309,13 @@ Windows pinned-memory behaviour.
   - round-time distribution incl. p95/p99
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-MTP-01"`; metrics `q<q>.mtp.acceptance_rate`, `q<q>.mtp.accepted_tokens_per_round`, `q<q>.draft_ms`, `q<q>.verify_ms`, `q<q>.round_ms`, `q<q>.inter_token_gap_ms`, `q<q>.inter_delivery_gap_ms`
 - **Decision affected:** Production q; whether MTP is enabled (SHOULD HAVE).
-- **Not yet measurable by `clusterlm-bench`:**
-  - acceptance on real text: the corpus is tokenized as bytes for the fixture model; real corpora need the Father tokenizer and the real MTP head
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PLACE-01
 
 **Placement calibration: predicted versus measured** — status: `pending`
 
 - **Purpose:** Run the top placement candidates end-to-end and compare against the cost model; determine optimal layer boundaries and node order.
-- **Command:** `clusterlm-bench placement --profiles results --father profile-<father>.json --node profile-<node-a>.json --node profile-<node-b>.json --network network-<father>.json --context 4096 --q 4 --out results/placement.json`
+- **Command:** `clusterlm-bench placement --profiles results --father profile-<father>.json --node profile-<node-a>.json --node profile-<node-b>.json --network network-<father>.json --context 4096 --q 4 --out results/placement.json && clusterlm-bench placement-validate --profiles results --father profile-<father>.json --node profile-<node-a>.json --node profile-<node-b>.json --network network-<father>.json --top 6 --q 4 --prompt-len 4096 --repeat 5 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --endpoint <node-a-profile-id>=<g14-ip>:7001@<g14-fp> --endpoint <node-b-profile-id>=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/placement-validate.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -331,17 +324,17 @@ Windows pinned-memory behaviour.
   - Father prefix/tail sizes
   - per-context-profile (4K..128K) prediction error and feasibility flips
   - per-stage local micro-batch versus measured VRAM headroom
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PLACE-01"`; metrics `placement.report`, `placement.weakest_input_provenance`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PLACE-01"`; metrics `placement.report`, `placement.weakest_input_provenance`, `cand<i>.predicted.decode_tok_s`, `cand<i>.measured.decode_tok_s`, `rank.decode_tok_s.spearman`, `rank.prepare_s.spearman`
 - **Decision affected:** Optimal layer boundaries, expert residency, recommended plan.
 - **Not yet measurable by `clusterlm-bench`:**
-  - predicted-vs-measured comparison per candidate (executing candidate plans) requires the real backend; the command currently produces the ranked candidates from the measured profiles
+  - per-stage local micro-batch versus measured VRAM headroom is not compared: placement-validate reports predicted and measured decode, prefill and prepare per candidate and their rank agreement, and each pass records Father's VRAM series, but a Node's device memory is not sampled over the protocol
 
 ### HQ-PLACE-02
 
 **Placement model inputs: routing aggregates, batch workspace, per-q acceptance** — status: `pending`
 
 - **Purpose:** Replace the Synthetic model-side inputs of the placement search with measurements on the real artifact: aggregate per-layer expert selection frequencies (clusterlm.routing_aggregates.v1, aggregates only, never sequences), the per-token activation workspace a GPU domain needs per local micro-batch token (ModelCostInputs::batch_scratch_bytes_per_token), the Father per-round overhead, and acceptance (mean emitted tokens per round) for each verify width q = 1..4. Until these exist every plan built on them stays Synthetic.
-- **Command:** `clusterlm-bench placement-inputs --model <ultra-dir> --corpus <held-out-prompts> --q 1,2,3,4 --out results/placement-inputs.json`
+- **Command:** `clusterlm-bench placement-inputs --model <ultra-dir> --backend strata --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --tokenizer-gguf <ultra-dir>/<first-shard>.gguf --corpus <held-out-prompts> --q 1,2,3,4 --on-target --machine-id <father> --role father --out results/placement-inputs.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -427,7 +420,7 @@ Windows pinned-memory behaviour.
 **Ultra decode throughput at 4K/8K** — status: `pending`
 
 - **Purpose:** Measure emitted tok/s per workload category with MTP overhead included (PERF-01).
-- **Command:** `clusterlm-bench cluster --tier ultra --context 4096,8192 --corpus corpus/mixed --tokens 512 --repeat 5 --interleave --out results/perf-ultra.json`
+- **Command:** `clusterlm-bench cluster --tier ultra --context 4096,8192 --corpus corpus/mixed --tokenizer-gguf <ultra-dir>/<first-shard>.gguf --tokens 512 --repeat 5 --interleave --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/perf-ultra.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -438,15 +431,13 @@ Windows pinned-memory behaviour.
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-01"`; metrics `q<q>.decode_tok_s`, `q<q>.round_ms`, `q<q>.accepted_per_round`, `q<q>.prefill_tok_s`, `q<q>.inter_token_gap_ms`, `q<q>.inter_delivery_gap_ms`
 - **Decision affected:** Ultra 20+ tok/s claim (pass/fail recorded honestly).
 - **Acceptance:** median >= 20 emitted tok/s per category at 4K/8K
-- **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PERF-02
 
 **Long-context behaviour (16K/32K, 64K/128K reported separately)** — status: `pending`
 
 - **Purpose:** Measure decode/prefill and residency changes as context grows; report separately from 4K/8K.
-- **Command:** `clusterlm-bench cluster --tier ultra --contexts 16384,32768,65536,131072 --repeat 5 --out results/perf-long.json`
+- **Command:** `clusterlm-bench cluster --tier ultra --contexts 16384,32768,65536,131072 --repeat 5 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/perf-long.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -454,18 +445,17 @@ Windows pinned-memory behaviour.
   - state bytes per domain
   - CPU miss fraction change
   - hard paging events
-- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-02"`; metrics `ctx<N>.q<q>.decode_tok_s`, `ctx<N>.q<q>.prefill_tok_s`, `ctx<N>.resources.father.rss_bytes`, `resources.node0.commit_bytes`, `resources.gpu0.vram_used_bytes.series`
+- **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-02"`; metrics `ctx<N>.q<q>.decode_tok_s`, `ctx<N>.q<q>.prefill_tok_s`, `ctx<N>.resources.father.rss_bytes`, `resources.node0.commit_bytes`, `resources.gpu0.vram_used_bytes.series`, `state.total_bytes`, `state.father.stage<S>.bytes`, `state.<node>.stage<S>.bytes`
 - **Decision affected:** Per-context placement profiles; UI context limits.
 - **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
-  - state bytes per domain, CPU miss fraction and hard paging events need backend counters
+  - CPU miss fraction and hard paging events need backend counters the Strata engine does not expose yet (state bytes and window bytes per domain are reported at release)
 
 ### HQ-PERF-03
 
 **Cold preparation, cold TTFT and warm TTFT** — status: `pending`
 
 - **Purpose:** Separate preparation from first-token latency and warm follow-up latency (PERF-03).
-- **Command:** `clusterlm-bench cluster --tier ultra --repeat 5 --out results/ttft.json`
+- **Command:** `clusterlm-bench cluster --tier ultra --repeat 5 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/ttft.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -474,15 +464,13 @@ Windows pinned-memory behaviour.
   - warm TTFT
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-03"`; metrics `prepare.total_ms`, `q<q>.ttft_cold_ms`, `q<q>.ttft_warm_ms`
 - **Decision affected:** UI estimates; keep-ready policy.
-- **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-PERF-04
 
 **Sustained run and repeated release/reprepare cycles** — status: `pending`
 
 - **Purpose:** 30-minute sustained laptop run and >=20 full release/reprepare cycles without memory creep or slowing cleanup.
-- **Command:** `clusterlm-bench cluster --tier ultra --minutes 30 --out results/soak.json`
+- **Command:** `clusterlm-bench cluster --tier ultra --minutes 30 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/soak.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Qwen3.8-Flash-Next GSQ-RCO IQ3_S (selected Ultra artifact, exact shard hashes recorded)
 - **Measurements:**
@@ -490,15 +478,13 @@ Windows pinned-memory behaviour.
   - 20 release cycles are exercised by HQ-REL-01 (`faults --release-cycles 20`)
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-PERF-04"`; metrics `sustained.initial_decode_tok_s`, `sustained.final_decode_tok_s`, `sustained.factor`, `sustained.slope_pct_per_min`, `sustained.time_to_equilibrium_s`, `resources.father.rss_bytes.series`, `resources.node0.commit_bytes.series`, `resources.father.rss_growth_bytes`, `resources.gpu0.vram_used_bytes.series`
 - **Decision affected:** PERF-04 acceptance.
-- **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-STRONG-01
 
 **Strong tier qualification** — status: `pending`
 
 - **Purpose:** Repeat placement, MTP and performance experiments for the Strong artifact (separate cache economics).
-- **Command:** `clusterlm-bench cluster --tier strong --context 4096,8192 --repeat 5 --out results/perf-strong.json`
+- **Command:** `clusterlm-bench cluster --tier strong --context 4096,8192 --repeat 5 --backend strata --model <ultra-dir> --strata-ple-gguf <ultra-dir>/<first-shard>.gguf --strata-mtp-dir <mtp-rt-dir> --identity <dir> --node g14=<g14-ip>:7001@<g14-fp> --node n3060=<3060-ip>:7001@<3060-fp> --no-reference --on-target --machine-id <father> --role father --out results/perf-strong.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)
 - **Model:** Strong-tier Swift IQ2_XS artifact
 - **Measurements:**
@@ -507,8 +493,6 @@ Windows pinned-memory behaviour.
   - residency
 - **Output:** `bench/schema/benchmark-result.schema.json` with `experiment = "HQ-STRONG-01"`; metrics `q<q>.decode_tok_s`, `q<q>.accepted_per_round`
 - **Decision affected:** Strong tier claims.
-- **Not yet measurable by `clusterlm-bench`:**
-  - real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then
 
 ### HQ-FAST-01
 
@@ -530,7 +514,7 @@ Windows pinned-memory behaviour.
 **Tier catalog pinning and context-profile qualification** — status: `pending`
 
 - **Purpose:** Download and inspect each catalog artifact on Father to pin its manifest root hash, then qualify each offered context profile (4K to 128K) per tier on the real machines so the catalog's qualified flags and readiness notes can change.
-- **Command:** `clusterlm-model-inspect <tier-model-dir>/*.gguf --hash --summary --manifest results/manifest-<tier>.json && clusterlm-bench cluster --tier <fast|strong|ultra> --model <tier-model-dir> --contexts 4096,8192,16384,32768,65536,131072 --out results/context-sweep-<tier>.json`
+- **Command:** `clusterlm-model-inspect <tier-model-dir>/*.gguf --hash --summary --manifest results/manifest-<tier>.json && clusterlm-bench cluster --tier <fast|strong|ultra> --model <tier-model-dir> --backend <llama|strata> --contexts 4096,8192,16384,32768,65536,131072 --no-reference --out results/context-sweep-<tier>.json`
 - **Machines:** Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB); Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB); Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)
 - **Model:** Fast, Strong and Ultra catalog artifacts (exact shard hashes recorded)
 - **Measurements:**
