@@ -12,12 +12,16 @@ Distributed heterogeneous local LLM inference for Windows.
 - Design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - What is done and what waits for hardware: [docs/DEVELOPMENT-STATUS.md](docs/DEVELOPMENT-STATUS.md)
 - Experiments that need the physical machines: [HARDWARE-QUALIFICATION.md](HARDWARE-QUALIFICATION.md)
-- Backend port analysis: [docs/backends/strata-port.md](docs/backends/strata-port.md), [docs/backends/llama-rpc.md](docs/backends/llama-rpc.md)
+- Backends: [docs/backends/strata-port.md](docs/backends/strata-port.md), [docs/backends/llama-local.md](docs/backends/llama-local.md), [docs/backends/llama-rpc.md](docs/backends/llama-rpc.md)
+- Product: [docs/ui.md](docs/ui.md), [docs/pairing.md](docs/pairing.md), [docs/father-ipc.md](docs/father-ipc.md), [docs/windows-architecture.md](docs/windows-architecture.md), [docs/packaging.md](docs/packaging.md), [docs/tiers.md](docs/tiers.md)
+- Runtime: [docs/protocol.md](docs/protocol.md), [docs/provisioning-lifecycle.md](docs/provisioning-lifecycle.md), [docs/model-manifest.md](docs/model-manifest.md), [docs/placement.md](docs/placement.md), [docs/benchmark-methodology.md](docs/benchmark-methodology.md), [docs/security/threat-model.md](docs/security/threat-model.md)
 
-> **Status:** cloud-development phase. The distributed architecture runs end to end on localhost with the
-> deterministic CPU reference backend and generated fixture models. **No performance number in this repository is a
-> measurement of the target machines.** Fast/Strong/Ultra throughput is unqualified until the experiments in
-> HARDWARE-QUALIFICATION.md run on the real hardware.
+> **Status:** pre-hardware. Everything that can be built and verified without the three target PCs is implemented
+> and tested on Linux (and type-checked or tested on Windows in CI): the distributed runtime, the Strata-derived
+> backend (CPU kernels verified, CUDA path compiled but never run on a GPU), the llama.cpp Fast backend, the
+> Windows service/helper/UI/installer, pairing, provisioning and the qualification tooling. **No performance number
+> in this repository is a measurement of the target machines.** Fast/Strong/Ultra are not performance-qualified
+> until the experiments in HARDWARE-QUALIFICATION.md run on the real hardware.
 
 ## Build
 
@@ -38,9 +42,19 @@ Upstream sources (Strata, llama.cpp) are pinned in `third_party/upstream.json` a
 never committed:
 
 ```sh
-python3 scripts/fetch_upstream.py          # fetch the exact pinned commits into third_party/upstream/
+python3 scripts/fetch_upstream.py --apply-patches   # pinned commits into third_party/upstream/, plus our patches
 python3 scripts/fetch_upstream.py --check
 ```
+
+Optional backends (off by default):
+
+| Option | Builds |
+|---|---|
+| `-DCLUSTERLM_ENABLE_STRATA=ON` | Strata CUDA engine + CPU kernels (CUDA 12.x, sm_86/sm_89) |
+| `-DCLUSTERLM_ENABLE_STRATA_CPU=ON` | Strata CPU expert kernels only (no CUDA) |
+| `-DCLUSTERLM_ENABLE_LLAMA=ON` | llama.cpp Fast-tier backend and the P0-A RPC harness (`-DCLUSTERLM_LLAMA_CUDA=ON` for GPU) |
+
+A backend that is not built is an error at `--backend` selection, never a silent fallback.
 
 ## Try it: a three-process cluster on one machine
 
@@ -81,29 +95,25 @@ Results follow [`bench/schema/benchmark-result.schema.json`](bench/schema/benchm
 - Only real-link and real-hardware runs are `Measured`.
 - The tool never emits `Qualified`.
 
+## Product executables (Windows)
+
+| Executable | What it is |
+|---|---|
+| `clusterlm-father-ui` | Father chat window: tiers, readiness, tok/s, TTFT, fallback, diagnostics, pairing |
+| `clusterlm-father-agent` | Father background agent; the UI talks to it over a per-user named pipe |
+| `clusterlm-node-service` | Node Windows service: supervises the worker in a Job Object, pairing, settings |
+| `clusterlm-node-helper` | Per-session helper: reports local activity/lock to the service |
+| `clusterlm-node-ui` | Node status window and tray icon |
+| `clusterlm-node`, `clusterlm-father` | The worker and a command-line Father (development and qualification) |
+
+Installers: `packaging/` (WiX MSIs; unsigned builds are marked `-UNSIGNED`, never silently signed).
+
 ## Repository layout
 
-```
-runtime/common        status, codec, digests, ids, logging
-runtime/objects       geometry, manifest, canonical store, fixture models
-runtime/domain        stage boundary ABI, ExecutionDomain, reference backend, drafters
-runtime/windows       speculative-window ledger (windows = speculative windows)
-runtime/transport     framed TCP, mutual TLS, network impairment, fault injection
-runtime/protocol      Father/Node messages and channels
-runtime/platform      file mapping, durable files, safe deletion, processes, Windows adapters
-runtime/backends      Strata handoff layout; Strata/llama.cpp adapters (CUDA, optional)
-node/lease-store      ephemeral lease object store, journal, orphan recovery
-node/worker           Node service core
-orchestrator/placement   hardware profiles, cost model, placement search
-orchestrator/coordinator Father orchestration
-orchestrator/planning    manifest -> cost inputs, placement plan -> executable plan
-bench                 ClusterLM Bench and the LocalCluster harness
-apps                  clusterlm-node, clusterlm-father
-fixtures/profiles     SYNTHETIC development profiles of the three target machines
-```
+The module table in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#modules) lists every directory and target.
 
 ## License
 
 ClusterLM's own license has not been chosen yet; that is the owner's decision. Vendored third-party code keeps its
-own license: `third_party/doctest` (MIT) and `third_party/nlohmann` (MIT). The pinned upstreams Strata and
+own license: `third_party/doctest` (MIT), `third_party/nlohmann` (MIT) and `third_party/imgui` (MIT). The pinned upstreams Strata and
 llama.cpp are MIT.
