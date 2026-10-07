@@ -19,8 +19,11 @@ the Father, G14 or 3060 machines.
 | `windows-packaging` | Static `/MT` build, no non-system DLL imports, WiX MSIs built, ICE-validated, installed, verified and uninstalled on a Windows runner |
 | `qualification-doc` | `HARDWARE-QUALIFICATION.md` is generated from `bench/qualification/experiments.json` |
 
-The Node MSI smoke test has passed on a Windows runner for: install, service account/start type/recovery/SID type,
-firewall rule scope, helper Run value, service start, staging ACL, orphan cleanup and complete uninstall.
+Both MSI smoke tests pass on a Windows runner (CI run 38, all nine jobs green). Node: install, LocalService
+account, delayed auto start, recovery actions, SID type, preshutdown timeout, firewall rule scope (worker program,
+TCP, no Public profile, no edge traversal), helper Run value, service start, staging ACL, orphan cleanup and complete
+uninstall. Father: install, executables, catalog and licenses, agent Run value, PATH, the CLI starting with no runtime
+DLL installed, and complete uninstall.
 
 ## Genuinely implemented
 
