@@ -52,7 +52,7 @@ bool has_dotdot(const fs::path& p) {
 
 // relative path of `path` beneath `root`, empty if `path` is not strictly inside it.
 fs::path strict_relative(const fs::path& root, const fs::path& path) {
-  const fs::path rel = path.lexically_normal().lexically_relative(root.lexically_normal());
+  fs::path rel = path.lexically_normal().lexically_relative(root.lexically_normal());
   if (rel.empty() || rel == ".") return {};
   if (*rel.begin() == "..") return {};
   return rel;

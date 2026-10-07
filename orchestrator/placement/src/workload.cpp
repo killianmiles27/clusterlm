@@ -94,10 +94,12 @@ Result<WorkloadResult> search_workload(const PlacementRequest& base, const Workl
       }
       cp.recommended = pool[best];
       std::vector<const PlacementPlan*> ptrs;
+      ptrs.reserve(pool.size());
       for (const auto& p : pool) ptrs.push_back(&p);
       for (std::size_t i : pareto_frontier(ptrs)) cp.frontier.push_back(pool[i]);
     } else {
       std::vector<std::pair<std::size_t, std::string>> ranked;
+      ranked.reserve(reason_counts.size());
       for (const auto& [why, n] : reason_counts) ranked.emplace_back(n, why);
       std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
       for (std::size_t i = 0; i < ranked.size() && i < 5; ++i) cp.infeasible_reasons.push_back(ranked[i].second);

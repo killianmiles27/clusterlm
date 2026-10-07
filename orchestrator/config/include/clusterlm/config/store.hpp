@@ -45,7 +45,7 @@ class SettingsStore {
  public:
   // Loads (or defaults) according to the rules above. Fails only for I/O errors on the directory and for a
   // document newer than this build.
-  static Result<std::unique_ptr<SettingsStore>> open(std::filesystem::path file, MigrationHook migrate = {});
+  static Result<std::unique_ptr<SettingsStore>> open(std::filesystem::path file, const MigrationHook& migrate = {});
 
   T get() const;
   // Read-modify-write under the store's lock: `mutate` edits a copy, the result is validated and persisted

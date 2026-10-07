@@ -1,4 +1,5 @@
 #include "clusterlm/placement/placement.hpp"
+#include "clusterlm/common/strcat.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -462,7 +463,7 @@ CostOutcome Evaluator::cost(const std::vector<PlanStage>& stages) {
   for (const auto& id : c.order) {
     const DomainEval& d = domain(*domains_[id], ranges[id]);
     c.evals.push_back(&d);
-    for (const auto& r : d.reasons) reasons.push_back(id + ": " + r);
+    for (const auto& r : d.reasons) reasons.push_back(str_cat(id, ": ", r));
   }
 
   // ---- links ----
@@ -888,6 +889,7 @@ Result<PlacementResult> search_placements(const PlacementRequest& r) {
   // Deterministic order: objective, then the layer boundaries (independent of domain names), then the hash.
   auto boundaries = [](const PlacementPlan& p) {
     std::vector<std::uint32_t> b;
+    b.reserve(p.stages.size());
     for (const auto& s : p.stages) b.push_back(s.layers.end);
     return b;
   };

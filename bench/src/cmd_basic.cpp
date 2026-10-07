@@ -111,7 +111,7 @@ int cmd_placement(const cli::Args& args) {
   // The result is only as trustworthy as its weakest input (docs/benchmark-methodology.md): any Synthetic quantity
   // in any profile makes the whole run Synthetic; fully Measured inputs give a Measured result.
   nlohmann::json synthetic_ids = nlohmann::json::array();
-  auto note_profile = [&](placement::HardwareProfile p) {
+  auto note_profile = [&](const placement::HardwareProfile& p) {
     if (placement::weakest_provenance(p) == placement::Provenance::kSynthetic) synthetic_ids.push_back(p.id);
   };
   note_profile(req.father);

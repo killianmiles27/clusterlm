@@ -122,7 +122,7 @@ Status StrataDomain::open_session(Epoch epoch, SessionId session) {
   if (!sessions_.contains(session) && sessions_.size() >= spec_.max_sessions)
     return make_error(ErrorCode::kResourceExhausted, "strata domain: max_sessions reached");
   CLM_RETURN_IF_ERROR(ledger_.open_session(epoch, session));
-  const Status st = engine_->open_session(session);  // a re-opened session starts from zeroed state
+  Status st = engine_->open_session(session);  // a re-opened session starts from zeroed state
   if (!st.is_ok()) {
     (void)ledger_.abort_session(epoch, session);
     sessions_.erase(session);

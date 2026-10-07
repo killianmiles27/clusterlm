@@ -36,6 +36,8 @@ Father, G14 or 3060 machines.
   - Local activity releases the lease without consulting Father, and Father refuses to run the stale plan.
 - **Sanitizers.** The full suite, including multi-process clusters and fault runs, is clean under ASan+UBSan and
   ThreadSanitizer on the development host.
+- **Static analysis.** Product code (not tests or third_party) is clean under clang-tidy (`.clang-tidy`: bugprone, Clang
+  static analyzer, performance); CI job `linux-clang-tidy` fails on any finding (`scripts/run_clang_tidy.sh`).
 
 ## Implemented as interfaces, pending real platforms
 

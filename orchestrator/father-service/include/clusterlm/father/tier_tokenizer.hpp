@@ -22,7 +22,7 @@ namespace clusterlm::father {
 class TierTokenizerProvider {
  public:
   explicit TierTokenizerProvider(std::shared_ptr<config::FatherSettingsStore> settings, GgufBpeOptions options = {})
-      : settings_(std::move(settings)), options_(std::move(options)) {}
+      : settings_(std::move(settings)), options_(options) {}
 
   Result<std::shared_ptr<Tokenizer>> get(const catalog::TierEntry& tier);
 

@@ -1,6 +1,8 @@
 #include "local_cluster.hpp"
 
 #include <cstdlib>
+#include <exception>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -12,6 +14,16 @@ namespace clusterlm::bench {
 using namespace std::chrono_literals;
 
 namespace {
+// Parses a numeric field with `convert` (std::stod / std::stoull); a malformed or out-of-range value is "absent".
+template <typename Convert>
+auto parse_number(const std::string& text, Convert convert) -> std::optional<decltype(convert(text))> {
+  try {
+    return convert(text);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 std::string field(const std::string& line, const std::string& key) {
   std::istringstream ss(line);
   std::string tok;
@@ -129,12 +141,10 @@ void LocalCluster::log_service_line(Node& n, const std::string& line) {
   if (line.rfind("CLUSTERLM_NODE_SERVICE_EVENT", 0) != 0) return;
   ServiceEvent e;
   e.kind = field(line, "kind");
-  try {
-    e.latency_ms = std::stod(field(line, "latency_ms"));
-    e.residual_bytes = std::stoull(field(line, "residual_bytes"));
-  } catch (const std::exception&) {
-    // A malformed number leaves the default; the kind is what is counted.
-  }
+  // A malformed number leaves the default; the kind is what is counted.
+  if (const auto v = parse_number(field(line, "latency_ms"), [](const std::string& t) { return std::stod(t); })) e.latency_ms = *v;
+  if (const auto v = parse_number(field(line, "residual_bytes"), [](const std::string& t) { return std::stoull(t); }))
+    e.residual_bytes = *v;
   n.events.push_back(std::move(e));
 }
 
@@ -231,6 +241,7 @@ LocalCluster::~LocalCluster() {
 
 std::vector<coordinator::NodeEndpoint> LocalCluster::endpoints() const {
   std::vector<coordinator::NodeEndpoint> out;
+  out.reserve(nodes_.size());
   for (const auto& n : nodes_)
     out.push_back({n.options.name, n.endpoint, options_.tls ? n.device_id : std::string()});
   return out;

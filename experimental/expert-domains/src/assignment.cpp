@@ -32,6 +32,7 @@ Result<ExpertAssignment> ExpertAssignment::ranges(std::uint32_t n_experts, const
     if (s == 0) return invalid("every owner needs a positive share");
     total += s;
   }
+  if (total == 0) return invalid("every owner needs a positive share");  // unreachable; keeps the divisions below defined
   // Largest remainder: floor(share * E / total), leftovers to the biggest remainders (ties to the lower owner).
   // A share so small that it rounds to nothing takes one expert from the largest owner instead.
   std::vector<std::uint32_t> count(shares.size(), 0);

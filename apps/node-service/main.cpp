@@ -438,8 +438,8 @@ int main(int argc, char** argv) {
   const bool simulate = args.has("simulate-activity");
   std::unique_ptr<platform::PowerMonitor> power;
   std::unique_ptr<platform::ProcessJob> job;
-  bool console = args.has("console");
 #ifdef _WIN32
+  const bool console = args.has("console");
   if (!simulate) {
     power = platform::make_windows_power_monitor();
     job = platform::make_windows_process_job("ClusterLM-Node-Worker");
@@ -449,7 +449,7 @@ int main(int argc, char** argv) {
     cfg.helper_startup.service_has_tcb_privilege = platform::current_process_has_tcb_privilege();
   }
 #else
-  console = true;  // no SCM here
+  const bool console = true;  // no SCM here
   cfg.helper_auth.require_interactive_session = false;  // POSIX peers carry no session id (uid check is built in)
 #endif
   if (!power) power = std::make_unique<platform::MockPowerMonitor>();  // dev: always on AC

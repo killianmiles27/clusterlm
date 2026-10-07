@@ -61,7 +61,7 @@ Result<fs::path> set_aside(const fs::path& file) {
 }  // namespace
 
 template <typename T>
-Result<std::unique_ptr<SettingsStore<T>>> SettingsStore<T>::open(fs::path file, MigrationHook migrate) {
+Result<std::unique_ptr<SettingsStore<T>>> SettingsStore<T>::open(fs::path file, const MigrationHook& migrate) {
   using Tr = Traits<T>;
   std::unique_ptr<SettingsStore<T>> store(new SettingsStore<T>(std::move(file)));
   const fs::path f = store->file_;

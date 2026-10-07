@@ -26,8 +26,11 @@ namespace {
 // OpenSSL's socket BIO writes with write(2), which raises SIGPIPE when the peer has already closed the connection
 // and kills the process. This BIO is the same descriptor I/O with send(MSG_NOSIGNAL), so a vanished peer surfaces as
 // an error on the connection (as on the plain-TCP path), never as a signal.
+// The BIO's data pointer is the owning stream's socket (kept alive by TlsStream: SSL is freed before the socket).
+int bio_fd(BIO* b) { return static_cast<int>(static_cast<const net::Socket*>(BIO_get_data(b))->handle()); }
+
 int nosig_write(BIO* b, const char* buf, int len) {
-  const int fd = static_cast<int>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+  const int fd = bio_fd(b);
   BIO_clear_retry_flags(b);
   const ssize_t n = ::send(fd, buf, static_cast<std::size_t>(len), MSG_NOSIGNAL);
   if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) BIO_set_retry_write(b);
@@ -35,7 +38,7 @@ int nosig_write(BIO* b, const char* buf, int len) {
 }
 
 int nosig_read(BIO* b, char* buf, int len) {
-  const int fd = static_cast<int>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+  const int fd = bio_fd(b);
   BIO_clear_retry_flags(b);
   const ssize_t n = ::recv(fd, buf, static_cast<std::size_t>(len), 0);
   if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) BIO_set_retry_read(b);
@@ -47,8 +50,8 @@ long nosig_ctrl(BIO* b, int cmd, long, void* ptr) {
     case BIO_CTRL_FLUSH:
       return 1;
     case BIO_C_GET_FD:
-      if (ptr != nullptr) *static_cast<int*>(ptr) = static_cast<int>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
-      return static_cast<long>(reinterpret_cast<std::intptr_t>(BIO_get_data(b)));
+      if (ptr != nullptr) *static_cast<int*>(ptr) = bio_fd(b);
+      return static_cast<long>(bio_fd(b));
     default:
       return 0;
   }
@@ -165,7 +168,7 @@ class TlsStream final : public Stream {
     const BIO_METHOD* method = nosig_socket_method();
     BIO* bio = method != nullptr ? BIO_new(method) : nullptr;
     if (bio == nullptr) return make_error(ErrorCode::kInternal, "socket BIO allocation failed: " + openssl_errors());
-    BIO_set_data(bio, reinterpret_cast<void*>(static_cast<std::intptr_t>(sock_.handle())));
+    BIO_set_data(bio, &sock_);
     SSL_set_bio(ssl_, bio, bio);  // the SSL owns the BIO; the socket stays owned by sock_
 #endif
     if (server) SSL_set_accept_state(ssl_);
