@@ -14,6 +14,7 @@ Result<std::vector<TierParticipant>> InProcessFatherClient::participants(std::st
   const auto* tier = opts_.catalog.find(tier_id);
   if (!tier) return make_error(ErrorCode::kNotFound, "unknown tier");
   std::vector<TierParticipant> out;
+  out.reserve(tier->roles.size());
   for (const auto& role : tier->roles) out.push_back({role, opts_.assignment.machine_for(role).value_or(role)});
   return out;
 }

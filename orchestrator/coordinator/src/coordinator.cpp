@@ -938,7 +938,7 @@ struct Coordinator::Impl {
         next += n;
         ++out.prefill_chunks;
         out.prefill_tokens += n;
-        flights.push_back(std::move(f));
+        flights.push_back(f);
         if (done) finish(flights.size() - 1, std::move(*done));
         continue;
       }
@@ -1268,7 +1268,7 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
     if (launched.value()) {
       logits = std::move(*launched.value());
     } else {
-      flights.push_back(std::move(f));
+      flights.push_back(f);
       while (true) {
         auto adv = im.advance(flights, request, trace.wait_ms);
         if (!adv.is_ok()) {

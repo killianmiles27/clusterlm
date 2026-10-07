@@ -23,6 +23,7 @@
 #include "clusterlm/platform/fs_safety.hpp"
 #include "clusterlm/platform/process.hpp"
 #include "clusterlm/protocol/messages.hpp"
+#include "clusterlm/common/strcat.hpp"
 #include "bench_backend.hpp"
 #include "bench_common.hpp"
 #include "cluster_pass.hpp"
@@ -867,7 +868,7 @@ int cmd_placement_validate(const cli::Args& args) {
       for (const auto& [id, index] : node_index) {
         auto it = endpoints.find(id);
         if (it == endpoints.end()) {
-          r.check(tag + "_endpoint_for_" + id, false, "no --endpoint for the node profile this candidate places");
+          r.check(str_cat(tag, "_endpoint_for_", id), false, "no --endpoint for the node profile this candidate places");
           all_present = false;
           break;
         }

@@ -1,4 +1,5 @@
 #include "clusterlm/objects/manifest.hpp"
+#include "clusterlm/common/strcat.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -318,7 +319,7 @@ Status ModelManifest::validate() const {
       return invalid(ctx + "byte_size != sum of source ranges for an unconverted object");
     if (o.byte_size == 0) return invalid(ctx + "zero byte_size");
     for (const std::string& d : o.dependencies)
-      if (!names.contains(d)) return invalid(ctx + "unknown dependency '" + d + "'");
+      if (!names.contains(d)) return invalid(str_cat(ctx, "unknown dependency '", d, "'"));
   }
   return Status::ok();
 }

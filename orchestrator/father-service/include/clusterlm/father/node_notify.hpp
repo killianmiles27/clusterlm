@@ -31,7 +31,7 @@ struct UnpairNotifyResult {
 // Sends the notice to `node` (its `address` is the data endpoint, `fingerprint` the pinned identity). While a
 // previous Father session is still being torn down the Node may answer "a Father is already connected"; that is
 // retried briefly within `budget`.
-UnpairNotifyResult notify_node_unpaired(std::shared_ptr<const transport::DeviceIdentity> identity,
+UnpairNotifyResult notify_node_unpaired(const std::shared_ptr<const transport::DeviceIdentity>& identity,
                                         const config::PairedDevice& node,
                                         std::chrono::milliseconds budget = std::chrono::milliseconds(3000));
 

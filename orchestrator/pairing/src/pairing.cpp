@@ -292,7 +292,7 @@ Result<PairedPeer> PairingResponder::serve_one(transport::Connection& conn) {
 
 // ---------------------------------------------------------------------------------------------- initiator
 
-Result<PairedPeer> pair_with(const transport::Endpoint& node, std::shared_ptr<const transport::DeviceIdentity> identity,
+Result<PairedPeer> pair_with(const transport::Endpoint& node, const std::shared_ptr<const transport::DeviceIdentity>& identity,
                              std::string_view code, const DeviceInfo& self, std::chrono::milliseconds timeout) {
   if (!identity) return make_error(ErrorCode::kInvalidArgument, "pairing needs a device identity");
   CLM_ASSIGN_OR_RETURN(std::string normalized, normalize_code(code));

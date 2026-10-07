@@ -114,6 +114,7 @@ struct ObjectBuilder {
   Status add_whole(std::string name, ObjectKind kind, std::optional<std::uint32_t> layer, std::vector<Ref> refs) {
     std::sort(refs.begin(), refs.end(), physical_less);
     std::vector<Part> parts;
+    parts.reserve(refs.size());
     for (const Ref& r : refs) parts.push_back(whole(r));
     return add(std::move(name), kind, layer, std::nullopt, parts);
   }

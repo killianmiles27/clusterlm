@@ -96,7 +96,7 @@ class Builder {
   }
 
   void add_f32_object(std::string name, ObjectKind kind, std::optional<std::uint32_t> layer,
-                      std::optional<std::uint32_t> expert, std::uint32_t /*shard_hint*/, std::vector<Piece> pieces) {
+                      std::optional<std::uint32_t> expert, std::uint32_t /*shard_hint*/, const std::vector<Piece>& pieces) {
     ManifestObject obj;
     obj.name = std::move(name);
     obj.kind = kind;
@@ -104,7 +104,8 @@ class Builder {
     obj.expert = expert;
     obj.representation = {std::string(kQuantF32), 0, 0, true};
     std::vector<std::pair<std::uint32_t, Bytes>> raw;
-    for (Piece& p : pieces) raw.emplace_back(p.shard, f32_bytes(p.values));
+    raw.reserve(pieces.size());
+    for (const Piece& p : pieces) raw.emplace_back(p.shard, f32_bytes(p.values));
     finish_object(obj, raw);
   }
 
@@ -129,14 +130,14 @@ class Builder {
     // Router weights are scaled 4x so routing varies visibly between tokens in tests.
     dense.push_back({0, rng("router").uniform_scaled(std::size_t{E} * H, 4.0f * fan_in_scale(H))});
     dense.push_back({0, rng("inj").uniform_scaled(std::size_t{g_.residual_streams} * H, fan_in_scale(H))});
-    add_f32_object(dense_object_name(L), ObjectKind::kLayerDense, L, std::nullopt, 0, std::move(dense));
+    add_f32_object(dense_object_name(L), ObjectKind::kLayerDense, L, std::nullopt, 0, dense);
 
     if (sff > 0) {
       std::vector<Piece> sh;
       sh.push_back({0, rng("shexp_gate").uniform_scaled(std::size_t{sff} * H, fan_in_scale(H))});
       sh.push_back({0, rng("shexp_up").uniform_scaled(std::size_t{sff} * H, fan_in_scale(H))});
       sh.push_back({0, rng("shexp_down").uniform_scaled(std::size_t{H} * sff, fan_in_scale(sff))});
-      add_f32_object(shared_expert_object_name(L), ObjectKind::kSharedExpert, L, std::nullopt, 0, std::move(sh));
+      add_f32_object(shared_expert_object_name(L), ObjectKind::kSharedExpert, L, std::nullopt, 0, sh);
     }
 
     // Stacked expert tensors: generated whole, stored whole, then described per expert as three slices.

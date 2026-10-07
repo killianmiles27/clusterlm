@@ -195,6 +195,7 @@ Result<std::unique_ptr<ExpertKernelProvider>> ExpertKernelRegistry::create(const
 
 std::vector<std::string> ExpertKernelRegistry::ids() const {
   std::vector<std::string> out;
+  out.reserve(factories_.size());
   for (const auto& [k, f] : factories_) out.push_back(k);
   return out;
 }

@@ -122,12 +122,17 @@ class QwenSplitter {
   std::size_t next(std::size_t p) const {
     std::size_t len = contraction(p);
     if (len) return len;
-    if ((len = word(p))) return len;
+    len = word(p);
+    if (len) return len;
     if (u_[p].kind == Kind::kNumber) return 1;
-    if ((len = punct(p))) return len;
-    if ((len = newline_run(p))) return len;
-    if ((len = space_not_before_nonspace(p))) return len;
-    if ((len = whitespace(p))) return len;
+    len = punct(p);
+    if (len) return len;
+    len = newline_run(p);
+    if (len) return len;
+    len = space_not_before_nonspace(p);
+    if (len) return len;
+    len = whitespace(p);
+    if (len) return len;
     return 1;  // unreachable for a well-formed class assignment; guarantees progress
   }
 

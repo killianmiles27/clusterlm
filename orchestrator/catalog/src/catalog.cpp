@@ -1,4 +1,5 @@
 #include "clusterlm/catalog/catalog.hpp"
+#include "clusterlm/common/strcat.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -195,7 +196,7 @@ Status parse_tier(const json& t, std::size_t index, TierEntry& out) {
     CLM_RETURN_IF_ERROR(get_string_array(c, "requirements", cp, cx.requirements, true));
     for (const auto& r : cx.requirements)
       if (r != kReqFeasiblePlacement && r != kReqQualificationRequired)
-        return err(cp + ".requirements: unknown requirement \"" + r + "\"");
+        return err(str_cat(cp, ".requirements: unknown requirement \"", r, "\""));
     out.contexts.push_back(std::move(cx));
   }
 
@@ -249,8 +250,8 @@ Status validate_tier(const TierEntry& t) {
   if (t.id == "ultra" && nodes > 2) return err(p + "Ultra uses Father + laptop-class + designated 3060 only; a third node (Node 3) is excluded");
   std::set<std::string> seen;
   for (const auto& r : t.roles) {
-    if (!known_role(r)) return err(p + "unknown role \"" + r + "\" (known: father, node:laptop-class, node:designated-3060)");
-    if (!seen.insert(r).second) return err(p + "duplicate role \"" + r + "\"");
+    if (!known_role(r)) return err(str_cat(p, "unknown role \"", r, "\" (known: father, node:laptop-class, node:designated-3060)"));
+    if (!seen.insert(r).second) return err(str_cat(p, "duplicate role \"", r, "\""));
   }
   if (std::count(t.roles.begin(), t.roles.end(), std::string(kRoleFather)) != 1) return err(p + "exactly one father role");
   if (nodes != max_nodes_for(t.id))

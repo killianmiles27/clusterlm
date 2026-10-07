@@ -30,7 +30,7 @@ Status WindowLedger::open_session(Epoch epoch, SessionId session) {
   }
   SessionState s;
   s.epoch = epoch;
-  sessions_.emplace(session, std::move(s));
+  sessions_.emplace(session, s);
   return Status::ok();
 }
 

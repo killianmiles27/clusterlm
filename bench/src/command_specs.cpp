@@ -3,6 +3,7 @@
 #include <set>
 #include <sstream>
 
+#include "clusterlm/common/strcat.hpp"
 #include "bench_backend.hpp"
 #include "commands.hpp"
 
@@ -103,6 +104,7 @@ const std::vector<std::string> kCrashPhases = {"transfer", "hashing", "mapping",
 
 std::vector<std::string> fault_scenario_names() {
   std::vector<std::string> out;
+  out.reserve(kCrashPhases.size() + 5);
   for (const auto& p : kCrashPhases) out.push_back("crash_" + p);
   for (const char* n : {"father_lost", "local_activity", "link_loss", "stall", "release_cycles"}) out.emplace_back(n);
   return out;
@@ -131,13 +133,11 @@ Result<std::vector<std::string>> select_fault_scenarios(const std::string& only,
     } else {
       std::string valid;
       for (const auto& n : all) valid += (valid.empty() ? "" : ", ") + n;
+      std::string phases;
+      for (const auto& p : kCrashPhases) phases += (phases.empty() ? "" : ", ") + p;
       return make_error(ErrorCode::kInvalidArgument,
-                        "unknown fault scenario or phase '" + tok + "' (scenarios: " + valid + "; groups: crash, supervised; phases: " +
-                            [&] {
-                              std::string ph;
-                              for (const auto& p : kCrashPhases) ph += (ph.empty() ? "" : ", ") + p;
-                              return ph;
-                            }() + ")");
+                        str_cat("unknown fault scenario or phase '", tok, "' (scenarios: ", valid,
+                                "; groups: crash, supervised; phases: ", phases, ")"));
     }
   }
   if (want.empty()) return make_error(ErrorCode::kInvalidArgument, "--only names no scenario");

@@ -1,6 +1,7 @@
 #include "nvml_probe.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -46,10 +47,8 @@ using LibHandle = HMODULE;
 LibHandle open_library(const std::string& path) { return LoadLibraryA(path.c_str()); }
 void* find_symbol(LibHandle h, const char* name) {
   FARPROC p = GetProcAddress(h, name);
-  void* v = nullptr;
-  static_assert(sizeof v == sizeof p);
-  std::memcpy(&v, &p, sizeof v);  // FARPROC -> void* without a function-pointer cast diagnostic
-  return v;
+  static_assert(sizeof(void*) == sizeof p);
+  return std::bit_cast<void*>(p);  // FARPROC -> void* without a function-pointer cast diagnostic
 }
 void close_library(LibHandle h) { FreeLibrary(h); }
 std::string library_error() { return "error " + std::to_string(GetLastError()); }
@@ -73,10 +72,8 @@ std::vector<std::string> default_library_paths() { return {"libnvidia-ml.so.1"};
 template <typename F>
 F symbol(LibHandle h, const char* name) {
   void* p = find_symbol(h, name);
-  F f{};
-  static_assert(sizeof f == sizeof p);
-  std::memcpy(&f, &p, sizeof f);
-  return f;
+  static_assert(sizeof(F) == sizeof p);
+  return std::bit_cast<F>(p);  // object pointer -> function pointer without a reinterpret_cast diagnostic
 }
 
 std::string error_text(const NvmlApi& api, int code) {

@@ -75,7 +75,7 @@ Result<UnpairNotifyResult> attempt(const std::shared_ptr<const transport::Device
 
 }  // namespace
 
-UnpairNotifyResult notify_node_unpaired(std::shared_ptr<const transport::DeviceIdentity> identity,
+UnpairNotifyResult notify_node_unpaired(const std::shared_ptr<const transport::DeviceIdentity>& identity,
                                         const config::PairedDevice& node, std::chrono::milliseconds budget) {
   if (!identity) return result(UnpairNotifyOutcome::kRefused, "no device identity");
   auto ep = transport::Endpoint::parse(node.address);

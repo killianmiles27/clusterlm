@@ -24,6 +24,7 @@
 #include "clusterlm/platform/fs_safety.hpp"
 #include "clusterlm/platform/process.hpp"
 #include "clusterlm/protocol/messages.hpp"
+#include "clusterlm/common/strcat.hpp"
 #include "bench_backend.hpp"
 #include "bench_common.hpp"
 #include "cluster_pass.hpp"
@@ -130,7 +131,7 @@ Result<std::vector<coordinator::NodeEndpoint>> parse_node_specs(const std::vecto
   for (const auto& spec : specs) {
     const auto eq = spec.find('=');
     if (eq == std::string::npos || eq == 0)
-      return make_error(ErrorCode::kInvalidArgument, "--" + flag + " expects NAME=HOST:PORT[@FINGERPRINT], got '" + spec + "'");
+      return make_error(ErrorCode::kInvalidArgument, str_cat("--", flag, " expects NAME=HOST:PORT[@FINGERPRINT], got '", spec, "'"));
     coordinator::NodeEndpoint n;
     n.name = spec.substr(0, eq);
     std::string rest = spec.substr(eq + 1);
@@ -606,13 +607,13 @@ Status run_cluster_pass(PassContext& pc) {
   }
 
   r.metric(P + "prepare.total_ms", prepare_total, "ms");
-  for (const auto& [node, d] : node_ms) r.metric(P + "prepare.node." + node + ".ms", d, "ms");
-  for (const auto& [node, d] : node_prepare_ms) r.metric(P + "prepare.node." + node + ".node_side_ms", d, "ms");
-  for (const auto& [node, d] : node_bytes_per_s) r.metric(P + "prepare.node." + node + ".provision_bytes_per_s", d, "bytes/s");
+  for (const auto& [node, d] : node_ms) r.metric(str_cat(P, "prepare.node.", node, ".ms"), d, "ms");
+  for (const auto& [node, d] : node_prepare_ms) r.metric(str_cat(P, "prepare.node.", node, ".node_side_ms"), d, "ms");
+  for (const auto& [node, d] : node_bytes_per_s) r.metric(str_cat(P, "prepare.node.", node, ".provision_bytes_per_s"), d, "bytes/s");
   r.metric(P + "boundary.bytes_per_position", boundary.bytes_per_position());
   r.metric(P + "boundary.remote_stages", remote_count(plan));
   for (const auto& [node, b] : breakdown) {
-    const std::string k = P + "prepare.node." + node + ".";
+    const std::string k = str_cat(P, "prepare.node.", node, ".");
     r.metric(k + "father_source_read_ms", b.father_read_ms, "ms");
     r.metric(k + "father_chunk_digest_ms", b.father_digest_ms, "ms");
     r.metric(k + "father_send_ms", b.father_send_ms, "ms");

@@ -121,7 +121,7 @@ class PairingResponder {
 // Connects to a Node in pairing mode and runs the exchange. Errors: kUnauthenticated (wrong code, relay
 // detected, Node locked its mode), kUnavailable (nothing listening / closed), kDeadlineExceeded, kInvalidArgument
 // (malformed code). Nothing about the code or the keys is logged.
-Result<PairedPeer> pair_with(const transport::Endpoint& node, std::shared_ptr<const transport::DeviceIdentity> identity,
+Result<PairedPeer> pair_with(const transport::Endpoint& node, const std::shared_ptr<const transport::DeviceIdentity>& identity,
                              std::string_view code, const DeviceInfo& self,
                              std::chrono::milliseconds timeout = std::chrono::milliseconds(15000));
 

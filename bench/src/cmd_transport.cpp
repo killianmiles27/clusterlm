@@ -258,6 +258,7 @@ int cmd_transport(const cli::Args& args) {
   }
   result.config("peers", [&] {
     std::vector<std::string> v;
+    v.reserve(peers.size());
     for (const auto& p : peers) v.push_back(p.name + "=" + p.endpoint.str());
     return v;
   }());
@@ -281,6 +282,7 @@ int cmd_transport(const cli::Args& args) {
   std::optional<ConcurrentMeasure> concurrent;
   if (ok && conns.size() >= 2) {
     std::vector<transport::Connection*> raw;
+    raw.reserve(conns.size());
     for (auto& c : conns) raw.push_back(c.get());
     const std::uint32_t big = *std::max_element(lopt.sizes.begin(), lopt.sizes.end());
     auto cm = measure_concurrent(raw, big, lopt.burst_bytes);
@@ -337,6 +339,7 @@ Status measure_remote_peers(const cli::Args& args, BenchmarkResult& result, std:
   }
   if (conns.size() >= 2) {
     std::vector<transport::Connection*> raw;
+    raw.reserve(conns.size());
     for (auto& c : conns) raw.push_back(c.get());
     const std::uint32_t big = *std::max_element(lopt.sizes.begin(), lopt.sizes.end());
     CLM_ASSIGN_OR_RETURN(auto cm, measure_concurrent(raw, big, lopt.burst_bytes));

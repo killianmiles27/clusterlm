@@ -184,7 +184,7 @@ void ExpertDomainServer::stop() {
 }
 
 void ExpertDomainServer::run(std::shared_ptr<transport::Connection> conn) {
-  auto send_frame = [&](transport::Frame f) {
+  auto send_frame = [&](const transport::Frame& f) {
     {
       std::lock_guard<std::mutex> lk(impl_->mu);
       impl_->metrics.bytes_sent += f.payload.size();

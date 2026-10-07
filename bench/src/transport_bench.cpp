@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "clusterlm/common/clock.hpp"
+#include "clusterlm/common/strcat.hpp"
 
 namespace clusterlm::bench {
 
@@ -176,13 +177,13 @@ Result<ConcurrentMeasure> measure_concurrent(const std::vector<transport::Connec
 void emit_link_metrics(BenchmarkResult& r, const std::string& prefix, const LinkMeasure& m) {
   for (const auto& s : m.sizes) {
     const std::string k = std::to_string(s.size);
-    r.metric(prefix + "rtt_ms." + k, s.rtt_ms, "ms");
-    r.metric(prefix + "jitter_ms." + k, s.jitter_ms());
-    r.metric(prefix + "rtt_p99_minus_p50_ms." + k, s.tail_ms());
-    r.metric(prefix + "tx_bytes_per_s." + k, s.tx_bytes_per_s);
-    r.metric(prefix + "rx_bytes_per_s." + k, s.rx_bytes_per_s);
+    r.metric(str_cat(prefix, "rtt_ms.", k), s.rtt_ms, "ms");
+    r.metric(str_cat(prefix, "jitter_ms.", k), s.jitter_ms());
+    r.metric(str_cat(prefix, "rtt_p99_minus_p50_ms.", k), s.tail_ms());
+    r.metric(str_cat(prefix, "tx_bytes_per_s.", k), s.tx_bytes_per_s);
+    r.metric(str_cat(prefix, "rx_bytes_per_s.", k), s.rx_bytes_per_s);
     // Kept for continuity with earlier result files.
-    r.metric(prefix + "payload_bytes_per_s." + k, s.tx_bytes_per_s);
+    r.metric(str_cat(prefix, "payload_bytes_per_s.", k), s.tx_bytes_per_s);
   }
 }
 

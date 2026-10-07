@@ -183,6 +183,7 @@ Result<std::unique_ptr<ChildProcess>> ChildProcess::spawn(const std::filesystem:
   storage.push_back(executable.string());
   storage.insert(storage.end(), args.begin(), args.end());
   std::vector<char*> argv;
+  argv.reserve(storage.size() + 1);
   for (auto& s : storage) argv.push_back(s.data());
   argv.push_back(nullptr);
   auto impl = std::make_unique<Impl>();

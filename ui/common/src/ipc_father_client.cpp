@@ -191,7 +191,7 @@ struct IpcFatherClient::Impl {
     for (auto& s : targets) s(e);
   }
 
-  void read_loop(std::shared_ptr<ipc::Connection> c) {
+  void read_loop(const std::shared_ptr<ipc::Connection>& c) {
     for (;;) {
       auto env = c->receive(std::chrono::milliseconds(200));
       if (!env.is_ok()) {
@@ -220,7 +220,7 @@ struct IpcFatherClient::Impl {
       if (kind == ipc::MessageKind::kFatherEvent) {
         try {
           if (auto ev = parse_event(j)) dispatch(*ev);
-        } catch (...) {
+        } catch (...) {  // NOLINT(bugprone-empty-catch): a throwing UI event handler must not end the read loop
         }
       } else if (kind == ipc::MessageKind::kFatherReply) {
         std::shared_ptr<Pending> p;
