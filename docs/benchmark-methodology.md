@@ -30,7 +30,7 @@ listed in [HARDWARE-QUALIFICATION.md](../HARDWARE-QUALIFICATION.md); decisions b
 | 512-token generations for throughput and acceptance claims (`--tokens 512`) | `cluster` (HQ-MTP-01, HQ-PERF-*) |
 | Sustained runs are 30 minutes with a sample every `--sample-s` (default 10 s); shorter runs are recorded but do not populate `cpu.sustained_factor` | `cpu --sustained`, `cluster --minutes` |
 | 20 release cycles per the addendum §14 | `faults --release-cycles 20` (HQ-REL-01) |
-| Distributions are reported as n/mean/min/p10/p50/p95/p99/max/stddev; profiles use medians | all |
+| Distributions are reported as n/mean/min/p10/p50/p90/p95/p99/max/stddev; profiles use medians | all |
 
 ## Measurements
 
@@ -126,6 +126,55 @@ It measures the software path and gives the harness for the real runs.
   `--corpus DIR` uses the bytes of each file as a fixture prompt (real corpora need the Father tokenizer).
 - Correctness is checked against a Father-only reference on every run; activation messages are checked to stay
   within the boundary ABI.
+- `--contexts 8192,32768,...` runs a context sweep in one invocation with every result keyed `ctx<N>.q<q>.*` (even for
+  one context); `--context` keeps the older keying (prefixed only for more than one). Per-context VRAM margins need the
+  backend and are not recorded here.
+- Inter-token gaps of the streamed output: `q<q>.inter_token_gap_ms` (per token; tokens of one `on_tokens` delivery are 0
+  apart, so q > 1 shows a mass at 0) and `q<q>.inter_delivery_gap_ms` (between deliveries: the stall a reader sees), both
+  with p50/p90/p99/max. Timestamps and counts only, never token values.
+- Observers (OS and driver counters, never simulated; a source the OS cannot give is `unavailable: <reason>`, not 0):
+  - `resources.<father|nodeN>.{rss_bytes,commit_bytes}` as distributions plus `.series` arrays (decimated beyond 2000
+    points, `resources.series_stride` says by how much), `.rss_growth_bytes`/`.commit_growth_bytes`, sampled at
+    generation start/end, every prepare cycle and (throttled by `--sample-ms`, default 200) every round;
+    `--no-resources` disables it. Windows: `GetProcessMemoryInfo` (WorkingSetSize, PrivateUsage = commit charge); Linux:
+    `/proc/<pid>/status` (VmRSS; VmData is the commit proxy, Linux has no per-process commit figure).
+  - `nic.*` and `generation.nic.*` (with `--compare-routing`, prefixed `direct.`/`relay.`): rx/tx bytes, packets, errors
+    and drops of Father's interface over the whole pass and over generation only, beside `boundary.payload_bytes_total`.
+    The interface is `--nic NAME` or that of the route to the first Node (Linux `/proc/net/route`; Windows
+    `GetBestInterfaceEx` + `GetIfEntry2`). On a localhost cluster this is `lo`, which counts both directions of every
+    process on the host, so the wire/payload ratio is only meaningful on a real NIC.
+  - `nvml.*`: see below. `census.*` (with `--census`): see `storage-census`.
+- Provisioning breakdown per Node (HQ-PROV-01): Father `father_source_read_ms` (`stream_object` minus its callback),
+  `father_chunk_digest_ms`, `father_send_ms` (includes transport backpressure, i.e. the transfer), their bytes/s, and
+  Node `node_chunk_write_ms`, `node_seal_hash_ms`, `node_build_ms` from `PlanReady` (docs/protocol.md).
+- `faults --only a,b` runs a subset: scenario names (`crash_<phase>`, `father_lost`, `local_activity`, `link_loss`,
+  `stall`, `release_cycles`), a bare lifecycle phase (selects `crash_<phase>`) or `crash` (all of them); an unknown name
+  is a usage error (exit 2) and the result records `scenarios_run`. `release_cycles` records the resource series per
+  cycle (`release_cycles.resources.*`).
+
+### GPU telemetry (`nvml`, also inside `cpu --sustained`, `calibrate --sustained-minutes`, `cluster --minutes`)
+
+NVML is loaded at run time (`libnvidia-ml.so.1` / `nvml.dll`, override with `CLUSTERLM_NVML_LIBRARY`), with no link-time
+dependency and no CUDA toolkit. Per GPU: SM and memory clocks, power, temperature, memory used (also as VRAM series in
+`resources.gpu<N>.vram_used_bytes`), throttle reasons seen and the fraction of samples with an involuntary slowdown
+(power cap, thermal, hardware). Without NVML the result carries `nvml.unavailable = "unavailable: <reason>"` and
+`clusterlm-bench nvml` exits 3. `clusterlm-bench nvml --minutes 30 --sample-s 5` is the companion to run beside a
+workload that has no sampler of its own (HQ-GPU-03).
+
+### Power environment
+
+`calibrate`, `profile` and `cpu --sustained` record the Windows active power plan (`power.plan_guid`, `power.plan_name`)
+or the Linux cpufreq governor (`power.governor`); the calibrated profile's `note` says which plan it was measured under.
+
+### Cache and temp census (`storage-census`, `faults` unless `--no-census`, `cluster --census`)
+
+Before/after snapshots of the CUDA compute cache (`%APPDATA%\NVIDIA\ComputeCache`, `~/.nv/ComputeCache`,
+`CUDA_CACHE_PATH`), NVIDIA shader caches, OS temp (shallow), ClusterLM per-user data and the Node staging roots. Names,
+sizes and modification times only. The diff lists new/changed/removed files (`in_window` says whether a changed file's
+mtime falls inside the run); a temp file another program wrote during the run is indistinguishable, and kernel file
+tracing (ETW/procmon) is not collected. `storage-census --before --snapshot F`, then the workload, then
+`--after --snapshot F` (or `--diff --snapshot A --against B`); `--root LABEL=PATH`, `--staging-root PATH` and `--exclude PATH`
+adjust the locations.
 
 ## From results to placement inputs
 

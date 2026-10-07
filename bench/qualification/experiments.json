@@ -20,7 +20,8 @@
         "effective memory bandwidth (read) per thread count",
         "GPU identity, driver version, VRAM total/free, DXGI budget / current usage (CUDA build, Windows)",
         "AC/battery power source",
-        "writes profile-<machine>.json (HardwareProfile) and network-<machine>.json (NetworkProfile) with Measured provenance"
+        "writes profile-<machine>.json (HardwareProfile) and network-<machine>.json (NetworkProfile) with Measured provenance",
+        "Windows active power plan (PowerGetActiveScheme + friendly name) / Linux cpufreq governor, recorded in the result and the profile note"
       ],
       "output": {
         "schema": "bench/schema/benchmark-result.schema.json",
@@ -33,13 +34,15 @@
           "memory.alloc.largest_ok_bytes",
           "memory.ram_bandwidth",
           "gpu.0.vram_total",
-          "profile.measured_fields"
+          "profile.measured_fields",
+          "power.plan_name",
+          "power.plan_guid",
+          "power.governor"
         ]
       },
       "decision_affected": "HardwareProfile provenance Synthetic -> Measured; admission budgets for every placement.",
       "status": "pending",
       "tool_gaps": [
-        "power plan (only the AC/battery source is sampled)",
         "ram_safe_allowance under live policy (a policy value, kept as a Synthetic placeholder, not a measurement)",
         "GPU fields that need backend kernels (gpu_expert_bytes_per_s, dense_layer_ms, prefill_tokens_per_s, scratch_vram) stay Synthetic until HQ-GPU-01/HQ-GPU-02"
       ]
@@ -100,14 +103,13 @@
         "metrics": [
           "cpu.sustained_factor",
           "thermal.time_to_equilibrium_s",
-          "cpu.sustained.slope_pct_per_min"
+          "cpu.sustained.slope_pct_per_min",
+          "sustained.nvml.gpu.0.sm_clock_mhz",
+          "sustained.nvml.gpu.0.temperature_c"
         ]
       },
       "decision_affected": "Laptop share of layers/CPU work; whether laptop-light plans are preferred.",
-      "status": "pending",
-      "tool_gaps": [
-        "GPU clocks, power and temperatures need vendor telemetry (NVML): see HQ-GPU-03"
-      ]
+      "status": "pending"
     },
     {
       "id": "HQ-GPU-01",
@@ -176,7 +178,7 @@
       "id": "HQ-GPU-03",
       "title": "Laptop sustained GPU clocks, power and temperature",
       "purpose": "Determine the G14's sustained GPU derate under the same 30-minute load as HQ-CPU-02.",
-      "command": "clusterlm-bench domain sustained --backend strata --model <ultra-dir> --minutes 30 --out results/sustained-gpu-g14.json",
+      "command": "clusterlm-bench nvml --minutes 30 --sample-s 5 --on-target --machine-id g14 --out results/nvml-g14.json & clusterlm-bench domain sustained --backend strata --model <ultra-dir> --minutes 30 --out results/sustained-gpu-g14.json",
       "machines": [
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)"
       ],
@@ -192,13 +194,18 @@
         "experiment": "HQ-GPU-03",
         "metrics": [
           "gpu.sustained_factor",
-          "thermal.time_to_equilibrium_s"
+          "thermal.time_to_equilibrium_s",
+          "nvml.gpu.0.sm_clock_mhz",
+          "nvml.gpu.0.power_w",
+          "nvml.gpu.0.temperature_c",
+          "nvml.gpu.0.throttle_reasons_seen",
+          "nvml.gpu.0.slowdown_sample_fraction"
         ]
       },
       "decision_affected": "Laptop share of GPU-resident layers; whether laptop-light plans are preferred.",
       "status": "pending",
       "tool_gaps": [
-        "the tool does not read NVML telemetry yet; the Strata GPU kernels and NVML sampling are both required"
+        "the sustained GPU load itself needs the Strata GPU kernels (`domain sustained --backend strata`), which are not built in the cloud; NVML sampling is implemented (`clusterlm-bench nvml`, run beside the load) and is verified here only against a fake NVML function table and the library-absent path"
       ]
     },
     {
@@ -268,7 +275,7 @@
       "id": "HQ-NET-02",
       "title": "Direct Node-to-Node forwarding versus Father relay",
       "purpose": "Measure per-round latency and Father NIC load of the direct peer path versus relay with real models.",
-      "command": "clusterlm-bench cluster --plan <plan> --compare-routing --q 1,4 --out results/peer-vs-relay.json",
+      "command": "clusterlm-bench cluster --plan <plan> --compare-routing --q 1,4 --nic <father-nic> --out results/peer-vs-relay.json",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -288,13 +295,16 @@
           "relay.q<q>.round_ms",
           "direct.q<q>.boundary_bytes_per_emitted_token",
           "relay.q<q>.boundary_bytes_per_emitted_token",
-          "direct.q<q>.stage.remote_wait_ms"
+          "direct.q<q>.stage.remote_wait_ms",
+          "direct.generation.nic.tx_bytes",
+          "relay.generation.nic.tx_bytes",
+          "direct.boundary.payload_bytes_total",
+          "relay.boundary.payload_bytes_total"
         ]
       },
       "decision_affected": "Whether the direct peer path is required for qualification (SHOULD HAVE).",
       "status": "pending",
       "tool_gaps": [
-        "Father NIC byte counters (OS-level) are not sampled; boundary payload bytes per round are recorded instead",
         "real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then"
       ]
     },
@@ -324,13 +334,18 @@
           "prepare.node.<node>.ms",
           "prepare.node.<node>.node_side_ms",
           "prepare.node.<node>.provision_bytes_per_s",
-          "prepare.node.<node>.bytes"
+          "prepare.node.<node>.bytes",
+          "prepare.node.<node>.father_source_read_ms",
+          "prepare.node.<node>.father_source_read_bytes_per_s",
+          "prepare.node.<node>.father_send_ms",
+          "prepare.node.<node>.node_seal_hash_ms",
+          "prepare.node.<node>.node_chunk_write_ms",
+          "prepare.node.<node>.node_build_ms"
         ]
       },
       "decision_affected": "Lease amortization in placement; UI preparation estimates (PERF-03).",
       "status": "pending",
       "tool_gaps": [
-        "Father disk read MB/s and the Node hash/upload split are not separated (only total Node-side prepare time)",
         "real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then"
       ]
     },
@@ -338,7 +353,7 @@
       "id": "HQ-REL-01",
       "title": "Release and cleanup latency under real drivers",
       "purpose": "Verify activity-driven release targets: stop new work <=250 ms, cooperative release <1 s, 2 s worker deadline, storage reclaimed <=10 s after termination.",
-      "command": "clusterlm-bench faults --release-cycles 20 --on-target --machine-id <machine> --out results/release-<machine>.json",
+      "command": "clusterlm-bench faults --only release_cycles,local_activity --release-cycles 20 --on-target --machine-id <machine> --out results/release-<machine>.json",
       "machines": [
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
         "Node 3060 (Ryzen 5 5600-class, 16 GB, RTX 3060 12 GB)"
@@ -357,13 +372,14 @@
         "metrics": [
           "release_cycles.release_ms",
           "release_cycles.prepare_ms",
-          "local_activity.release_observed_ms"
+          "local_activity.release_observed_ms",
+          "release_cycles.resources.father.rss_growth_bytes",
+          "release_cycles.resources.node0.commit_growth_bytes"
         ]
       },
       "decision_affected": "REL-01, PERF-04; Job Object deadline values.",
       "status": "pending",
       "tool_gaps": [
-        "`faults` always runs its full scenario set (all lifecycle phases); selecting a trigger/phase subset is not implemented",
         "forced-termination counts under the real Windows service supervisor (node/service) are exercised by its own tests, not by this command"
       ]
     },
@@ -380,20 +396,24 @@
       "measurements": [
         "bytes under staging root",
         "bytes in backend cache dirs (CUDA cache, temp, AppData)",
-        "files created during lease (ETW/procmon diff)"
+        "files created during lease (ETW/procmon diff)",
+        "cache/temp census: CUDA ComputeCache, NVIDIA shader caches, OS temp, ClusterLM per-user data, before vs. after (names and sizes only); `clusterlm-bench storage-census --before|--after|--diff` for manual windows"
       ],
       "output": {
         "schema": "bench/schema/benchmark-result.schema.json",
         "experiment": "HQ-STORE-01",
         "metrics": [
           "crash_<phase>.detect_ms",
-          "post_release_census_zero"
+          "post_release_census_zero",
+          "census.added_files",
+          "census.changed_files",
+          "census.diff"
         ]
       },
       "decision_affected": "STORE-01..04 acceptance.",
       "status": "pending",
       "tool_gaps": [
-        "census covers the staging root only; backend cache directories (CUDA cache, temp, AppData) and ETW/procmon file diffs are not collected by the tool"
+        "kernel-level file tracing (ETW / procmon file diffs) is not collected: the cache/temp census compares before/after snapshots of the known locations (names, sizes, mtimes) and cannot see a file that was created and deleted inside the run or attribute a temp file to a process"
       ]
     },
     {
@@ -450,14 +470,15 @@
           "q<q>.mtp.accepted_tokens_per_round",
           "q<q>.draft_ms",
           "q<q>.verify_ms",
-          "q<q>.round_ms"
+          "q<q>.round_ms",
+          "q<q>.inter_token_gap_ms",
+          "q<q>.inter_delivery_gap_ms"
         ]
       },
       "decision_affected": "Production q; whether MTP is enabled (SHOULD HAVE).",
       "status": "pending",
       "tool_gaps": [
         "acceptance on real text: the corpus is tokenized as bytes for the fixture model; real corpora need the Father tokenizer and the real MTP head",
-        "inter-token gap distribution (round time distribution is recorded)",
         "real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then"
       ]
     },
@@ -613,7 +634,7 @@
       "id": "HQ-P0C-02",
       "title": "Grouped expert-domain on real hardware: LAN peers, quantized kernels, real routing",
       "purpose": "Replace the parts of the grouped expert-domain prototype that cannot run in the cloud: expert domains as separate machines reached over the real 1GbE link with mutual TLS (the prototype runs them as threads over loopback), quantized GPU/CPU expert kernels (the prototype runs FP32 reference SwiGLU), and the model's real routing statistics (the analytic model assumes uniform independent routing). Real routing decides how fast the expert union grows with q and how balanced the domains are.",
-      "command": "clusterlm-expert-domain-bench --experiment HQ-P0C-02 --remote-domains 2 --q 1,2,3,4 --presets unlimited --windows 64 --out results/grouped-real.json",
+      "command": "clusterlm-expert-domain-bench --experiment HQ-P0C-02 --peer d1=<g14-host:7500> --peer d2=<3060-host:7500> --identity <dir> --trust <g14-fingerprint> --trust <3060-fingerprint> --q 1,2,3,4 --presets unlimited --windows 64 --expert-kernel iq3_s --out results/grouped-real.json",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -625,7 +646,8 @@
         "per-domain share of selections (load imbalance) for range, strided and hot/cold ownership",
         "quantized expert kernel time per distinct expert on each CPU and, for Father, GPU-resident experts",
         "per-layer barrier time and its p95/p99 on the physical LAN",
-        "end-to-end emitted tok/s of grouped versus layer-domain on the same model"
+        "end-to-end emitted tok/s of grouped versus layer-domain on the same model",
+        "each domain machine first runs: clusterlm-expert-domain-bench --listen 0.0.0.0:7500 --domain-index <1|2> --remote-domains 2 --identity <dir> --trust <father-fingerprint> --expert-kernel iq3_s"
       ],
       "output": {
         "schema": "bench/schema/benchmark-result.schema.json",
@@ -639,8 +661,8 @@
       "decision_affected": "Whether the grouped expert-domain topology replaces or complements the layer-domain pipeline, which expert ownership it uses, and the q cap that keeps the expert union affordable.",
       "status": "pending",
       "tool_gaps": [
-        "LAN peer mode (expert domains as separate machines over mutual TLS) is not implemented; the tool runs domains as loopback threads.",
-        "Quantized (IQ3_S/IQ2_XS) expert kernels and real routing traces are not wired into the expert-domain prototype."
+        "real routing traces are not wired into the prototype: routing comes from the fixture router, and the IQ3_S/IQ2_XS expert kernels (`--expert-kernel iq3_s|iq2_xs`, needs a -DCLUSTERLM_ENABLE_STRATA_CPU=ON build) run on synthetic blobs, so kernel cost and barrier behaviour are measured but not accuracy or the model's expert-union growth",
+        "GPU-resident expert kernels for Father are not wired (CPU kernels only)"
       ]
     },
     {
@@ -667,22 +689,23 @@
           "q<q>.decode_tok_s",
           "q<q>.round_ms",
           "q<q>.accepted_per_round",
-          "q<q>.prefill_tok_s"
+          "q<q>.prefill_tok_s",
+          "q<q>.inter_token_gap_ms",
+          "q<q>.inter_delivery_gap_ms"
         ]
       },
       "decision_affected": "Ultra 20+ tok/s claim (pass/fail recorded honestly).",
       "status": "pending",
       "acceptance": "median >= 20 emitted tok/s per category at 4K/8K",
       "tool_gaps": [
-        "real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then",
-        "inter-token gap distribution (round time distribution incl. max is recorded)"
+        "real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then"
       ]
     },
     {
       "id": "HQ-PERF-02",
       "title": "Long-context behaviour (16K/32K, 64K/128K reported separately)",
       "purpose": "Measure decode/prefill and residency changes as context grows; report separately from 4K/8K.",
-      "command": "clusterlm-bench cluster --tier ultra --context 16384,32768,65536,131072 --repeat 5 --out results/perf-long.json",
+      "command": "clusterlm-bench cluster --tier ultra --contexts 16384,32768,65536,131072 --repeat 5 --out results/perf-long.json",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -700,7 +723,10 @@
         "experiment": "HQ-PERF-02",
         "metrics": [
           "ctx<N>.q<q>.decode_tok_s",
-          "ctx<N>.q<q>.prefill_tok_s"
+          "ctx<N>.q<q>.prefill_tok_s",
+          "ctx<N>.resources.father.rss_bytes",
+          "resources.node0.commit_bytes",
+          "resources.gpu0.vram_used_bytes.series"
         ]
       },
       "decision_affected": "Per-context placement profiles; UI context limits.",
@@ -764,13 +790,16 @@
           "sustained.final_decode_tok_s",
           "sustained.factor",
           "sustained.slope_pct_per_min",
-          "sustained.time_to_equilibrium_s"
+          "sustained.time_to_equilibrium_s",
+          "resources.father.rss_bytes.series",
+          "resources.node0.commit_bytes.series",
+          "resources.father.rss_growth_bytes",
+          "resources.gpu0.vram_used_bytes.series"
         ]
       },
       "decision_affected": "PERF-04 acceptance.",
       "status": "pending",
       "tool_gaps": [
-        "RSS/commit/VRAM sampling per cycle",
         "real-model throughput needs the Strata backend and the selected artifact: `clusterlm-bench cluster` runs the reference backend on the fixture model, so only the harness (plan tiers, contexts, interleaving, metrics) is exercised until then"
       ]
     },
@@ -832,7 +861,7 @@
       "id": "HQ-TIER-01",
       "title": "Tier catalog pinning and context-profile qualification",
       "purpose": "Download and inspect each catalog artifact on Father to pin its manifest root hash, then qualify each offered context profile (4K to 128K) per tier on the real machines so the catalog's qualified flags and readiness notes can change.",
-      "command": "clusterlm-model-inspect <tier-model-dir>/*.gguf --hash --summary --manifest results/manifest-<tier>.json && clusterlm-bench cluster --tier <fast|strong|ultra> --model <tier-model-dir> --context 4096 --out results/context-4096-<tier>.json",
+      "command": "clusterlm-model-inspect <tier-model-dir>/*.gguf --hash --summary --manifest results/manifest-<tier>.json && clusterlm-bench cluster --tier <fast|strong|ultra> --model <tier-model-dir> --contexts 4096,8192,16384,32768,65536,131072 --out results/context-sweep-<tier>.json",
       "machines": [
         "Father (Ryzen 5 7600, 32 GB, RTX 4060 Ti 16 GB)",
         "Node G14 (Ryzen 9 8945HS, 32 GB, RTX 4070 Laptop 8 GB)",
@@ -850,14 +879,13 @@
         "metrics": [
           "catalog.root_hash",
           "context.qualified",
-          "context.vram_margin"
+          "context.vram_margin",
+          "ctx<N>.q<q>.prefill_tok_s",
+          "ctx<N>.q<q>.decode_tok_s"
         ]
       },
       "decision_affected": "Catalog expected_root_hash pinning (pin_status unpinned -> pinned), context profile qualified and offered flags, tier readiness notes.",
-      "status": "pending",
-      "tool_gaps": [
-        "Repeat the cluster run per context profile (8192 ... 131072); a single multi-context sweep flag is not implemented."
-      ]
+      "status": "pending"
     },
     {
       "id": "HQ-WIN-01",

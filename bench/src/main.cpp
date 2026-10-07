@@ -22,7 +22,9 @@ int usage() {
                "  profile         quick host probe\n"
                "software qualification (Synthetic: localhost processes, fixture model):\n"
                "  cluster         multi-process localhost cluster through the real protocol (--tier, --context, --compare-routing)\n"
-               "  faults          kill/stall/revoke Nodes at protocol phases; verify invalidation and cleanup\n"
+               "  faults          kill/stall/revoke Nodes at protocol phases; verify invalidation and cleanup (--only <scenario|phase>,...)\n"
+               "  nvml            NVML clocks/power/temperature/VRAM/throttle sampler to run beside a sustained workload\n"
+               "  storage-census  --before|--after|--diff of CUDA/driver caches, temp and ClusterLM data (names and sizes)\n"
                "  placement       run the placement search over hardware profiles\n"
                "  qualification   list the hardware qualification registry\n"
                "  domain|baseline|numerics  hardware-backed experiments (require the Strata/llama backends; exit 3 here)\n"
@@ -42,6 +44,8 @@ int dispatch(const std::string& cmd, const cli::Args& args) {
   if (cmd == "transport") return bench::cmd_transport(args);
   if (cmd == "cluster") return bench::cmd_cluster(args);
   if (cmd == "faults") return bench::cmd_faults(args);
+  if (cmd == "nvml") return bench::cmd_nvml(args);
+  if (cmd == "storage-census") return bench::cmd_storage_census(args);
   if (cmd == "placement") return bench::cmd_placement(args);
   if (cmd == "placement-inputs") return bench::cmd_placement_inputs(args);
   if (cmd == "qualification") return bench::cmd_qualification(args);

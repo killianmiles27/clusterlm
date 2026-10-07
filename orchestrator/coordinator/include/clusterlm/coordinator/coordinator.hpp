@@ -94,6 +94,16 @@ struct NodeProvisionReport {
   double prepare_ms = 0;  // PreparePlan sent -> PlanReady received
   std::uint32_t resumes = 0;  // provision-channel reconnects that resumed the transfer
   std::uint64_t node_prepare_ns = 0;
+  // Where the time went (HQ-PROV-01). Father side, summed over this Node's objects: reading the source (stream_object
+  // minus its callback), digesting chunks, and sending them (includes transport backpressure, i.e. the transfer).
+  std::uint64_t father_source_read_ns = 0;
+  std::uint64_t father_chunk_digest_ns = 0;
+  std::uint64_t father_send_ns = 0;
+  // Node side, from PlanReady: chunk verification + write, whole-object hash at seal, and domain build (map, allocate,
+  // synthetic check). Zero from a Node that predates the extension.
+  std::uint64_t node_chunk_write_ns = 0;
+  std::uint64_t node_seal_hash_ns = 0;
+  std::uint64_t node_build_ns = 0;
 };
 
 // ---- preparation progress ---------------------------------------------------------------------------------

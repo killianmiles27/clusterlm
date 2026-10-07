@@ -1,5 +1,6 @@
 // The accepted command-line surface of clusterlm-bench (see commands.hpp).
 #include <algorithm>
+#include <set>
 #include <sstream>
 
 #include "commands.hpp"
@@ -36,9 +37,13 @@ std::vector<CommandSpec> build() {
   s.push_back({"transport", {}, join({kCommon, kLink, {"serve", "impair", "simulate-nodes", "node-to-node", "exit-on-stdin-eof", "network-out"}})});
   s.push_back({"cluster", {}, join({kCommon, {"plan", "tier", "model", "seed", "insecure", "impair", "relay", "compare-routing",
                                               "window-timeout-ms", "tokens", "max-new", "prompt-len", "context", "repeat", "q",
-                                              "drafter", "prefill-chunk", "interleave", "phase", "corpus", "minutes", "work", "keep-work"}})});
+                                              "drafter", "prefill-chunk", "interleave", "phase", "corpus", "minutes", "work", "keep-work",
+                                              // sweep, OS observers (NIC counters, process memory, NVML, cache census)
+                                              "contexts", "nic", "no-resources", "sample-ms", "sample-s", "census"}})});
   s.push_back({"faults", {}, join({kCommon, {"plan", "model", "seed", "insecure", "window-timeout-ms", "max-new", "release-cycles",
-                                             "work", "keep-work", "impair"}})});
+                                             "work", "keep-work", "impair", "only", "no-resources", "no-census"}})});
+  s.push_back({"nvml", {}, join({kCommon, {"minutes", "sample-s"}})});
+  s.push_back({"storage-census", {}, join({kCommon, {"before", "after", "diff", "snapshot", "against", "root", "staging-root", "exclude"}})});
   s.push_back({"placement", {}, join({kCommon, {"profiles", "father", "node", "network", "context", "q"}})});
   s.push_back({"placement-inputs", {}, join({kCommon, {"model", "corpus", "q", "max-new", "routing-out", "work"}})});
   s.push_back({"qualification", {}, kCommon});
@@ -56,6 +61,67 @@ std::vector<CommandSpec> build() {
 }
 
 }  // namespace
+
+namespace {
+std::vector<std::string> split_csv(const std::string& s) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (char c : s) {
+    if (c == ',') {
+      out.push_back(cur);
+      cur.clear();
+    } else {
+      cur.push_back(c);
+    }
+  }
+  if (!cur.empty()) out.push_back(cur);
+  return out;
+}
+}  // namespace
+
+// ---- faults --only ---------------------------------------------------------------------------------------------
+namespace {
+const std::vector<std::string> kCrashPhases = {"transfer", "hashing", "mapping", "allocation", "ready",
+                                               "prefill", "inference", "commit", "cleanup"};
+}  // namespace
+
+std::vector<std::string> fault_scenario_names() {
+  std::vector<std::string> out;
+  for (const auto& p : kCrashPhases) out.push_back("crash_" + p);
+  for (const char* n : {"father_lost", "local_activity", "link_loss", "stall", "release_cycles"}) out.emplace_back(n);
+  return out;
+}
+
+Result<std::vector<std::string>> select_fault_scenarios(const std::string& only) {
+  const auto all = fault_scenario_names();
+  if (only.empty()) return all;
+  std::set<std::string> want;
+  for (const auto& tok : split_csv(only)) {
+    if (tok == "crash") {  // every crash_<phase>
+      for (const auto& p : kCrashPhases) want.insert("crash_" + p);
+    } else if (std::find(all.begin(), all.end(), tok) != all.end()) {
+      want.insert(tok);
+    } else if (std::find(kCrashPhases.begin(), kCrashPhases.end(), tok) != kCrashPhases.end()) {
+      want.insert("crash_" + tok);  // a bare lifecycle phase selects its crash scenario
+    } else {
+      std::string valid;
+      for (const auto& n : all) valid += (valid.empty() ? "" : ", ") + n;
+      return make_error(ErrorCode::kInvalidArgument,
+                        "unknown fault scenario or phase '" + tok + "' (scenarios: " + valid + "; groups: crash; phases: " +
+                            [&] {
+                              std::string ph;
+                              for (const auto& p : kCrashPhases) ph += (ph.empty() ? "" : ", ") + p;
+                              return ph;
+                            }() + ")");
+    }
+  }
+  if (want.empty()) return make_error(ErrorCode::kInvalidArgument, "--only names no scenario");
+  std::vector<std::string> out;
+  for (const auto& n : all)
+    if (want.count(n)) out.push_back(n);  // canonical order
+  return out;
+}
+
 
 const std::vector<CommandSpec>& command_specs() {
   static const std::vector<CommandSpec> specs = build();

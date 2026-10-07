@@ -14,6 +14,7 @@
 #include "clusterlm/common/clock.hpp"
 #include "commands.hpp"
 #include "gpu_probe.hpp"
+#include "nvml_probe.hpp"
 
 namespace clusterlm::bench {
 
@@ -64,6 +65,9 @@ int cmd_calibrate(const cli::Args& args) {
   hm.role = ctx.role == "father" ? placement::DomainRole::kFather : placement::DomainRole::kNode;
   hm.run_id = ctx.run_id;
   hm.host = host;
+  // HQ-PROF-01: the power plan (Windows) / cpufreq governor (Linux) the numbers were measured under.
+  hm.power = probe_power_environment();
+  emit_power_environment(r, *hm.power);
 
   // ---- CPU ----
   if (!args.has("skip-cpu")) {
@@ -83,7 +87,16 @@ int cmd_calibrate(const cli::Args& args) {
       const auto& last = hm.cpu->representations.back();
       log_step(args, "sustained run, " + std::to_string(minutes) + " min");
       auto power = make_host_power_monitor();
+      auto nvml = NvmlTelemetry::open();
+      std::unique_ptr<TelemetryRecorder> telemetry;
+      if (nvml.is_ok()) {
+        telemetry = std::make_unique<TelemetryRecorder>(*nvml.value(), sample_s);
+        telemetry->start();
+      } else {
+        emit_gpu_telemetry_unavailable(r, nvml.status().message(), "sustained.nvml.");
+      }
       auto sus = run_cpu_sustained(opt, last.representation, last.usable_threads, minutes, sample_s, power.get());
+      if (telemetry) emit_gpu_telemetry(r, *nvml.value(), telemetry->stop(), "sustained.nvml.");
       if (sus.is_ok()) {
         emit_sustained_metrics(r, sus.value());
         hm.sustained = std::move(sus).value();

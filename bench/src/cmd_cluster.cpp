@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
+#include <set>
 #include <thread>
 
 #include "clusterlm/common/clock.hpp"
@@ -19,6 +21,9 @@
 #include "bench_common.hpp"
 #include "commands.hpp"
 #include "local_cluster.hpp"
+#include "nvml_probe.hpp"
+#include "storage_census.hpp"
+#include "system_probe.hpp"
 
 namespace clusterlm::bench {
 
@@ -186,6 +191,10 @@ struct Cfg {
   Distribution round_ms, tok_s, ttft, ttft_cold, ttft_warm, accepted, bytes_per_token, prefill_ms, prefill_tok_s;
   Distribution draft_ms, verify_ms, commit_ms, wait_ms, father_compute_ms;
   std::map<std::size_t, Distribution> node_compute_ms, node_cpu_expert_ms;
+  // Inter-token gaps of the streamed output (on_tokens deliveries): per token (members of one delivery are 0 apart)
+  // and per delivery (the stall a reader of the stream actually sees). HQ-MTP-01 / HQ-PERF-01.
+  Distribution token_gap_ms, delivery_gap_ms;
+  std::uint64_t payload_bytes_total = 0;  // boundary payload over every round incl. prefill (for the NIC comparison)
   std::uint64_t proposed = 0, accepted_draft = 0, rounds = 0, tokens_emitted = 0;
   double wait_total_ms = 0, round_total_ms = 0;
   bool tokens_ok = true, bounded_payload = true, failed = false;
@@ -203,6 +212,11 @@ struct PassContext {
   int repeat = 3;
   bool direct_peer = true;
   bool fixture = true;
+  bool keyed_contexts = false;  // --contexts: results are keyed ctx<N>. even for a single context
+  bool resources = true;        // process RSS/commit (+ VRAM) series; --no-resources
+  double sample_ms = 200;       // minimum spacing of per-round resource samples (--sample-ms; 0 = every round)
+  double telemetry_s = 5;       // NVML interval during --minutes runs (--sample-s)
+  bool census = false;          // --census: cache/temp before/after
 };
 
 // Folds one generation into a config's distributions.
@@ -217,6 +231,7 @@ void record_generation(Cfg& c, const coordinator::GenerationResult& gen, const d
   if (gen.decode_ms > 0) c.tok_s.add(1000.0 * gen.decode_tokens / gen.decode_ms);
   std::uint64_t decode_bytes = 0;
   for (const auto& rd : gen.rounds) {
+    c.payload_bytes_total += rd.boundary_payload_bytes;
     if (rd.prefill) continue;
     c.round_ms.add(rd.total_ms);
     c.accepted.add(rd.accepted);
@@ -281,6 +296,8 @@ void emit_cfg(BenchmarkResult& r, const std::string& prefix, const Cfg& c) {
   r.metric(k + ".mtp.accepted_positions", c.accepted_draft);
   r.metric(k + ".mtp.acceptance_rate", c.proposed > 0 ? static_cast<double>(c.accepted_draft) / static_cast<double>(c.proposed) : 0.0);
   r.metric(k + ".mtp.accepted_tokens_per_round", c.rounds > 0 ? static_cast<double>(c.tokens_emitted) / static_cast<double>(c.rounds) : 0.0);
+  r.metric(k + ".inter_token_gap_ms", c.token_gap_ms, "ms");
+  r.metric(k + ".inter_delivery_gap_ms", c.delivery_gap_ms, "ms");
   r.metric(k + ".stage.father.compute_ms", c.father_compute_ms, "ms");
   for (const auto& [i, d] : c.node_compute_ms) r.metric(k + ".stage.node" + std::to_string(i) + ".compute_ms", d, "ms");
   for (const auto& [i, d] : c.node_cpu_expert_ms) r.metric(k + ".stage.node" + std::to_string(i) + ".cpu_expert_ms", d, "ms");
@@ -301,6 +318,44 @@ Status run_cluster_pass(PassContext& pc) {
   CLM_ASSIGN_OR_RETURN(auto s, setup(args, pc.work / (P.empty() ? "pass" : P.substr(0, P.size() - 1)), pc.model_dir, nodes));
   CLM_ASSIGN_OR_RETURN(auto coord, coordinator::Coordinator::create(father_config(s, args, pc.direct_peer)));
   auto& c = *coord;
+
+  // ---- OS-level observers around this pass (HQ-NET-02, HQ-PERF-04, HQ-PERF-02, HQ-GPU-03, HQ-STORE-01) ----
+  // NIC byte counters of the interface routed to the first Node (or --nic), over the whole pass and over generation
+  // only; process RSS/commit of Father and every Node process; NVML when the driver library is present.
+  const std::string first_host = s.cluster->size() > 0 ? s.cluster->endpoints().front().endpoint.host : std::string();
+  NicWindow nic_pass(args.get("nic"), first_host), nic_gen(args.get("nic"), first_host);
+  nic_pass.begin();
+  ResourceSampler sampler;
+  sampler.add_process("father", [] { return std::int64_t{0}; });
+  for (std::size_t i = 0; i < s.cluster->size(); ++i)
+    sampler.add_process("node" + std::to_string(i), [&s, i] { return s.cluster->pid(i); });
+  auto nvml = NvmlTelemetry::open();
+  std::unique_ptr<TelemetryRecorder> telemetry;
+  if (nvml.is_ok()) {
+    sampler.set_gpu(nvml.value().get());
+    if (args.has("minutes")) {
+      telemetry = std::make_unique<TelemetryRecorder>(*nvml.value(), pc.telemetry_s);
+      telemetry->start();
+    }
+  } else {
+    emit_gpu_telemetry_unavailable(r, nvml.status().message(), P + "nvml.");
+  }
+  std::optional<CensusSnapshot> census_before;
+  std::vector<CensusRoot> census_roots;
+  std::int64_t census_start_ns = 0;
+  if (pc.census) {
+    std::vector<CensusRoot> staging;
+    for (std::size_t i = 0; i < s.cluster->size(); ++i) {
+      CensusRoot root;
+      root.label = "node_staging_" + std::to_string(i);
+      root.path = s.cluster->staging_root(i);
+      staging.push_back(std::move(root));
+    }
+    census_roots = default_census_roots(staging, {pc.work});
+    census_before = take_census(census_roots);
+    census_start_ns = census_before->taken_ns;
+  }
+  if (pc.resources) sampler.sample("start");
   const auto& m = c.manifest();
   CLM_ASSIGN_OR_RETURN(auto plan, coordinator::ClusterPlan::parse(pc.plan_text, m.geometry.n_layers));
   std::uint32_t max_ctx = 0;
@@ -314,13 +369,30 @@ Status run_cluster_pass(PassContext& pc) {
   const bool prepare_only = args.get("phase") == "prepare";
   Distribution prepare_total;
   std::map<std::string, Distribution> node_ms, node_prepare_ms, node_bytes_per_s;
+  // HQ-PROV-01: where a Node's prepare time goes. Father: source read vs. digest vs. send (transfer, including
+  // transport backpressure). Node: chunk verify+write vs. whole-object hash at seal vs. domain build.
+  struct Breakdown {
+    Distribution father_read_ms, father_digest_ms, father_send_ms, node_write_ms, node_hash_ms, node_build_ms;
+    Distribution father_read_bytes_per_s, father_send_bytes_per_s;
+  };
+  std::map<std::string, Breakdown> breakdown;
   auto record_prepare = [&](const coordinator::PrepareReport& prep) {
     prepare_total.add(prep.total_ms);
     for (const auto& n : prep.nodes) {
       node_ms[n.node].add(n.prepare_ms);
       node_prepare_ms[n.node].add(static_cast<double>(n.node_prepare_ns) * 1e-6);
       if (n.prepare_ms > 0) node_bytes_per_s[n.node].add(static_cast<double>(n.bytes) / (n.prepare_ms / 1000.0));
+      auto& b = breakdown[n.node];
+      b.father_read_ms.add(static_cast<double>(n.father_source_read_ns) * 1e-6);
+      b.father_digest_ms.add(static_cast<double>(n.father_chunk_digest_ns) * 1e-6);
+      b.father_send_ms.add(static_cast<double>(n.father_send_ns) * 1e-6);
+      b.node_write_ms.add(static_cast<double>(n.node_chunk_write_ns) * 1e-6);
+      b.node_hash_ms.add(static_cast<double>(n.node_seal_hash_ns) * 1e-6);
+      b.node_build_ms.add(static_cast<double>(n.node_build_ns) * 1e-6);
+      if (n.father_source_read_ns > 0) b.father_read_bytes_per_s.add(static_cast<double>(n.bytes) / (static_cast<double>(n.father_source_read_ns) * 1e-9));
+      if (n.father_send_ns > 0) b.father_send_bytes_per_s.add(static_cast<double>(n.bytes) / (static_cast<double>(n.father_send_ns) * 1e-9));
     }
+    if (pc.resources) sampler.sample("prepare_cycle");
   };
   CLM_ASSIGN_OR_RETURN(auto prep, c.prepare(plan));
   record_prepare(prep);
@@ -367,7 +439,7 @@ Status run_cluster_pass(PassContext& pc) {
         Cfg cfg;
         cfg.q = q;
         cfg.context = ctxlen;
-        cfg.key = (pc.contexts.size() > 1 ? "ctx" + std::to_string(ctxlen) + "." : std::string()) + "q" + std::to_string(q);
+        cfg.key = (pc.contexts.size() > 1 || pc.keyed_contexts ? "ctx" + std::to_string(ctxlen) + "." : std::string()) + "q" + std::to_string(q);
         if (args.has("corpus")) {
           cfg.prompts = corpus_prompts(args.get("corpus"), ctxlen, m.geometry.vocab_size);
           if (cfg.prompts.empty()) return make_error(ErrorCode::kNotFound, "corpus '" + args.get("corpus") + "' has no readable files");
@@ -408,7 +480,29 @@ Status run_cluster_pass(PassContext& pc) {
     coordinator::GenerationRequest req = cfg.request;
     req.prompt = cfg.prompts[pi];
     req.drafter = cfg.drafters[pi];
+    // Streamed-token timing: counts and timestamps only, never the tokens themselves.
+    struct StreamClock {
+      bool have = false;
+      std::uint64_t last_ns = 0;
+    } stream;
+    req.on_tokens = [&](std::span<const std::int32_t> tokens) {
+      const std::uint64_t now = monotonic_ns();
+      if (!tokens.empty()) {
+        if (stream.have) {
+          const double gap = static_cast<double>(now - stream.last_ns) * 1e-6;
+          cfg.delivery_gap_ms.add(gap);
+          cfg.token_gap_ms.add(gap);
+        } else {
+          stream.have = true;
+        }
+        for (std::size_t i = 1; i < tokens.size(); ++i) cfg.token_gap_ms.add(0.0);  // same delivery: no wait between
+        stream.last_ns = now;
+      }
+      if (pc.resources) sampler.sample_throttled("round", pc.sample_ms);
+    };
+    if (pc.resources) sampler.sample("generation_start");
     auto gen = c.generate(req);
+    if (pc.resources) sampler.sample("generation_end");
     if (!gen.is_ok()) {
       r.check(P + cfg.key + "_generate", false, gen.status().to_string());
       cfg.failed = true;
@@ -420,6 +514,7 @@ Status run_cluster_pass(PassContext& pc) {
   };
   // Order: --interleave runs repetition r of every configuration before repetition r+1 of any (drift hits all
   // configurations alike); otherwise each configuration completes its repetitions in turn.
+  nic_gen.begin();
   if (args.has("interleave")) {
     for (int rep = 0; rep < pc.repeat; ++rep)
       for (std::size_t i = 0; i < cfgs.size(); ++i)
@@ -429,6 +524,7 @@ Status run_cluster_pass(PassContext& pc) {
       for (int rep = 0; rep < pc.repeat && !cfgs[i].failed; ++rep) (void)run_one(cfgs[i], rep, rep == 0 && i == 0);
   }
   for (const auto& cfg : cfgs) emit_cfg(r, P, cfg);
+  if (!cfgs.empty() && !args.has("minutes")) nic_gen.end();
 
   // ---- sustained generation (--minutes): decode rate over time, thermal/leak derate ----
   if (!cfgs.empty() && args.has("minutes")) {
@@ -445,6 +541,7 @@ Status run_cluster_pass(PassContext& pc) {
       if (cfg.tok_s.samples.size() > before) sus.samples.push_back({total.elapsed_ms() / 1000.0, cfg.tok_s.samples.back(), std::nullopt});
     }
     summarize_sustained(sus);
+    nic_gen.end();
     r.metric(P + "sustained.minutes", minutes);
     r.metric(P + "sustained.samples", sus.samples.size());
     r.metric(P + "sustained.initial_decode_tok_s", sus.initial_bytes_per_s);
@@ -462,6 +559,26 @@ Status run_cluster_pass(PassContext& pc) {
   for (const auto& [node, d] : node_bytes_per_s) r.metric(P + "prepare.node." + node + ".provision_bytes_per_s", d, "bytes/s");
   r.metric(P + "boundary.bytes_per_position", boundary.bytes_per_position());
   r.metric(P + "boundary.remote_stages", remote_count(plan));
+  for (const auto& [node, b] : breakdown) {
+    const std::string k = P + "prepare.node." + node + ".";
+    r.metric(k + "father_source_read_ms", b.father_read_ms, "ms");
+    r.metric(k + "father_chunk_digest_ms", b.father_digest_ms, "ms");
+    r.metric(k + "father_send_ms", b.father_send_ms, "ms");
+    r.metric(k + "node_chunk_write_ms", b.node_write_ms, "ms");
+    r.metric(k + "node_seal_hash_ms", b.node_hash_ms, "ms");
+    r.metric(k + "node_build_ms", b.node_build_ms, "ms");
+    r.metric(k + "father_source_read_bytes_per_s", b.father_read_bytes_per_s, "bytes/s");
+    r.metric(k + "father_send_bytes_per_s", b.father_send_bytes_per_s, "bytes/s");
+  }
+  {
+    std::uint64_t payload_total = 0;
+    for (const auto& cfg : cfgs) payload_total += cfg.payload_bytes_total;
+    r.metric(P + "boundary.payload_bytes_total", payload_total);
+    nic_gen.emit(r, P + "generation.");
+    if (nic_gen.available() && payload_total > 0)
+      r.metric(P + "generation.nic.wire_bytes_per_boundary_payload_byte",
+               static_cast<double>(nic_gen.delta().rx_bytes + nic_gen.delta().tx_bytes) / static_cast<double>(payload_total));
+  }
 
   // Release: every Node must report resources released and storage cleaned with zero residual bytes.
   auto rel = c.release();
@@ -476,6 +593,20 @@ Status run_cluster_pass(PassContext& pc) {
     }
   }
   record_census(r, *s.cluster, P + "post_release_census_zero");
+  if (pc.resources) {
+    sampler.sample("released");
+    sampler.emit(r, P + "resources.");
+  }
+  nic_pass.end();
+  nic_pass.emit(r, P);
+  if (telemetry && nvml.is_ok()) {
+    const auto samples = telemetry->stop();
+    emit_gpu_telemetry(r, *nvml.value(), samples, P + "nvml.");
+  }
+  if (census_before) {
+    const auto after = take_census(census_roots);
+    emit_census_diff(r, diff_census(*census_before, after, census_start_ns, after.taken_ns), P);
+  }
   return Status::ok();
 }
 
@@ -514,8 +645,20 @@ int cmd_cluster(const cli::Args& args) {
   pc.repeat = static_cast<int>(args.integer("repeat", 3));
   pc.prefill_chunk = static_cast<std::uint32_t>(args.integer("prefill-chunk", 16));
   pc.qs = args.has("q") ? parse_u32_list(args.get("q")) : std::vector<std::uint32_t>{1, 4};
-  pc.contexts = args.has("context") ? parse_u32_list(args.get("context"))
-                                    : std::vector<std::uint32_t>{static_cast<std::uint32_t>(args.integer("prompt-len", 48))};
+  if (args.has("contexts") && args.has("context")) {
+    std::fprintf(stderr, "--contexts and --context are mutually exclusive\n");
+    return 2;
+  }
+  // --contexts runs the whole sweep in one invocation with every result keyed ctx<N>.q<q>.* (even for one context);
+  // --context keeps the older behaviour (keys are prefixed only when more than one context is given).
+  pc.keyed_contexts = args.has("contexts");
+  pc.contexts = args.has("contexts") ? parse_u32_list(args.get("contexts"))
+                : args.has("context") ? parse_u32_list(args.get("context"))
+                                      : std::vector<std::uint32_t>{static_cast<std::uint32_t>(args.integer("prompt-len", 48))};
+  pc.resources = !args.has("no-resources");
+  pc.sample_ms = args.number("sample-ms", 200);
+  pc.telemetry_s = args.number("sample-s", 5);
+  pc.census = args.has("census");
   if (pc.qs.empty() || pc.contexts.empty() || pc.repeat < 1) {
     std::fprintf(stderr, "q, context and repeat must be non-empty/positive\n");
     return 2;
@@ -523,6 +666,7 @@ int cmd_cluster(const cli::Args& args) {
   r.config("tier", args.get("tier", args.has("plan") ? "custom" : "ultra"));
   r.config("tls", !args.has("insecure"));
   r.config("context", pc.contexts);
+  r.config("context_sweep", pc.keyed_contexts);
   r.config("q", pc.qs);
   r.config("max_new_tokens", pc.max_new);
   r.config("repeat", pc.repeat);
@@ -560,7 +704,17 @@ int cmd_cluster(const cli::Args& args) {
 
 int cmd_faults(const cli::Args& args) {
   Stopwatch total;
+  auto selected = select_fault_scenarios(args.get("only"));
+  if (!selected.is_ok()) {
+    std::fprintf(stderr, "faults: %s\n", selected.status().message().c_str());
+    return 2;
+  }
+  auto want = [&](const std::string& name) {
+    return std::find(selected->begin(), selected->end(), name) != selected->end();
+  };
   BenchmarkResult r(args.get("experiment", "dev-faults"), probe_host());
+  r.config("scenarios_run", nlohmann::json(*selected));
+  r.config("scenario_subset", selected->size() != fault_scenario_names().size());
   r.mark_simulated("localhost_cluster", true);
   r.mark_simulated("fixture_model", !args.has("model"));
   const std::string plan_text = args.get("plan", kDefaultPlan);
@@ -570,6 +724,15 @@ int cmd_faults(const cli::Args& args) {
   if (!model_dir.is_ok()) {
     std::fprintf(stderr, "%s\n", model_dir.status().to_string().c_str());
     return 1;
+  }
+  // HQ-STORE-01: cache/temp census around the whole run (the Node staging roots live in the excluded work dir and are
+  // covered by the per-scenario census_bytes checks).
+  const bool census_on = !args.has("no-census");
+  std::vector<CensusRoot> census_roots;
+  std::optional<CensusSnapshot> census_before;
+  if (census_on) {
+    census_roots = default_census_roots({}, {work});
+    census_before = take_census(census_roots);
   }
   std::vector<std::int32_t> prompt;
   std::vector<std::int32_t> reference;
@@ -659,6 +822,7 @@ int cmd_faults(const cli::Args& args) {
   for (const char* phase :
        {"transfer", "hashing", "mapping", "allocation", "ready", "prefill", "inference", "commit", "cleanup"}) {
     const std::string name = std::string("crash_") + phase;
+    if (!want(name)) continue;
     LocalNodeOptions crashing;
     crashing.name = "node0";
     crashing.crash_at = phase;
@@ -681,7 +845,7 @@ int cmd_faults(const cli::Args& args) {
 
   // 1b. Father disappears (process killed mid-generation): every Node releases its lease on control loss and
   // deletes all staged objects without any instruction.
-  run_scenario("father_lost", {}, [&](LocalCluster& cl, coordinator::Coordinator&, const auto&) {
+  if (want("father_lost")) run_scenario("father_lost", {}, [&](LocalCluster& cl, coordinator::Coordinator&, const auto&) {
     const auto eps = cl.endpoints();
     std::vector<std::string> fargs = {"--model", model_dir.value().string(), "--plan", plan_text, "--max-new", "1500",
                                       "--prefill-chunk", "8"};
@@ -721,7 +885,7 @@ int cmd_faults(const cli::Args& args) {
   }, /*connect_father=*/false);
 
   // 2. Local user activity while Ready: the Node revokes the lease without consulting Father.
-  run_scenario("local_activity", {}, [&](LocalCluster& cl, coordinator::Coordinator& c, const auto& plan) {
+  if (want("local_activity")) run_scenario("local_activity", {}, [&](LocalCluster& cl, coordinator::Coordinator& c, const auto& plan) {
     if (!c.prepare(plan).is_ok()) return;
     Stopwatch sw;
     (void)cl.local_activity(1);
@@ -742,7 +906,7 @@ int cmd_faults(const cli::Args& args) {
   });
 
   // 3. Activation channel severed mid-generation (transport fault on the Node's 5th StageResult).
-  {
+  if (want("link_loss")) {
     LocalNodeOptions faulty;
     faulty.name = "node1";
     faulty.faults = {"close-before:type=" + std::to_string(static_cast<int>(protocol::MessageType::kStageResult)) + ":nth=5"};
@@ -757,7 +921,7 @@ int cmd_faults(const cli::Args& args) {
   }
 
   // 4. Stalled Node: results never arrive; Father's window deadline invalidates the session.
-  {
+  if (want("stall")) {
     LocalNodeOptions stalled;
     stalled.name = "node1";
     stalled.faults = {"stall:type=" + std::to_string(static_cast<int>(protocol::MessageType::kStageResult)) + ":nth=3"};
@@ -777,14 +941,30 @@ int cmd_faults(const cli::Args& args) {
 
   // 5. Repeated release / reprepare cycles within healthy leases (STORE-02 / PERF-04 shape).
   const int cycles = static_cast<int>(args.integer("release-cycles", 5));
-  run_scenario("release_cycles", {}, [&](LocalCluster& cl, coordinator::Coordinator& c, const auto& plan) {
+  if (want("release_cycles")) run_scenario("release_cycles", {}, [&](LocalCluster& cl, coordinator::Coordinator& c, const auto& plan) {
     Distribution prep_ms, release_ms;
     bool ok = true;
+    // HQ-PERF-04 / HQ-REL-01: RSS and commit of Father and each Node process (and VRAM when NVML is present) at the
+    // start and after every prepare/generate/release cycle, recorded as series.
+    ResourceSampler sampler;
+    sampler.add_process("father", [] { return std::int64_t{0}; });
+    for (std::size_t i = 0; i < cl.size(); ++i) sampler.add_process("node" + std::to_string(i), [&cl, i] { return cl.pid(i); });
+    auto nvml = NvmlTelemetry::open();
+    if (nvml.is_ok()) sampler.set_gpu(nvml.value().get());
+    else emit_gpu_telemetry_unavailable(r, nvml.status().message(), "release_cycles.nvml.");
+    sampler.sample("start");
     for (int i = 0; i < cycles && ok; ++i) {
       auto prep = c.prepare(plan);
       ok = prep.is_ok();
       if (!ok) break;
       prep_ms.add(prep->total_ms);
+      for (const auto& n : prep->nodes) {
+        const std::string k = "release_cycles.prepare." + n.node + ".";
+        r.metric(k + "last_father_source_read_ms", static_cast<double>(n.father_source_read_ns) * 1e-6);
+        r.metric(k + "last_father_send_ms", static_cast<double>(n.father_send_ns) * 1e-6);
+        r.metric(k + "last_node_chunk_write_ms", static_cast<double>(n.node_chunk_write_ns) * 1e-6);
+        r.metric(k + "last_node_seal_hash_ms", static_cast<double>(n.node_seal_hash_ns) * 1e-6);
+      }
       // Two chats in one Ready lease reuse allocations: no reprovisioning between them.
       for (int chat = 0; chat < 2 && ok; ++chat) {
         auto gen = c.generate(request());
@@ -797,13 +977,19 @@ int cmd_faults(const cli::Args& args) {
       if (rel.is_ok())
         for (const auto& n : rel->nodes) ok = ok && n.storage_cleaned && n.residual_bytes == 0;
       if (!c.connect().is_ok()) ok = false;
+      sampler.sample("cycle");
     }
+    if (!args.has("no-resources")) sampler.emit(r, "release_cycles.resources.");
     r.check("release_cycles_all_clean_and_correct", ok);
     r.metric("release_cycles.prepare_ms", prep_ms, "ms");
     r.metric("release_cycles.release_ms", release_ms, "ms");
     record_census(r, cl, "release_cycles_final_census_zero");
   });
 
+  if (census_before) {
+    const auto after = take_census(census_roots);
+    emit_census_diff(r, diff_census(*census_before, after, census_before->taken_ns, after.taken_ns));
+  }
   for (const char* id : {"HQ-REL-01", "HQ-STORE-01", "HQ-PERF-04"}) r.pending(id);
   if (!args.has("keep-work")) {
     std::error_code ec;

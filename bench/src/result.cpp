@@ -46,6 +46,7 @@ nlohmann::json Distribution::to_json(const std::string& unit) const {
   j["min"] = *std::min_element(samples.begin(), samples.end());
   j["p10"] = percentile_of(samples, 0.10);
   j["p50"] = percentile_of(samples, 0.50);
+  j["p90"] = percentile_of(samples, 0.90);
   j["p95"] = percentile_of(samples, 0.95);
   j["p99"] = percentile_of(samples, 0.99);
   j["max"] = *std::max_element(samples.begin(), samples.end());

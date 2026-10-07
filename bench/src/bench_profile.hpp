@@ -17,6 +17,7 @@
 #include "gpu_probe.hpp"
 #include "host_probe.hpp"
 #include "memory_probe.hpp"
+#include "system_probe.hpp"
 #include "transport_bench.hpp"
 
 namespace clusterlm::bench {
@@ -52,6 +53,8 @@ struct HardwareMeasurements {
   std::optional<GpuBenchReport> gpu;
   // OS-reported usable VRAM for this process (DXGI budget on Windows) per CUDA device order, when known.
   std::vector<std::uint64_t> dxgi_budget_bytes;
+  // Windows active power plan / Linux cpufreq governor in force while measuring (HQ-PROF-01); recorded in the profile note.
+  std::optional<PowerEnvironment> power;
 };
 
 // A profile holding only what `m` measured (Measured) plus Synthetic placeholders for everything else.

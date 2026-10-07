@@ -236,7 +236,14 @@ TEST_CASE("execution: stale leases and epochs, duplicate commits, window abort, 
   f.connect();
   auto p = f.plan({4, 8});
   REQUIRE(f.call<protocol::PlanAccepted>(p).is_ok());
-  REQUIRE(f.provision(p).is_ok());
+  auto ready = f.provision(p);
+  REQUIRE(ready.is_ok());
+  // HQ-PROV-01: the Node reports where its prepare time went; the parts are real durations inside the total.
+  CHECK(ready->prepare_ns > 0);
+  CHECK(ready->chunk_write_ns > 0);
+  CHECK(ready->seal_hash_ns > 0);
+  CHECK(ready->build_ns > 0);
+  CHECK(ready->chunk_write_ns + ready->seal_hash_ns + ready->build_ns <= ready->prepare_ns);
   auto act = f.open(Channel::kActivation, f.lease_);
   REQUIRE(act->expect<protocol::HelloAck>(kT).is_ok());
   const Epoch e5{5};

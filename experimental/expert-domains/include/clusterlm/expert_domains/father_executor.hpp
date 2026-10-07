@@ -28,6 +28,7 @@
 
 #include "clusterlm/domain/execution_domain.hpp"
 #include "clusterlm/expert_domains/assignment.hpp"
+#include "clusterlm/expert_domains/quant_experts.hpp"
 #include "clusterlm/expert_domains/wire.hpp"
 #include "clusterlm/objects/provisioned.hpp"
 
@@ -43,6 +44,8 @@ struct FatherExecutorConfig {
   // true: execute Father-owned experts + the shared expert between send and receive. false: after the results
   // arrive (ablation, shows what the overlap buys).
   bool overlap_local = true;
+  // Father-owned routed experts: fixture FP32 (default) or the Strata CPU kernels on synthetic blobs.
+  ExpertKernelSpec kernel;
 };
 
 struct RemoteLink {

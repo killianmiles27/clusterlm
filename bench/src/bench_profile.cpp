@@ -142,6 +142,7 @@ HardwareProfile build_measured_profile(const HardwareMeasurements& m) {
   p.note = "Calibrated by clusterlm-bench run " + m.run_id + " on " + m.machine_id +
            "; Measured fields carry bench provenance, every other field is a Synthetic placeholder. Never Qualified by the tool." +
            provider_note;
+  if (m.power) p.note += " Power environment while measuring: " + m.power->summary() + ".";
   return p;
 }
 

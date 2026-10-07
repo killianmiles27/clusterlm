@@ -127,7 +127,7 @@ inline std::vector<protocol::Message> sample_messages(std::uint32_t positions = 
 
   out.emplace_back(SealObject{LeaseGeneration{7}, 3, 4096 + 256, sample_digest(11)});
   out.emplace_back(ObjectSealed{LeaseGeneration{7}, 3});
-  out.emplace_back(PlanReady{LeaseGeneration{7}, sample_digest(9), 1ull << 20, 123456});
+  out.emplace_back(PlanReady{LeaseGeneration{7}, sample_digest(9), 1ull << 20, 123456, 40000, 50000, 33456});
   out.emplace_back(AuthorizePeer{LeaseGeneration{7}, sample_digest(9), StageId{1}, StageId{2}, "peer-device-id-cccc",
                                  "127.0.0.1:7002", LeaseGeneration{8}});
   out.emplace_back(OpenSession{Epoch{2}, SessionId{5}});

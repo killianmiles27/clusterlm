@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 
+#include "clusterlm/expert_domains/quant_experts.hpp"
 #include "clusterlm/expert_domains/wire.hpp"
 #include "clusterlm/objects/canonical_store.hpp"
 
@@ -28,6 +29,9 @@ struct ExpertDomainConfig {
   std::uint32_t end_layer = 0;
   Epoch epoch;                               // batches naming any other epoch are rejected as stale
   ExpertDecodeLimits limits;
+  // Default (empty representation): the fixture's FP32 experts resolved from the objects. "iq3_s" / "iq2_xs": the
+  // Strata CPU kernels on synthetic blobs (quant_experts.hpp); no expert objects are resolved in that mode.
+  ExpertKernelSpec kernel;
   // Test-only fault injection: after this many batches the server drops the connection WITHOUT replying
   // (0 = never). Emulates a domain that dies mid-window.
   std::uint32_t die_after_batches = 0;
@@ -57,7 +61,8 @@ class ExpertDomainServer {
   // Validates and executes one batch. Thread-safe (serialized).
   Result<ExpertResult> execute(const ExpertBatch& batch);
 
-  // Starts the serving thread on `connection`. Returns when the thread is running.
+  // Starts the serving thread on `connection`. Returns when the thread is running. Each new connection is a new
+  // Father session: the window counter and the fault-injection counter restart (a LAN domain outlives its Fathers).
   Status serve(std::unique_ptr<transport::Connection> connection);
   // Closes the connection and joins the thread. Idempotent.
   void stop();
@@ -66,6 +71,7 @@ class ExpertDomainServer {
 
   void set_epoch(Epoch epoch) { epoch_.store(epoch.value); }
   const ExpertDomainConfig& config() const { return config_; }
+  std::string kernel_path() const;  // "" for the fixture FP32 experts
   ExpertDomainMetrics metrics() const;
 
   // Drops the decoded weights (ephemeral: a domain holds nothing after its lease).

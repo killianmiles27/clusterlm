@@ -16,6 +16,7 @@ struct ExpertDomainServer::Impl {
   std::uint32_t first_layer = 0, end_layer = 0;
   std::vector<std::vector<ExpertWeights>> experts;  // [layer - first_layer][local expert]
   ExpertScratch scratch;
+  std::unique_ptr<QuantExperts> quant;  // set when config.kernel is quantized (then `experts` stays empty)
   std::mutex mu;
   std::uint64_t last_window = 0;
   std::uint64_t served = 0;  // batches answered (fault-injection counter)
@@ -58,6 +59,13 @@ Status ExpertDomainServer::load(const objects::ObjectResolver& resolver) {
   m.end_layer = config_.end_layer;
   m.experts.clear();
   std::uint64_t bytes = 0;
+  if (config_.kernel.quantized()) {
+    CLM_ASSIGN_OR_RETURN(m.quant, QuantExperts::create(config_.kernel, g.hidden_size, g.expert_ff, m.first_layer, m.end_layer,
+                                                       static_cast<std::uint32_t>(config_.owned_experts.size()),
+                                                       config_.owned_experts.front()));
+    m.metrics.resident_bytes = m.quant->resident_bytes();
+    return Status::ok();
+  }
   for (std::uint32_t L = m.first_layer; L < m.end_layer; ++L) {
     std::vector<ExpertWeights> layer;
     layer.reserve(config_.owned_experts.size());
@@ -79,7 +87,13 @@ void ExpertDomainServer::release() {
   std::lock_guard<std::mutex> lk(impl_->mu);
   impl_->experts.clear();
   impl_->experts.shrink_to_fit();
+  impl_->quant.reset();
   impl_->metrics.resident_bytes = 0;
+}
+
+std::string ExpertDomainServer::kernel_path() const {
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  return impl_->quant ? impl_->quant->kernel_path() : std::string();
 }
 
 ExpertDomainMetrics ExpertDomainServer::metrics() const {
@@ -97,7 +111,7 @@ Result<ExpertResult> ExpertDomainServer::execute(const ExpertBatch& batch) {
 Result<ExpertResult> ExpertDomainServer::execute_locked(const ExpertBatch& batch) {
   Impl& m = *impl_;
   const std::size_t H = m.geometry.hidden_size, ff = m.geometry.expert_ff;
-  if (m.experts.empty()) return make_error(ErrorCode::kFailedPrecondition, "domain released");
+  if (m.experts.empty() && !m.quant) return make_error(ErrorCode::kFailedPrecondition, "domain released");
   if (batch.epoch.value != epoch_.load())
     return make_error(ErrorCode::kStaleEpoch, "batch names a stale epoch");
   if (batch.window.value < m.last_window)
@@ -108,10 +122,12 @@ Result<ExpertResult> ExpertDomainServer::execute_locked(const ExpertBatch& batch
   if (batch.positions == 0 || batch.positions > config_.limits.max_positions ||
       batch.activations.size() != std::size_t{batch.positions} * H || batch.routes.size() != batch.positions)
     return make_error(ErrorCode::kInvalidArgument, "malformed batch dimensions");
-  const std::vector<ExpertWeights>& layer = m.experts[batch.layer - m.first_layer];
+  const std::size_t n_local = config_.owned_experts.size();
   for (const auto& per : batch.routes)
     for (const ExpertRoute& r : per)
-      if (r.local_expert >= layer.size()) return make_error(ErrorCode::kOutOfRange, "local expert id out of range");
+      if (r.local_expert >= n_local) return make_error(ErrorCode::kOutOfRange, "local expert id out of range");
+  static const std::vector<ExpertWeights> kNoWeights;
+  const std::vector<ExpertWeights>& layer = m.quant ? kNoWeights : m.experts[batch.layer - m.first_layer];
 
   m.last_window = batch.window.value;
   ExpertResult out;
@@ -127,7 +143,12 @@ Result<ExpertResult> ExpertDomainServer::execute_locked(const ExpertBatch& batch
     const float* h = batch.activations.data() + std::size_t{p} * H;
     // Routes are strictly ascending on the wire, so the summation order is fixed by the message itself.
     for (const ExpertRoute& r : batch.routes[p]) {
-      accumulate_expert(layer[r.local_expert], H, ff, h, r.weight, m.scratch, y);
+      if (m.quant) {
+        const Status qs = m.quant->accumulate(batch.layer, r.local_expert, h, r.weight, y);
+        if (!qs.is_ok()) return qs;
+      } else {
+        accumulate_expert(layer[r.local_expert], H, ff, h, r.weight, m.scratch, y);
+      }
       ++out.experts_executed;
     }
   }
@@ -142,6 +163,11 @@ Status ExpertDomainServer::serve(std::unique_ptr<transport::Connection> connecti
   if (running_.load() || thread_.joinable()) return make_error(ErrorCode::kFailedPrecondition, "already serving");
   if (!connection) return make_error(ErrorCode::kInvalidArgument, "null connection");
   connection->set_max_payload(config_.limits.max_payload_bytes());
+  {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    impl_->last_window = 0;
+    impl_->served = 0;
+  }
   connection_ = std::shared_ptr<transport::Connection>(std::move(connection));
   stop_.store(false);
   running_.store(true);

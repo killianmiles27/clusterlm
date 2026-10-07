@@ -2,7 +2,7 @@
 # apps/ may depend on this directory, so it can be deleted if the layer-domain design wins.
 clusterlm_module(clusterlm_expert_domains
   SOURCES src/wire.cpp src/assignment.cpp src/domain_server.cpp src/father_executor.cpp src/analytic.cpp
-          src/rig.cpp src/simulation.cpp
+          src/rig.cpp src/simulation.cpp src/quant_experts.cpp src/peer.cpp
   DEPS clusterlm_domain clusterlm_objects clusterlm_transport clusterlm_common Threads::Threads
        clusterlm_bench_harness clusterlm_coordinator clusterlm_third_party)
 # Same reproducibility rule as the reference backend: no FMA contraction, so sums round identically.

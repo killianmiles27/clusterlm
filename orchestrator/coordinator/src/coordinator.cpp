@@ -538,19 +538,33 @@ struct Coordinator::Impl {
       if (sealed[a.object_index]) continue;
       if (cancel_prepare.load()) return make_error(ErrorCode::kCancelled, "preparation cancelled");
       const auto& obj = p.manifest.objects[a.object_index];
-      // Bounded streaming read: Father never holds more than one chunk of an object in memory.
-      CLM_RETURN_IF_ERROR(store->stream_object(
+      // Bounded streaming read: Father never holds more than one chunk of an object in memory. The wall time of the
+      // whole call minus the time spent inside the callback is the source read (disk, page cache); the callback's
+      // digest and send are accounted separately (HQ-PROV-01: disk read vs. transfer).
+      std::uint64_t callback_ns = 0;
+      Stopwatch stream_clock;
+      const Status streamed = store->stream_object(
           obj.name, cfg.provision_chunk_bytes, [&](std::uint64_t offset, ByteSpan data) -> Status {
+            const std::uint64_t cb_start = monotonic_ns();
             protocol::ProvisionChunk chunk;
             chunk.lease = n.lease;
             chunk.object_index = a.object_index;
             chunk.offset = offset;
             chunk.data.assign(data.begin(), data.end());
             chunk.chunk_digest = Sha256::of(chunk.data);
-            if (Status sent = n.provision->stream->send(chunk); !sent.is_ok()) return sent;
+            const std::uint64_t digested = monotonic_ns();
+            n.provision_report.father_chunk_digest_ns += digested - cb_start;
+            Status sent = n.provision->stream->send(chunk);
+            const std::uint64_t done = monotonic_ns();
+            n.provision_report.father_send_ns += done - digested;
+            callback_ns += done - cb_start;
+            if (!sent.is_ok()) return sent;
             progress.update(&n, [&](NodePrepareProgress& np) { np.bytes_sent += data.size(); }, false);
             return Status::ok();
-          }));
+          });
+      const std::uint64_t stream_ns = stream_clock.elapsed_ns();
+      n.provision_report.father_source_read_ns += stream_ns > callback_ns ? stream_ns - callback_ns : 0;
+      CLM_RETURN_IF_ERROR(streamed);
       protocol::SealObject seal{n.lease, a.object_index, obj.byte_size, obj.object_digest};
       CLM_RETURN_IF_ERROR(n.provision->stream->send(seal, n.provision->stream->next_correlation()));
       n.provision_report.bytes += obj.byte_size;
@@ -623,6 +637,9 @@ struct Coordinator::Impl {
     if (pr.plan_hash != plan_hash || pr.lease != n.lease)
       return make_error(ErrorCode::kStaleEpoch, "PlanReady for a different plan or lease");
     n.provision_report.node_prepare_ns = pr.prepare_ns;
+    n.provision_report.node_chunk_write_ns = pr.chunk_write_ns;
+    n.provision_report.node_seal_hash_ns = pr.seal_hash_ns;
+    n.provision_report.node_build_ns = pr.build_ns;
     progress.update(&n, [](NodePrepareProgress& np) { np.phase = PreparePhase::kNodeReady; }, true);
     // Provisioning is over; the bulk channel is not kept open during inference.
     n.provision->shutdown();

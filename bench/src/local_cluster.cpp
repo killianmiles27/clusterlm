@@ -85,6 +85,10 @@ std::filesystem::path LocalCluster::staging_root(std::size_t i) const {
   return options_.work_dir / (nodes_.at(i).options.name + "-staging");
 }
 
+std::int64_t LocalCluster::pid(std::size_t i) const {
+  return i < nodes_.size() && nodes_[i].process ? nodes_[i].process->pid() : 0;
+}
+
 Status LocalCluster::local_activity(std::size_t i) { return nodes_.at(i).process->write_line("activity"); }
 Status LocalCluster::local_idle(std::size_t i) { return nodes_.at(i).process->write_line("idle"); }
 

@@ -95,6 +95,8 @@ struct NodeWorker::Impl {
   std::optional<protocol::PreparePlan> plan;
   std::size_t sealed_count = 0;
   std::uint64_t prepare_started_ns = 0;
+  // Where this lease's prepare time went (reported in PlanReady; durations only).
+  std::uint64_t chunk_write_ns = 0, seal_hash_ns = 0, build_ns = 0;
   std::unique_ptr<LeaseObjectResolver> resolver;
   std::map<std::uint32_t, std::unique_ptr<domain::ExecutionDomain>> domains;  // by stage id
   std::shared_ptr<MessageStream> control;
@@ -475,6 +477,7 @@ struct NodeWorker::Impl {
     plan = p;
     sealed_count = 0;
     prepare_started_ns = monotonic_ns();
+    chunk_write_ns = seal_hash_ns = build_ns = 0;
     set_state(NodeState::kPreparing);
     log::info("plan_accepted", {{"lease", lease.str()}, {"objects", std::to_string(p.assignments.size())},
                                 {"ram_bytes", std::to_string(ram)}, {"disk_bytes", std::to_string(disk)}});
@@ -610,7 +613,10 @@ struct NodeWorker::Impl {
       return make_error(ErrorCode::kStaleEpoch, "chunk for a stale or inactive lease");
     auto* writer = store->find_object(c.object_index);
     if (writer == nullptr) return make_error(ErrorCode::kNotFound, "chunk for an object not in the plan");
-    CLM_RETURN_IF_ERROR(writer->write_chunk(c.offset, c.data, c.chunk_digest));
+    const std::uint64_t write_start = monotonic_ns();
+    const Status written = writer->write_chunk(c.offset, c.data, c.chunk_digest);
+    chunk_write_ns += monotonic_ns() - write_start;
+    CLM_RETURN_IF_ERROR(written);
     counters.provisioned_bytes += c.data.size();
     return Status::ok();
   }
@@ -629,7 +635,10 @@ struct NodeWorker::Impl {
         return make_error(ErrorCode::kDataLoss, "seal does not match the plan manifest");
       auto* writer = store->find_object(s.object_index);
       if (writer == nullptr) return make_error(ErrorCode::kNotFound, "seal for an object not in the plan");
-      CLM_RETURN_IF_ERROR(writer->seal());
+      const std::uint64_t seal_start = monotonic_ns();
+      const Status sealed = writer->seal();
+      seal_hash_ns += monotonic_ns() - seal_start;
+      CLM_RETURN_IF_ERROR(sealed);
       complete = ++sealed_count == plan->assignments.size();
     }
     if (complete) finish_prepare();
@@ -639,7 +648,9 @@ struct NodeWorker::Impl {
   // All objects validated: build domains, bind objects, allocate state, run a synthetic execution check.
   void finish_prepare() {
     phase("allocation");
+    const std::uint64_t build_start = monotonic_ns();
     Status st = build_domains();
+    const std::uint64_t build_elapsed = monotonic_ns() - build_start;
     std::shared_ptr<MessageStream> ctl;
     protocol::PlanReady ready;
     {
@@ -652,6 +663,10 @@ struct NodeWorker::Impl {
         ready.plan_hash = plan->plan_hash;
         ready.resident_bytes = store->ram_used() + store->disk_used();
         ready.prepare_ns = monotonic_ns() - prepare_started_ns;
+        build_ns = build_elapsed;
+        ready.chunk_write_ns = chunk_write_ns;
+        ready.seal_hash_ns = seal_hash_ns;
+        ready.build_ns = build_ns;
       }
     }
     phase("ready");
