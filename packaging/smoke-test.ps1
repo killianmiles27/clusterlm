@@ -184,3 +184,6 @@ if ($failures.Count -gt 0) {
   exit 1
 }
 Write-Host "`nAll $Package smoke checks passed."
+# Explicit: the CI shell wrapper exits with $LASTEXITCODE of the last native command (here sc.exe query, which
+# correctly reports 1060 "service does not exist" after uninstall), not with the result of the checks.
+exit 0
