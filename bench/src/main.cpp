@@ -26,6 +26,7 @@ int usage() {
                "  nvml            NVML clocks/power/temperature/VRAM/throttle sampler to run beside a sustained workload\n"
                "  storage-census  --before|--after|--diff of CUDA/driver caches, temp and ClusterLM data (names and sizes)\n"
                "  placement       run the placement search over hardware profiles\n"
+               "  placement-validate  run the top-N placement candidates through the cluster harness: predicted vs measured\n"
                "  qualification   list the hardware qualification registry\n"
                "  domain|baseline|numerics  hardware-backed experiments (require the Strata/llama backends; exit 3 here)\n"
                "common options: --out FILE (JSON result), --log debug|info|warn, --machine-id ID, --on-target\n");
@@ -48,6 +49,7 @@ int dispatch(const std::string& cmd, const cli::Args& args) {
   if (cmd == "storage-census") return bench::cmd_storage_census(args);
   if (cmd == "placement") return bench::cmd_placement(args);
   if (cmd == "placement-inputs") return bench::cmd_placement_inputs(args);
+  if (cmd == "placement-validate") return bench::cmd_placement_validate(args);
   if (cmd == "qualification") return bench::cmd_qualification(args);
   if (cmd == "baseline" && !args.positional().empty() && args.positional().front() == "llama-rpc")
     return bench::cmd_baseline_llama(args);

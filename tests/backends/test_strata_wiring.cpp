@@ -137,29 +137,7 @@ class FakeStrataBackend final : public domain::BackendAdapter {
 
 // ---- a model directory with Strata's object names (synthetic manifest, pseudo-random bytes, real digests) ------------
 
-objects::ModelManifest write_model(const fs::path& dir) {
-  objects::ModelManifest m = synthetic_manifest(tiny_geometry(), "q8_0");
-  Bytes shard(m.shards.at(0).byte_size, 0);
-  std::uint64_t x = 0x9E3779B97F4A7C15ull;
-  for (auto& b : shard) {
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    b = static_cast<std::uint8_t>(x);
-  }
-  for (auto& o : m.objects) {
-    Sha256 h;
-    for (const auto& r : o.source_ranges) h.update(ByteSpan(shard).subspan(r.offset, r.length));
-    o.source_digest = h.finish();
-    o.object_digest = o.source_digest;
-  }
-  m.shards[0].digest = Sha256::of(shard);
-  fs::create_directories(dir);
-  std::ofstream(dir / m.shards[0].file_name, std::ios::binary).write(reinterpret_cast<const char*>(shard.data()), static_cast<std::streamsize>(shard.size()));
-  const std::string json = m.to_json();
-  std::ofstream(dir / "manifest.json", std::ios::binary).write(json.data(), static_cast<std::streamsize>(json.size()));
-  return m;
-}
+objects::ModelManifest write_model(const fs::path& dir) { return write_synthetic_model(dir); }
 
 fs::path unique_dir(const std::string& name) {
   static std::atomic<int> counter{0};
@@ -332,6 +310,16 @@ TEST_CASE("Father + Node + Coordinator end to end through StrataDomain (fake eng
     CHECK(n.resources_released);
     CHECK(n.storage_cleaned);
     CHECK(n.residual_bytes == 0);
+    // HQ-PERF-02: the Node reports what its domain had allocated (the fake engine: 77 bytes per open session).
+    REQUIRE(n.domain_state.size() == 1);
+    CHECK(n.domain_state[0].state_bytes_peak == 77);
+    CHECK(n.domain_state[0].window_bytes_peak == 55);  // and its per-session window scratch
+  }
+  // Father's prefix and tail report theirs through the same report.
+  REQUIRE(rel->father_domain_state.size() == 2);
+  for (const auto& d : rel->father_domain_state) {
+    CHECK(d.state_bytes_peak == 77);
+    CHECK(d.window_bytes_peak == 55);
   }
 
   const RoleStats prefix = cl.obs->get(StageRole::kPrefix), mid = cl.obs->get(StageRole::kMiddle),

@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <string>
 
+#include "backend_cli.hpp"
 #include "cli.hpp"
 #include "clusterlm/backends/backend_factory.hpp"
 #include "clusterlm/common/log.hpp"
@@ -79,17 +80,7 @@ int main(int argc, char** argv) {
   cfg.direct_peer = !args.has("relay");
   // Backend of Father's prefix/tail domains, by name through the factory ("reference", "llama" when built, "strata" when
   // built). Nodes are started with the same --backend (the build hashes must match). An unknown or unbuilt name fails.
-  backends::BackendOptions bo;
-  bo.name = args.get("backend", "reference");
-  bo.strata.cuda_device = static_cast<int>(args.integer("cuda-device", 0));
-  bo.strata.vram_reserve_mib = static_cast<std::uint32_t>(args.integer("vram-reserve-mib", 1024));
-  bo.strata.cpu_threads = static_cast<std::uint32_t>(args.integer("strata-cpu-threads", 0));
-  bo.strata.ple_table_gguf = args.get("strata-ple-gguf");
-  bo.strata.mtp_dir = args.get("strata-mtp-dir");
-#if defined(CLUSTERLM_FACTORY_HAS_LLAMA)
-  bo.llama.model_dir = cfg.model_dir;
-  bo.llama.n_gpu_layers = static_cast<std::int32_t>(args.integer("llama-gpu-layers", 0));
-#endif
+  const backends::BackendOptions bo = cli::backend_options_from_args(args, cfg.model_dir);
   if (bo.name != "reference") {
     auto be = backends::make_backend(bo);
     if (!be.is_ok()) return fail(be.status());

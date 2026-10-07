@@ -115,7 +115,11 @@ struct DomainMetrics {
   std::uint64_t windows_aborted = 0;
   std::uint64_t positions_committed = 0;
   std::uint64_t resident_weight_bytes = 0;
+  // Sequence state (KV, recurrent, PLE history) allocated for the sessions open right now, and the per-session window
+  // scratch the backend allocates with them (reference: the recurrent snapshots of a window; Strata: the Verifier arena and
+  // its mapped staging, Verifier::init_bytes). Both are 0 with no open session. Reported to Father at release (HQ-PERF-02).
   std::uint64_t state_bytes = 0;
+  std::uint64_t window_bytes = 0;
   std::uint64_t compute_ns_total = 0;
   std::uint64_t stale_rejections = 0;
 };

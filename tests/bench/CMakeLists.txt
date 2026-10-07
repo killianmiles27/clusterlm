@@ -8,7 +8,10 @@ file(MAKE_DIRECTORY ${BENCH_RESULTS})
 
 clusterlm_test(test_bench
   SOURCES test_expert_kernels.cpp test_cpu_memory.cpp test_profile_merge.cpp test_gpu_schema.cpp test_bench_outputs.cpp test_system_observers.cpp
-  DEPS clusterlm_bench_harness clusterlm_placement)
+          test_real_model_harness.cpp
+  DEPS clusterlm_bench_harness clusterlm_placement clusterlm_strata_core clusterlm_father_service)
+# test_real_model_harness.cpp includes the Strata fake engine (tests/backends) and the synthetic GGUF vocabulary
+# (tests/father_service) by relative path: they drive the bench's own pass.
 target_compile_definitions(test_bench PRIVATE
   CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
   CLUSTERLM_BENCH_RESULTS_DIR="${BENCH_RESULTS}")
@@ -62,6 +65,57 @@ clusterlm_bench_smoke(cluster_prepare
 clusterlm_bench_smoke(cluster_contexts
   ARGS cluster --tier strong --contexts 16,32 --q 1,2 --repeat 2 --max-new 8 --drafter scripted:0.4 --census
        --out ${BENCH_RESULTS}/result-cluster-contexts.json)
+# WP21: real backends and real models. The reference backend through the new flags (Synthetic, labelled), the correctness
+# reference skipped, and the placement search's top candidates run through the cluster harness (predicted vs measured).
+clusterlm_bench_smoke(cluster_backend
+  ARGS cluster --tier strong --backend reference --q 1,2 --max-new 8 --repeat 1 --drafter scripted:0.4
+       --out ${BENCH_RESULTS}/result-cluster-backend.json)
+clusterlm_bench_smoke(cluster_noref
+  ARGS cluster --tier strong --q 1 --max-new 8 --repeat 1 --no-reference --out ${BENCH_RESULTS}/result-cluster-noref.json)
+clusterlm_bench_smoke(placement_validate
+  ARGS placement-validate --top 4 --repeat 2 --max-new 8 --prompt-len 24 --out ${BENCH_RESULTS}/result-placement-validate.json)
+# The supervised fault scenarios run the Nodes under clusterlm-node-service (HQ-REL-01); labelled integration as well.
+clusterlm_bench_smoke(faults_supervised
+  ARGS faults --only supervised --max-new 8 --out ${BENCH_RESULTS}/result-faults-supervised.json)
+set_tests_properties(bench_smoke_faults_supervised PROPERTIES LABELS "bench;integration")
+
+# A backend this build does not have is a clear error before anything is spawned (exit 3, the message names the CMake option).
+if(NOT TARGET clusterlm_backend_strata)
+  add_test(NAME bench_cluster_strata_not_built
+    COMMAND ${BENCH} cluster --backend strata --tier fast --out ${BENCH_RESULTS}/result-cluster-strata-missing.json)
+  set_tests_properties(bench_cluster_strata_not_built PROPERTIES LABELS bench
+    PASS_REGULAR_EXPRESSION "built without CLUSTERLM_ENABLE_STRATA")
+  add_test(NAME bench_faults_strata_not_built
+    COMMAND ${BENCH} faults --backend strata --only stall --out ${BENCH_RESULTS}/result-faults-strata-missing.json)
+  set_tests_properties(bench_faults_strata_not_built PROPERTIES LABELS bench
+    PASS_REGULAR_EXPRESSION "built without CLUSTERLM_ENABLE_STRATA")
+  add_test(NAME bench_placement_validate_strata_not_built
+    COMMAND ${BENCH} placement-validate --backend strata --out ${BENCH_RESULTS}/result-pv-strata-missing.json)
+  set_tests_properties(bench_placement_validate_strata_not_built PROPERTIES LABELS bench
+    PASS_REGULAR_EXPRESSION "built without CLUSTERLM_ENABLE_STRATA")
+endif()
+add_test(NAME bench_cluster_unknown_backend COMMAND ${BENCH} cluster --backend vulkan-magic --tier fast)
+set_tests_properties(bench_cluster_unknown_backend PROPERTIES LABELS bench WILL_FAIL TRUE)
+
+# HQ-MTP-01 real text: the corpus tokenized by the Father tokenizer from the llama.cpp qwen2 vocabulary (the real tokenizer
+# code on a real 150k vocabulary; the fixture model folds the ids, so the result is Synthetic). Registered only when the pinned
+# upstream checkout has the vocabulary (python3 scripts/fetch_upstream.py llama.cpp).
+set(QWEN2_VOCAB ${PROJECT_SOURCE_DIR}/third_party/upstream/llama.cpp/models/ggml-vocab-qwen2.gguf)
+if(EXISTS ${QWEN2_VOCAB})
+  file(WRITE ${BENCH_RESULTS}/corpus-sample.txt
+    "Distributed inference across idle machines keeps every model file on one computer. The quick brown fox jumps over the lazy dog.\n"
+    "A mixture of experts activates only a few experts per token, so most of the weights stay cold in memory.\n"
+    "int main() { std::puts(\"hello\"); return 0; }\n"
+    "Explain why the sky is blue in two sentences, then list three practical consequences for photography.\n")
+  clusterlm_bench_smoke(cluster_corpus_tokenizer
+    ARGS cluster --tier strong --q 1,2 --corpus ${BENCH_RESULTS}/corpus-sample.txt --tokenizer-gguf ${QWEN2_VOCAB}
+         --prompt-len 16 --max-new 8 --repeat 1 --drafter scripted:0.4 --out ${BENCH_RESULTS}/result-cluster-corpus.json)
+  clusterlm_bench_smoke(placement_inputs_tokenizer
+    ARGS placement-inputs --tokenizer-gguf ${QWEN2_VOCAB} --q 1,2 --max-new 8 --routing-out ${BENCH_RESULTS}/routing-qwen2.json
+         --work ${BENCH_RESULTS}/placement-inputs-work --out ${BENCH_RESULTS}/result-placement-inputs-tokenizer.json)
+  target_compile_definitions(test_bench PRIVATE CLUSTERLM_QWEN2_VOCAB_PRESENT=1)
+endif()
+
 clusterlm_bench_smoke(faults_subset
   ARGS faults --only ready,release_cycles --release-cycles 2 --out ${BENCH_RESULTS}/result-faults-subset.json)
 clusterlm_bench_smoke(nvml ARGS nvml --minutes 0.01 --sample-s 0.2 --out ${BENCH_RESULTS}/result-nvml.json

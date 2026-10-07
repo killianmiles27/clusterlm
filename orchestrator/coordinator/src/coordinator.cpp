@@ -374,6 +374,17 @@ struct Coordinator::Impl {
   std::optional<ClusterPlan> plan;
   Digest256 plan_hash;
   std::map<std::uint32_t, std::unique_ptr<domain::ExecutionDomain>> local;  // Father prefix/tail by stage id
+  // Largest sequence-state size each local domain reported during this lease (HQ-PERF-02), by stage id.
+  std::map<std::uint32_t, DomainStateReport> local_state_peak;
+  void sample_local_state() {
+    for (auto& [id, d] : local) {
+      auto& peak = local_state_peak[id];
+      peak.stage = id;
+      const auto m = d->read_metrics();
+      peak.state_bytes_peak = std::max(peak.state_bytes_peak, m.state_bytes);
+      peak.window_bytes_peak = std::max(peak.window_bytes_peak, m.window_bytes);
+    }
+  }
   Epoch epoch{0};
   SessionId next_session{1};
   bool prepared = false;
@@ -1027,6 +1038,7 @@ Result<PrepareReport> Coordinator::prepare(const ClusterPlan& plan, PrepareProgr
       log::error("prepare_failed", {{"error", st.to_string()}});
       for (auto& [id, ld] : im.local) (void)ld->release();
       im.local.clear();
+      im.local_state_peak.clear();
       im.plan.reset();
       return st;
     };
@@ -1119,6 +1131,7 @@ Result<std::shared_ptr<Conversation>> Coordinator::open_conversation() {
   cs.session = im.next_session;
   im.next_session = im.next_session.next();
   for (auto& [id, d] : im.local) CLM_RETURN_IF_ERROR(d->open_session(cs.epoch, cs.session));
+  im.sample_local_state();
   for (const auto* s : im.remote_stages()) {
     auto st = im.node_for(*s).control->call<protocol::SessionOpened>(protocol::OpenSession{cs.epoch, cs.session},
                                                                      im.cfg.request_timeout);
@@ -1368,6 +1381,7 @@ Result<ReleaseReport> Coordinator::release() {
       nr.storage_cleaned = rc->storage_cleaned;
       nr.residual_bytes = rc->residual_bytes;
       nr.errors = rc->errors;
+      for (const auto& d : rc->domain_state) nr.domain_state.push_back({d.stage.value, d.state_bytes_peak, d.window_bytes_peak});
     } else {
       nr.errors = rc.status().to_string();
       if (rc.status().code() == ErrorCode::kUnavailable) {
@@ -1390,6 +1404,9 @@ Result<ReleaseReport> Coordinator::release() {
     n->stage.reset();
     report.nodes.push_back(std::move(nr));
   }
+  im.sample_local_state();
+  for (const auto& [id, peak] : im.local_state_peak) report.father_domain_state.push_back(peak);
+  im.local_state_peak.clear();
   for (auto& [id, d] : im.local) (void)d->release();
   im.local.clear();
   im.results.clear();

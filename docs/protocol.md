@@ -128,6 +128,12 @@ reflected in the privacy schema registry (`tests/privacy/test_message_schema.cpp
 nanoseconds: `chunk_write_ns` (chunk digest verification and write, summed), `seal_hash_ns` (whole-object hash at seal,
 summed) and `build_ns` (domain build: map, allocate, synthetic execution check). They carry no object names or content.
 
+`ReleaseComplete` uses it for the per-domain allocation sizes (HQ-PERF-02): after `errors`, a u32 count (at most 64) and
+per hosted domain a stage id (u32), `state_bytes_peak` and `window_bytes_peak` (u64 each): the largest
+`DomainMetrics::state_bytes` (sequence state: KV, recurrent, PLE) and `window_bytes` (the per-session window scratch) the
+domain reported while the lease lasted, sampled after every OpenSession and at release. They are sizes only: no session
+id, position or token. A Node that predates the field, or that released on its own (crash, local activity), sends none.
+
 ## Decode limits (bounded before allocation)
 
 | Field | Default limit |

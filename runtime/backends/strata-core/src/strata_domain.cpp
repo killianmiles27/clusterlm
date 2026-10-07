@@ -334,6 +334,7 @@ domain::DomainMetrics StrataDomain::read_metrics() const {
   const EngineCounters c = engine_->counters();
   m.resident_weight_bytes = c.resident_weight_bytes;
   m.state_bytes = c.session_state_bytes * sessions_.size();
+  m.window_bytes = c.window_bytes_per_session * sessions_.size();
   m.stale_rejections = ledger_.stale_rejections();
   return m;
 }

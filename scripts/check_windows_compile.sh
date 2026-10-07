@@ -24,7 +24,7 @@ skip_re='^(runtime/backends/(strata|llama)/|tests/backends_llama/|bench/src/gpu_
 
 flags=(-std=c++20 -fsyntax-only -D_WIN32_WINNT=0x0A00 -DWIN32_LEAN_AND_MEAN -DNOMINMAX
        -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Werror)
-incs=(-isystem "$stage/inc" -isystem "$root/third_party" -isystem "$root/third_party/imgui" -I "$root/apps/common" -I "$root/tests/domain" -I "$root/bench/src" -DCLUSTERLM_SOURCE_DIR="\"$root\"" -DCLUSTERLM_NODE_BINARY="\"clusterlm-node.exe\"")
+incs=(-isystem "$stage/inc" -isystem "$root/third_party" -isystem "$root/third_party/imgui" -I "$root/apps/common" -I "$root/tests/domain" -I "$root/bench/src" -DCLUSTERLM_SOURCE_DIR="\"$root\"" -DCLUSTERLM_NODE_BINARY="\"clusterlm-node.exe\"" -DCLUSTERLM_LLAMACPP_VOCAB_DIR="\"$root/third_party/upstream/llama.cpp/models\"")
 cd "$root"
 while IFS= read -r d; do incs+=(-I "$root/$d"); done < <(
   find . -type d -name include -not -path './third_party/*' -not -path './build*' -not -path './.*' \

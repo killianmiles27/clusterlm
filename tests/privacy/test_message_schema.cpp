@@ -175,9 +175,14 @@ std::map<MessageType, Shape> build_registry() {
   }
   r[MessageType::kReleaseLease] = fixed_shape<ReleaseLease>(8 + 1);
   {
-    Shape s = fixed_shape<ReleaseComplete>(8 + 1 + 1 + 8 + 8 + 4);
+    Shape s = fixed_shape<ReleaseComplete>(8 + 1 + 1 + 8 + 8 + 4 + 4);  // ... + domain_state count
     s.string_fields = {"ReleaseComplete.errors"};
-    s.grow = [str](Message& m, std::size_t n) { return str(std::get<ReleaseComplete>(m).errors, n); };
+    s.counted_fields = {"ReleaseComplete.domain_state"};  // (stage id, state size) per hosted domain
+    s.grow = [str](Message& m, std::size_t n) {
+      auto& v = std::get<ReleaseComplete>(m);
+      v.domain_state.assign(n, DomainStateBytes{});
+      return str(v.errors, n) + n * (4 + 8 + 8);
+    };
     r[MessageType::kReleaseComplete] = s;
   }
   {
@@ -366,4 +371,31 @@ TEST_CASE("PlanReady's timing breakdown is an optional trailing extension: old b
     const Bytes partial(encoded.begin(), encoded.end() - static_cast<std::ptrdiff_t>(drop));
     CHECK_FALSE(decode(MessageType::kPlanReady, partial).is_ok());
   }
+}
+
+TEST_CASE("ReleaseComplete's per-domain state sizes are an optional trailing extension: old bodies decode, new bodies round-trip") {
+  ReleaseComplete full;
+  full.lease = LeaseGeneration{3};
+  full.resources_released = true;
+  full.storage_cleaned = true;
+  full.release_ns = 77;
+  full.errors = "";
+  full.domain_state = {{StageId{1}, 4096, 512}, {StageId{2}, 1ull << 33, 1ull << 20}};
+  const Bytes encoded = encode(Message(full));
+  REQUIRE(encoded.size() == 8 + 1 + 1 + 8 + 8 + 4 + 4 + 2 * (4 + 8 + 8));
+  auto back = decode(MessageType::kReleaseComplete, encoded);
+  REQUIRE(back.is_ok());
+  CHECK(std::get<ReleaseComplete>(back.value()).domain_state == full.domain_state);
+  // A Node built before the extension ends the body after `errors`.
+  const Bytes old_body(encoded.begin(), encoded.end() - 4 - 2 * (4 + 8 + 8));
+  auto legacy = decode(MessageType::kReleaseComplete, old_body);
+  REQUIRE_MESSAGE(legacy.is_ok(), legacy.status().to_string());
+  CHECK(std::get<ReleaseComplete>(legacy.value()).domain_state.empty());
+  CHECK(std::get<ReleaseComplete>(legacy.value()).release_ns == 77);
+  // A truncated list is malformed, and so is a count beyond the stage bound.
+  const Bytes truncated(encoded.begin(), encoded.end() - 5);
+  CHECK_FALSE(decode(MessageType::kReleaseComplete, truncated).is_ok());
+  ReleaseComplete many;
+  many.domain_state.assign(65, DomainStateBytes{});
+  CHECK_FALSE(decode(MessageType::kReleaseComplete, encode(Message(many))).is_ok());
 }

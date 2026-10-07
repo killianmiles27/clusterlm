@@ -3,12 +3,15 @@
 // makes every state transition observable (commit, abort, provisional sub-batch commits) without a device.
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "clusterlm/backends/strata/engine.hpp"
+#include "clusterlm/common/digest.hpp"
 #include "clusterlm/backends/strata/object_map.hpp"
 #include "clusterlm/objects/manifest.hpp"
 
@@ -203,7 +206,7 @@ class FakeEngine final : public bs::StrataEngine {
     tentative.clear();
     return Status::ok();
   }
-  bs::EngineCounters counters() const override { return {123, 77}; }
+  bs::EngineCounters counters() const override { return {123, 77, 55}; }
 
   static Call op(std::string name, SessionId s, std::uint32_t n = 0) {
     Call c;
@@ -236,5 +239,32 @@ class NullResolver final : public objects::ObjectResolver {
     return make_error(ErrorCode::kNotFound, "null resolver: " + std::string(name));
   }
 };
+
+// A model directory with Strata's object names (the tiny geometry; pseudo-random bytes, real digests): what a Coordinator over
+// the fake engine needs as `model_dir`. Returns its manifest.
+inline objects::ModelManifest write_synthetic_model(const std::filesystem::path& dir) {
+  objects::ModelManifest m = synthetic_manifest(tiny_geometry(), "q8_0");
+  Bytes shard(m.shards.at(0).byte_size, 0);
+  std::uint64_t x = 0x9E3779B97F4A7C15ull;
+  for (auto& b : shard) {
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    b = static_cast<std::uint8_t>(x);
+  }
+  for (auto& o : m.objects) {
+    Sha256 h;
+    for (const auto& r : o.source_ranges) h.update(ByteSpan(shard).subspan(r.offset, r.length));
+    o.source_digest = h.finish();
+    o.object_digest = o.source_digest;
+  }
+  m.shards[0].digest = Sha256::of(shard);
+  std::filesystem::create_directories(dir);
+  std::ofstream(dir / m.shards[0].file_name, std::ios::binary)
+      .write(reinterpret_cast<const char*>(shard.data()), static_cast<std::streamsize>(shard.size()));
+  const std::string json = m.to_json();
+  std::ofstream(dir / "manifest.json", std::ios::binary).write(json.data(), static_cast<std::streamsize>(json.size()));
+  return m;
+}
 
 }  // namespace clusterlm::strata_test

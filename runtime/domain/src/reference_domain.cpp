@@ -130,6 +130,16 @@ class ReferenceDomainImpl final : public ReferenceDomain {
     return n;
   }
 
+  // Recurrent-state snapshots of one window and (prefix) its token buffer, per session.
+  std::uint64_t window_bytes_per_session() const {
+    std::uint64_t rec_layers = 0;
+    for (std::uint32_t L = spec_.layers.begin; L < spec_.layers.end; ++L)
+      rec_layers += g_.layer_kinds[L] == LayerKind::kRecurrent ? 1 : 0;
+    // KV written by a window lives in the context reservation; only snapshots and tokens are extra.
+    return rec_layers * spec_.max_window * g_.hidden_size * kFloat +
+           (spec_.role == StageRole::kPrefix ? std::uint64_t{spec_.max_window} * sizeof(std::int32_t) : 0);
+  }
+
   std::uint64_t scratch_float_count() const {
     const std::uint64_t H = g_.hidden_size, qd = std::uint64_t{g_.n_heads} * g_.head_dim,
                         kvd = std::uint64_t{g_.n_kv_heads} * g_.head_dim;
@@ -147,12 +157,7 @@ class ReferenceDomainImpl final : public ReferenceDomain {
       (target_of(n) == AllocationTarget::kGpuResident ? req.gpu_weight_bytes : req.cpu_weight_bytes) += o->byte_size;
     }
     req.state_bytes = per_session_state_bytes() * spec_.max_sessions;
-    std::uint64_t rec_layers = 0;
-    for (std::uint32_t L = spec_.layers.begin; L < spec_.layers.end; ++L)
-      rec_layers += g_.layer_kinds[L] == LayerKind::kRecurrent ? 1 : 0;
-    // KV written by a window lives in the context reservation above; only snapshots and tokens are extra.
-    req.window_bytes = rec_layers * spec_.max_window * g_.hidden_size * kFloat +
-                       (spec_.role == StageRole::kPrefix ? std::uint64_t{spec_.max_window} * sizeof(std::int32_t) : 0);
+    req.window_bytes = window_bytes_per_session();
     req.scratch_bytes = scratch_float_count() * kFloat;
     req.staging_bytes = 0;  // reference weights are decoded straight from the resolver; no staging ring
     return req;
@@ -362,6 +367,7 @@ class ReferenceDomainImpl final : public ReferenceDomain {
     DomainMetrics m = metrics_;
     m.resident_weight_bytes = resident_bytes_;
     m.state_bytes = per_session_state_bytes() * sessions_.size();
+    m.window_bytes = window_bytes_per_session() * sessions_.size();
     m.stale_rejections = ledger_.stale_rejections();
     return m;
   }

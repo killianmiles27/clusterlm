@@ -82,11 +82,19 @@ releases both leases. Each Node then reports zero staged bytes.
 ```sh
 $B/clusterlm-bench cluster --q 1,2,4 --drafter scripted:0.3 --impair gige-simulated --out cluster.json
 $B/clusterlm-bench faults --out faults.json         # crashes at every lifecycle phase, activity, link loss, stalls
+$B/clusterlm-bench faults --supervised --out f.json # + Nodes under clusterlm-node-service: forced terminations, relaunches
+$B/clusterlm-bench placement-validate --top 4       # top placement candidates executed: predicted vs measured, rank agreement
 $B/clusterlm-bench transport --tls --impair gige-simulated
 $B/clusterlm-bench placement --context 4096 --q 4   # placement over the synthetic target profiles
 $B/clusterlm-bench profile                          # this host's CPU features, RAM, bandwidth
 $B/clusterlm-bench qualification                    # the hardware qualification registry
 ```
+
+`cluster`, `faults`, `placement-inputs` and `placement-validate` take `--backend reference|strata|llama` (with the engine flags of
+`clusterlm-father`), `--model DIR` for a converted model and `--corpus FILE --tokenizer-gguf FILE` for real text; `cluster --node
+NAME=HOST:PORT@FINGERPRINT` uses Nodes that are already running. A backend this build does not have fails before anything starts
+(exit 3). Only a real model, a real backend, real links and `--on-target` give `Measured`
+([docs/benchmark-methodology.md](docs/benchmark-methodology.md)).
 
 Results follow [`bench/schema/benchmark-result.schema.json`](bench/schema/benchmark-result.schema.json).
 

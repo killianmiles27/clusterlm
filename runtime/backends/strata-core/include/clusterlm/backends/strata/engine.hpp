@@ -48,6 +48,9 @@ struct EngineWindow {
 struct EngineCounters {
   std::uint64_t resident_weight_bytes = 0;  // weights actually bound (GPU arena + native + expert tiers)
   std::uint64_t session_state_bytes = 0;    // per open session
+  // Per open session: the Verifier's device arena and mapped staging (Strata's Verifier::init_bytes, the same carve init
+  // uses), i.e. the window scratch beside the session state. 0 when an engine has none.
+  std::uint64_t window_bytes_per_session = 0;
 };
 
 class StrataEngine {

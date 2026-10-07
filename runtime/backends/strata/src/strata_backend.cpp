@@ -540,6 +540,10 @@ class CudaStrataEngine final : public cs::StrataEngine, public cs::MtpEngine {
     c.resident_weight_bytes = resident_bytes_;
     c.session_state_bytes = sc::session_bytes(sg_, spec_.max_context, manifest_.geometry.n_active_experts,
                                               spec_.layers.begin, spec_.layers.end);
+    // Verifier::init allocates exactly what init_bytes counts (the same carve): the window scratch of one open session.
+    const sc::Verifier::InitBytes vb = sc::Verifier::init_bytes(sg_, manifest_.geometry.n_active_experts, spec_.max_context,
+                                                                verifier_window(), manifest_.geometry.vocab_size);
+    c.window_bytes_per_session = vb.device + vb.mapped;
     return c;
   }
 
