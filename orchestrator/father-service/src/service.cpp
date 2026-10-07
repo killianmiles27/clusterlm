@@ -149,7 +149,11 @@ class ServiceImpl final : public FatherService {
       std::vector<ChatMessage> trial = conversation_;
       if (trial.empty() && req.system_prompt) trial.push_back({ChatRole::kSystem, *req.system_prompt});
       trial.push_back({ChatRole::kUser, req.user_message});
-      *prompt = deps_.tokenizer->encode_chat(trial);
+      auto tok = tokenizer_of(*tier);
+      if (!tok.is_ok()) return tok.status();
+      *prompt = tok.value()->encode_chat(trial);
+      if (prompt->empty())
+        return make_error(ErrorCode::kUnavailable, "no tokenizer is available for " + tier->display_name + " in this build");
       if (prompt->size() + req.max_new_tokens > req.context_tokens)
         return make_error(ErrorCode::kOutOfRange, "conversation plus requested tokens exceed the " + std::to_string(req.context_tokens) + "-token context");
       conversation_ = std::move(trial);
@@ -215,6 +219,16 @@ class ServiceImpl final : public FatherService {
   };
 
   // ---- plumbing ------------------------------------------------------------------------------------------
+
+  Result<std::shared_ptr<Tokenizer>> tokenizer_of(const TierEntry& tier) const {
+    if (deps_.tokenizer_for_tier) return deps_.tokenizer_for_tier(tier);
+    return deps_.tokenizer;
+  }
+  bool same_tokenizer(const TierEntry& a, const TierEntry& b) const {
+    auto ta = tokenizer_of(a);
+    auto tb = tokenizer_of(b);
+    return ta.is_ok() && tb.is_ok() && ta.value() == tb.value();
+  }
 
   void emit(const Event& e) {
     std::vector<EventSink> sinks;
@@ -499,6 +513,14 @@ class ServiceImpl final : public FatherService {
     g.q = req.q;
     g.drafter = drafter;
     g.cancel = run_cancel_;
+    auto tok_res = tokenizer_of(tier);
+    if (!tok_res.is_ok()) {
+      lr.status = tok_res.status();
+      lr.fatal = true;
+      return lr;
+    }
+    const std::shared_ptr<Tokenizer> tok = tok_res.value();
+    g.stop_tokens = tok->stop_token_ids();
     g.on_tokens = [&](std::span<const std::int32_t> toks) {
       std::vector<std::int32_t> v(toks.begin(), toks.end());
       run.out.insert(run.out.end(), v.begin(), v.end());
@@ -518,7 +540,7 @@ class ServiceImpl final : public FatherService {
       ev.request = run.id;
       ev.tier_id = tier.id;
       ev.model_name = tier.model.display_name;
-      ev.text = deps_.tokenizer->decode(v);
+      ev.text = tok->decode(v);
       ev.tokens = std::move(v);
       emit(ev);
     };
@@ -593,6 +615,8 @@ class ServiceImpl final : public FatherService {
         for (const auto* lower : deps_.catalog.fallbacks_after(tier->id)) {
           const auto* cp = lower->find_context(req.context_tokens);
           if (!cp || !cp->offered) continue;
+          // A lower tier with a different vocabulary cannot continue this answer's token history.
+          if (!same_tokenizer(*tier, *lower)) continue;
           if (is_viable(readiness_of(*lower, req.context_tokens).state)) { next = lower; break; }
         }
       }
@@ -624,7 +648,12 @@ class ServiceImpl final : public FatherService {
     }
     // Keep the (possibly partial) answer in the Father-held conversation.
     if (!run.out.empty()) {
-      auto text = deps_.tokenizer->decode(run.out);
+      std::string text;
+      const auto* last_tier = run.segments.empty() ? nullptr : deps_.catalog.find(run.segments.back().tier_id);
+      if (last_tier) {
+        auto tok = tokenizer_of(*last_tier);
+        if (tok.is_ok()) text = tok.value()->decode(run.out);
+      }
       std::lock_guard lk(m_);
       conversation_.push_back({ChatRole::kAssistant, std::move(text)});
     }

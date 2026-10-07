@@ -32,6 +32,7 @@ struct FatherApiConfig {
   catalog::Catalog catalog;
   std::shared_ptr<config::FatherSettingsStore> settings;
   std::shared_ptr<const transport::DeviceIdentity> identity;
+  std::shared_ptr<TierTokenizerProvider> tokenizers;  // per-tier real tokenizers (production); overrides `tokenizer`
   std::shared_ptr<Tokenizer> tokenizer;  // null: chat fails with "no tokenizer available in this build"
   std::shared_ptr<ReadinessSource> readiness;
   std::shared_ptr<DeploymentProvider> deployments;

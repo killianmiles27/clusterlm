@@ -103,6 +103,12 @@ int main(int argc, char** argv) {
   po.identity = identity;
   po.profiles_dir = args.get("profiles-dir", (platform::executable_dir() / "profiles").string());
   po.dev_fixture_model = dev;
+  // The real tokenizer of each tier comes from its model's first GGUF shard (docs/tokenizer.md).
+  std::shared_ptr<father::TierTokenizerProvider> tokenizers;
+  if (!dev) {
+    tokenizers = std::make_shared<father::TierTokenizerProvider>(settings_shared);
+    po.tokenizers = tokenizers;
+  }
   // Preparation progress (bytes, objects, phase) from the Coordinator reaches readiness observation and the UI.
   auto provisioning_board = std::make_shared<father::ProvisioningBoard>();
   po.provisioning = provisioning_board->provider();
@@ -134,6 +140,7 @@ int main(int argc, char** argv) {
   ac.details = po.details;
   ac.prepare_observer = provisioning_board->observer();
   ac.dev_fixture_model = dev;
+  ac.tokenizers = tokenizers;
   if (dev) {
     auto tok = father::FixtureByteTokenizer::create(256);
     if (!tok.is_ok()) return fail(tok.status());

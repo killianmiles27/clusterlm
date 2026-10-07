@@ -34,6 +34,14 @@ struct GgufLimits {
   std::uint64_t max_header_bytes = 256ull << 20;  // magic .. end of the tensor directory
   std::uint64_t max_alignment = 1ull << 30;
   std::uint32_t max_shards = 4096;
+  // Metadata keys whose array values are retained IN FULL (instead of the first GgufValue::kRetainedArrayItems
+  // items), bounded by max_retained_array_elements. The tokenizer builder asks for tokenizer.ggml.{tokens,
+  // merges,token_type}; nothing else needs more than a prefix.
+  std::vector<std::string> retain_full_arrays;
+  std::uint64_t max_retained_array_elements = 1u << 20;
+  // Accept a tensor-less file that ends right after its header without the alignment padding (llama.cpp's
+  // vocab-only test files). Metadata readers only; off by default.
+  bool allow_vocab_only_tail = false;
 };
 
 enum class GgufValueType : std::uint32_t {
@@ -42,7 +50,8 @@ enum class GgufValueType : std::uint32_t {
 };
 
 struct GgufValue {
-  // Only the first kRetainedArrayItems elements of an array are kept; `count` is the true length.
+  // Only the first kRetainedArrayItems elements of an array are kept (unless GgufLimits::retain_full_arrays
+  // names its key); `count` is the true length.
   static constexpr std::size_t kRetainedArrayItems = 64;
 
   GgufValueType type = GgufValueType::kU32;

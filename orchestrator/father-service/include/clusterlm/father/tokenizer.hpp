@@ -31,6 +31,9 @@ class Tokenizer {
   virtual std::string decode(std::span<const std::int32_t> tokens) const = 0;
   // Applies the chat template and appends the assistant-turn opener the model continues from.
   virtual std::vector<std::int32_t> encode_chat(std::span<const ChatMessage> messages) const = 0;
+  // Token ids that end an answer (eos, <|im_end|>, ...); the service passes them as GenerationRequest::stop_tokens.
+  // Empty for tokenizers without end-of-turn tokens (the byte fixture).
+  virtual std::vector<std::int32_t> stop_token_ids() const { return {}; }
 };
 
 // Byte-level: token id == byte value (ids 0..255). Chat template "<role>: <content>\n" with a trailing

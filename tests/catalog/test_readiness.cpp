@@ -190,6 +190,13 @@ TEST_CASE("backend, power, pairing and placement feasibility each block readines
   }
   {
     auto in = ready_inputs(ultra);
+    in.tokenizer_problem = "unsupported pre-tokenizer \"foo\"";
+    auto r = catalog::evaluate(ultra, in);
+    CHECK(r.state == TierState::kUnavailable);
+    CHECK(mentions(r, "tokenizer is unavailable: unsupported pre-tokenizer"));
+  }
+  {
+    auto in = ready_inputs(ultra);
     find(in, "node:laptop-class").power.on_ac = false;
     CHECK(mentions(catalog::evaluate(ultra, in), "G14 is on battery power"));
   }

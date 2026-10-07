@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Fetch pinned llama.cpp (vocab files for the tokenizer verification test)
+        run: python3 scripts/fetch_upstream.py llama.cpp
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
       - name: Build
@@ -61,6 +63,8 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - name: Tokenizer vocab verification (qwen2 + qwen35 vs llama.cpp's own vocab tests)
+        run: ctest --test-dir build --output-on-failure -L vocab --no-tests=error
 
   windows-msvc:
     runs-on: windows-latest

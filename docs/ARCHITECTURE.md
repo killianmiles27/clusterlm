@@ -81,7 +81,7 @@ replayed blindly.
 | `orchestrator/placement` | `clusterlm_placement` | Hardware profiles with provenance, cost model, placement search, Pareto frontier ([placement.md](placement.md)) |
 | `orchestrator/planning` | `clusterlm_planning` | Workload model, replan triggers, placement reports |
 | `orchestrator/coordinator` | `clusterlm_coordinator` | Father orchestration: connect, prepare, pipelined prefill, speculative decode, conversations, cancel, release |
-| `orchestrator/father-service` | `clusterlm_father_service` | Tier selection, readiness, fallback, production providers |
+| `orchestrator/father-service` | `clusterlm_father_service` | Tier selection, readiness, fallback, production providers; Father-only real tokenizer (`GgufBpeTokenizer`, ChatML template, `TierTokenizerProvider`; see `docs/tokenizer.md`) |
 | `orchestrator/pairing` | `clusterlm_pairing` | SPAKE2 pairing bound to the TLS channel ([pairing.md](pairing.md)) |
 | `orchestrator/config` | `clusterlm_config` | Versioned owner-only Father/Node settings |
 | `orchestrator/diagnostics` | `clusterlm_diagnostics` | Redacting diagnostics bundle and log ring buffer |

@@ -366,6 +366,13 @@ catalog::ReadinessInputs LiveReadinessSource::observe(const catalog::TierEntry& 
     if (opt_.dev_fixture_model) opt_.details->set(tier.id, "dev", kDevLabel);
   }
 
+  // ---- tokenizer: built from the tier model's first GGUF shard ----
+  if (opt_.tokenizers && !opt_.dev_fixture_model && in.model.manifest_present) {
+    auto tok = opt_.tokenizers->get(tier);
+    if (!tok.is_ok()) in.tokenizer_problem = tok.status().message();
+    if (opt_.details) opt_.details->set(tier.id, "tokenizer", tok.is_ok() ? "Tokenizer: built from the model's GGUF metadata" : "Tokenizer: " + tok.status().message());
+  }
+
   // ---- backend: no Strata/llama backend is built into this binary ----
   if (opt_.dev_fixture_model) {
     in.backend = {"reference backend, dev fixture", true};

@@ -80,6 +80,9 @@ TierReadiness evaluate(const TierEntry& tier, const ReadinessInputs& in) {
     block("The " + tier.display_name + " model is unpinned; confirm its inspected manifest to enable this tier");
   }
 
+  // Tokenizer (built on Father from the model's GGUF metadata).
+  if (!in.tokenizer_problem.empty()) block("The " + tier.model.display_name + " tokenizer is unavailable: " + in.tokenizer_problem);
+
   // Backend.
   if (!in.backend.hardware_available)
     block("The " + std::string(to_string(tier.backend)) + " backend cannot run on this machine" +
