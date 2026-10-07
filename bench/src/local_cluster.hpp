@@ -41,6 +41,8 @@ class LocalCluster {
   std::vector<coordinator::NodeEndpoint> endpoints() const;
 
   std::size_t size() const { return nodes_.size(); }
+  // Process id of Node i's worker (changes across restart()); 0 when it is not running.
+  std::int64_t pid(std::size_t i) const;
   std::filesystem::path staging_root(std::size_t i) const;
   // stdin commands to the Node process.
   Status local_activity(std::size_t i);

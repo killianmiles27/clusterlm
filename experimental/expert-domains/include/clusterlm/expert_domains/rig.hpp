@@ -5,6 +5,7 @@
 // TCP, insecure mode — the same `transport::Connection` a LAN/TLS link would give) optionally wrapped in the
 // network impairment layer. Each domain's resolver is plan-scoped: it holds only that domain's routed experts.
 // Father's egress NIC is one SimulatedLink shared by every Father->domain connection, as in the real cluster.
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -28,7 +29,19 @@ struct RigOptions {
   std::chrono::milliseconds layer_timeout{5000};
   std::vector<std::uint32_t> die_after_batches;  // per remote domain (test fault injection); empty = never
   Epoch epoch{1};
+  // Expert kernel for Father's and the in-process domains' routed experts (default: fixture FP32).
+  ExpertKernelSpec kernel;
+  // LAN peer mode (peer.hpp): when set, the remote domains are NOT created in this process. The callback connects to
+  // the already-running domain processes (one RemoteLink per remote domain, in owner order) and `remote_domains` must
+  // equal the number of links returned. `die_after_batches` and `network` do not apply to peers.
+  std::function<Result<std::vector<RemoteLink>>()> connect_peers;
 };
+
+// The ownership every process of a grouped cluster must agree on: contiguous ranges (proportional to `shares`, empty =
+// equal) or strided, over remote_domains + 1 owners (Father is owner 0).
+Result<ExpertAssignment> make_expert_assignment(std::uint32_t n_experts, std::uint32_t remote_domains, bool strided,
+                                                const std::vector<std::uint32_t>& shares = {});
+
 
 // A connected loopback TCP pair (insecure mode): {Father side, domain side}. Tests and the rig use it; a LAN
 // deployment would use transport::connect/listen with mutual TLS instead.

@@ -164,6 +164,12 @@ struct PlanReady {
   Digest256 plan_hash;
   std::uint64_t resident_bytes = 0;
   std::uint64_t prepare_ns = 0;
+  // Breakdown of prepare_ns (HQ-PROV-01), durations only: time spent verifying and writing received chunks, hashing
+  // whole objects at seal, and building the domains. Optional trailing fields: a decoder accepts a body that ends
+  // after prepare_ns (they stay 0), so an older Node's PlanReady still decodes. docs/protocol.md "Extending messages".
+  std::uint64_t chunk_write_ns = 0;
+  std::uint64_t seal_hash_ns = 0;
+  std::uint64_t build_ns = 0;
 };
 
 // Father authorizes a direct peer channel for one plan/lease: the Node with stage N forwards its

@@ -26,6 +26,15 @@ Result<std::pair<std::unique_ptr<transport::Connection>, std::unique_ptr<transpo
   return std::make_pair(std::move(client), std::move(server));
 }
 
+Result<ExpertAssignment> make_expert_assignment(std::uint32_t n_experts, std::uint32_t remote_domains, bool strided,
+                                                const std::vector<std::uint32_t>& shares) {
+  const std::uint32_t owners = remote_domains + 1;
+  if (strided) return ExpertAssignment::strided(n_experts, owners);
+  std::vector<std::uint32_t> s = shares.empty() ? std::vector<std::uint32_t>(owners, 1) : shares;
+  if (s.size() != owners) return make_error(ErrorCode::kInvalidArgument, "one share per owner is required");
+  return ExpertAssignment::ranges(n_experts, s);
+}
+
 Result<std::unique_ptr<GroupedRig>> GroupedRig::create(const RigOptions& o) {
   if (o.store == nullptr) return make_error(ErrorCode::kInvalidArgument, "RigOptions::store is required");
   if (o.remote_domains == 0) return make_error(ErrorCode::kInvalidArgument, "at least one remote domain");
@@ -34,12 +43,8 @@ Result<std::unique_ptr<GroupedRig>> GroupedRig::create(const RigOptions& o) {
   std::unique_ptr<GroupedRig> rig(new GroupedRig());
   if (!o.explicit_owner_of.empty()) {
     CLM_ASSIGN_OR_RETURN(rig->assignment_, ExpertAssignment::from_owners(o.explicit_owner_of, owners));
-  } else if (o.strided) {
-    CLM_ASSIGN_OR_RETURN(rig->assignment_, ExpertAssignment::strided(manifest.geometry.n_experts, owners));
   } else {
-    std::vector<std::uint32_t> shares = o.shares.empty() ? std::vector<std::uint32_t>(owners, 1) : o.shares;
-    if (shares.size() != owners) return make_error(ErrorCode::kInvalidArgument, "one share per owner is required");
-    CLM_ASSIGN_OR_RETURN(rig->assignment_, ExpertAssignment::ranges(manifest.geometry.n_experts, shares));
+    CLM_ASSIGN_OR_RETURN(rig->assignment_, make_expert_assignment(manifest.geometry.n_experts, o.remote_domains, o.strided, o.shares));
   }
 
   ExpertDecodeLimits limits;
@@ -52,12 +57,19 @@ Result<std::unique_ptr<GroupedRig>> GroupedRig::create(const RigOptions& o) {
   if (o.network) egress = std::make_shared<transport::SimulatedLink>(o.network->bandwidth_bytes_per_s);
 
   std::vector<RemoteLink> links;
-  for (std::uint32_t r = 0; r < o.remote_domains; ++r) {
+  if (o.connect_peers) {
+    CLM_ASSIGN_OR_RETURN(links, o.connect_peers());
+    if (links.size() != o.remote_domains)
+      return make_error(ErrorCode::kInvalidArgument, "peer mode: " + std::to_string(links.size()) + " peers connected but " +
+                                                         std::to_string(o.remote_domains) + " remote domains configured");
+  }
+  for (std::uint32_t r = 0; r < o.remote_domains && !o.connect_peers; ++r) {
     ExpertDomainConfig dc;
     dc.name = "domain" + std::to_string(r + 1);
     dc.owned_experts = rig->assignment_.owned[r + 1];
     dc.epoch = o.epoch;
     dc.limits = limits;
+    dc.kernel = o.kernel;
     if (r < o.die_after_batches.size()) dc.die_after_batches = o.die_after_batches[r];
     CLM_ASSIGN_OR_RETURN(auto resolver, provision_expert_objects(*o.store, dc.owned_experts, 0, manifest.geometry.n_layers));
     CLM_ASSIGN_OR_RETURN(auto server, ExpertDomainServer::create(manifest, *resolver, dc));
@@ -84,6 +96,7 @@ Result<std::unique_ptr<GroupedRig>> GroupedRig::create(const RigOptions& o) {
   fc.limits = limits;
   fc.layer_timeout = o.layer_timeout;
   fc.overlap_local = o.overlap_local;
+  fc.kernel = o.kernel;
   CLM_ASSIGN_OR_RETURN(rig->executor_, FatherExecutor::create(manifest, *o.store, std::move(fc), std::move(links)));
   return rig;
 }

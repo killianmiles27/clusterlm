@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "clusterlm/expert_domains/peer.hpp"
 #include "clusterlm/objects/fixture_model.hpp"
 #include "result.hpp"  // bench::BenchmarkResult (bench/src, via clusterlm_bench_harness)
 
@@ -28,6 +29,13 @@ struct SimulationOptions {
   bool check_reference = true;     // compare every window's logits with the unsplit reference domain
   double reference_tolerance = 1e-5;  // max |grouped - reference| / max |reference| per window
   bool layer_domain = true;        // also run the layer-domain design through the Coordinator (spawns 2 nodes)
+  // LAN peer mode (peer.hpp): the remote domains are already-running processes/machines reached over `peer_security`.
+  // remote_domains is taken from peers.size(); only the "unlimited" preset applies (the link is real, not simulated).
+  std::vector<PeerSpec> peers;
+  transport::SecurityConfig peer_security;
+  // Routed-expert kernel: fixture FP32 (default) or the Strata IQ kernels on synthetic blobs (quant_experts.hpp). The
+  // quantized mode has no FP32 reference to compare with, so the reference comparison is skipped and said so.
+  ExpertKernelSpec kernel;
   std::filesystem::path work_dir;  // model + staging; created if absent
   std::FILE* report = nullptr;     // human-readable tables (nullptr = none)
 };

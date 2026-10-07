@@ -59,6 +59,7 @@ int cmd_profile(const cli::Args& args) {
       r.metric("power.battery_saver", p->battery_saver);
     }
   }
+  emit_power_environment(r, probe_power_environment());
   r.metric("gpu.present", host.has_cuda_device);
   // The fields below need the GPU build (`gpu`, `pcie`) or the hardware-backed backends; `calibrate` runs everything
   // that can be measured and writes the profile.

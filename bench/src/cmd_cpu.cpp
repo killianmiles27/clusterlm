@@ -6,6 +6,8 @@
 #include "bench_common.hpp"
 #include "clusterlm/common/clock.hpp"
 #include "commands.hpp"
+#include "nvml_probe.hpp"
+#include "system_probe.hpp"
 
 namespace clusterlm::bench {
 
@@ -79,7 +81,18 @@ int cmd_cpu(const cli::Args& args) {
     r.config("sustained_minutes", minutes);
     r.config("sustained_sample_s", sample_s);
     r.metric("power.source_sampled", power != nullptr);
+    // HQ-CPU-02: GPU clocks/power/temperature beside the CPU run (NVML, when the driver library is present).
+    auto nvml = NvmlTelemetry::open();
+    std::unique_ptr<TelemetryRecorder> telemetry;
+    if (nvml.is_ok()) {
+      telemetry = std::make_unique<TelemetryRecorder>(*nvml.value(), sample_s);
+      telemetry->start();
+    } else {
+      emit_gpu_telemetry_unavailable(r, nvml.status().message(), "sustained.nvml.");
+    }
+    emit_power_environment(r, probe_power_environment());
     auto sus = run_cpu_sustained(opt, rep, std::max(1u, threads), minutes, sample_s, power.get(), [] { return g_stop != 0; });
+    if (telemetry) emit_gpu_telemetry(r, *nvml.value(), telemetry->stop(), "sustained.nvml.");
     if (!sus.is_ok()) {
       r.check("sustained_run", false, sus.status().to_string());
     } else {

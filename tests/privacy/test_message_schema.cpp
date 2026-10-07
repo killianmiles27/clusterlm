@@ -125,7 +125,7 @@ std::map<MessageType, Shape> build_registry() {
   }
   r[MessageType::kSealObject] = fixed_shape<SealObject>(8 + 4 + 8 + 32);
   r[MessageType::kObjectSealed] = fixed_shape<ObjectSealed>(8 + 4);
-  r[MessageType::kPlanReady] = fixed_shape<PlanReady>(8 + 32 + 8 + 8);
+  r[MessageType::kPlanReady] = fixed_shape<PlanReady>(8 + 32 + 8 + 8 + 3 * 8);
   {
     Shape s = fixed_shape<AuthorizePeer>(8 + 32 + 4 + 4 + 4 + 4 + 8);
     s.string_fields = {"AuthorizePeer.peer_device_id", "AuthorizePeer.peer_endpoint"};
@@ -340,4 +340,30 @@ TEST_CASE("no wire message type exists beyond the reviewed set (no tokens, logit
     if (known) ++accepted;
   }
   CHECK(accepted == registry.size());
+}
+
+TEST_CASE("PlanReady's timing breakdown is an optional trailing extension: old bodies decode, new bodies round-trip") {
+  PlanReady full{LeaseGeneration{7}, clusterlm::testing::sample_digest(9), 1ull << 20, 123456, 40000, 50000, 33456};
+  const Bytes encoded = encode(Message(full));
+  REQUIRE(encoded.size() == 8 + 32 + 8 + 8 + 3 * 8);
+  auto back = decode(MessageType::kPlanReady, encoded);
+  REQUIRE(back.is_ok());
+  const auto& r = std::get<PlanReady>(back.value());
+  CHECK(r.chunk_write_ns == 40000);
+  CHECK(r.seal_hash_ns == 50000);
+  CHECK(r.build_ns == 33456);
+  // A Node built before the extension sends only lease, plan hash, resident bytes and prepare_ns.
+  const Bytes old_body(encoded.begin(), encoded.end() - 3 * 8);
+  auto legacy = decode(MessageType::kPlanReady, old_body);
+  REQUIRE_MESSAGE(legacy.is_ok(), legacy.status().to_string());
+  const auto& l = std::get<PlanReady>(legacy.value());
+  CHECK(l.prepare_ns == 123456);
+  CHECK(l.chunk_write_ns == 0);
+  CHECK(l.seal_hash_ns == 0);
+  CHECK(l.build_ns == 0);
+  // A partial extension (one or two of the three fields) is malformed, not silently accepted.
+  for (std::size_t drop : {8u, 16u}) {
+    const Bytes partial(encoded.begin(), encoded.end() - static_cast<std::ptrdiff_t>(drop));
+    CHECK_FALSE(decode(MessageType::kPlanReady, partial).is_ok());
+  }
 }

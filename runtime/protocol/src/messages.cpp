@@ -231,9 +231,15 @@ void encode_body(ByteWriter& w, const PlanReady& m) {
   put(w, m.plan_hash);
   w.u64(m.resident_bytes);
   w.u64(m.prepare_ns);
+  w.u64(m.chunk_write_ns);
+  w.u64(m.seal_hash_ns);
+  w.u64(m.build_ns);
 }
 bool decode_body(ByteReader& r, PlanReady& m, const DecodeLimits&) {
-  return get(r, m.lease) && get(r, m.plan_hash) && r.u64(m.resident_bytes) && r.u64(m.prepare_ns);
+  if (!(get(r, m.lease) && get(r, m.plan_hash) && r.u64(m.resident_bytes) && r.u64(m.prepare_ns))) return false;
+  // Optional trailing breakdown (absent from a Node built before it existed).
+  if (r.remaining() == 0) return true;
+  return r.u64(m.chunk_write_ns) && r.u64(m.seal_hash_ns) && r.u64(m.build_ns);
 }
 
 void encode_body(ByteWriter& w, const AuthorizePeer& m) {

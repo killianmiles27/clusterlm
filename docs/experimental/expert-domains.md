@@ -88,6 +88,34 @@ layer-domain round minus the grouped window (positive favours grouped); `analyti
 `grouped.layer_barrier_ms` and `grouped.net_gain_ms` are the HQ-P0C-01 headline metrics at the first q under
 `gige-simulated`.
 
+### LAN peer mode and quantized kernels (HQ-P0C-02)
+
+Domains can be separate processes or machines over the production transport (mutual TLS with pinned fingerprints;
+`--insecure-loopback` is loopback-only, for tests). Every process derives the same deterministic fixture model (same
+`--seed` and geometry flags) and the same expert ownership, so a domain loads only the experts it owns; there is no
+provisioning protocol in the prototype and nothing but the grouped wire messages crosses the link.
+
+```
+# on each domain machine (i = 1..R); serves one Father at a time and outlives its Fathers
+clusterlm-expert-domain-bench --listen 0.0.0.0:7500 --domain-index i --remote-domains R \
+    --identity <dir> --trust <father-fingerprint> [--expert-kernel iq3_s]
+# on Father
+clusterlm-expert-domain-bench --peer d1=HOST1:7500@<d1-fingerprint> --peer d2=HOST2:7500@<d2-fingerprint> \
+    --identity <dir> --trust <d1-fingerprint> --trust <d2-fingerprint> --presets unlimited --q 1,2,3,4
+```
+
+`--listen` prints `EXPERT_DOMAIN_LISTENING endpoint=... device_id=...`; `--exit-on-stdin-eof` and `--max-sessions N` end it.
+In peer mode only the `unlimited` preset applies (the link is real; impairment presets are simulations) and the result
+stays Synthetic because the model is the fixture; `simulated.localhost_cluster` is false when a peer is not loopback.
+Peer mode returns bit-identical logits to the in-process domains for the same ownership (`test_peer`).
+
+`--expert-kernel iq3_s|iq2_xs` runs the routed experts (Father's and the domains') through the Strata CPU IQ kernels
+(`strata-cpu` provider of the bench; needs `-DCLUSTERLM_ENABLE_STRATA_CPU=ON`, and `--hidden`/`--expert-ff` multiples
+of 256; without the kernels it fails with `kHardwareUnavailable`, never falling back to FP32). The expert blobs are
+synthetic pseudo-random i-quant blocks seeded by (seed, layer, owner), not model data, so this mode measures kernel
+cost, barrier time and message/byte counts, not accuracy: the FP32 reference comparison is skipped and the result says
+so (ADR 0340).
+
 ## Synthetic results (this build, fixture model: 16 layers, H = 64, 32 experts, 4 active; 2 domains)
 
 | preset | q | grouped ms/window | layer-domain ms/round | grouped msgs/layer | grouped B/layer |
@@ -134,9 +162,10 @@ HQ-P0C-02 measures both.
 
 ## Limitations
 
-- Expert compute is the FP32 reference SwiGLU on CPU; no quantized or GPU kernels.
-- Domains run as threads over loopback TCP in the bench; `serve`/peer modes for real machines and the Coordinator
-  integration do not exist. Mutual TLS works through the same transport but is not exercised here.
+- Expert compute is the FP32 reference SwiGLU on CPU by default; `--expert-kernel` selects the Strata CPU IQ kernels on
+  synthetic blobs (cost, not accuracy). No GPU kernels.
+- By default domains run as threads over loopback TCP; `--listen` / `--peer` run them as separate processes or machines
+  (tested over loopback only, with mutual TLS and with plain loopback). Coordinator integration does not exist.
 - One session, one outstanding window. A lost domain fails the window and breaks the executor (rebuild it).
 - Positions with no routes to a domain are still sent in the batch (bytes, not messages).
 - Routing is the fixture's, not the model's.

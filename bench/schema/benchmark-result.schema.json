@@ -72,7 +72,7 @@
             "type": "object",
             "properties": {
               "n": { "type": "integer" }, "mean": { "type": "number" }, "min": { "type": "number" },
-              "p10": { "type": "number" }, "p50": { "type": "number" }, "p95": { "type": "number" },
+              "p10": { "type": "number" }, "p50": { "type": "number" }, "p90": { "type": "number" }, "p95": { "type": "number" },
               "p99": { "type": "number" }, "max": { "type": "number" }, "stddev": { "type": "number" }, "unit": { "type": "string" }
             }
           }

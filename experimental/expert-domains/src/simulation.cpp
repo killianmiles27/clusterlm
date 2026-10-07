@@ -117,8 +117,10 @@ Result<GroupedStats> run_grouped(const SimulationOptions& opt, const objects::Ca
   const std::uint32_t max_q = *std::max_element(opt.q_values.begin(), opt.q_values.end());
   RigOptions ro;
   ro.store = &store;
-  ro.remote_domains = opt.remote_domains;
+  ro.remote_domains = opt.peers.empty() ? opt.remote_domains : static_cast<std::uint32_t>(opt.peers.size());
   ro.strided = opt.strided;
+  ro.kernel = opt.kernel;
+  if (!opt.peers.empty()) ro.connect_peers = [&opt] { return connect_peers(opt.peers, opt.peer_security); };
   ro.network = net;
   ro.max_window = std::max<std::uint32_t>(max_q, 8);
   ro.max_context = opt.prompt_len + opt.windows * max_q + 16;
@@ -126,7 +128,7 @@ Result<GroupedStats> run_grouped(const SimulationOptions& opt, const objects::Ca
   ro.layer_timeout = std::chrono::milliseconds(30'000);
   CLM_ASSIGN_OR_RETURN(auto rig, GroupedRig::create(ro));
   std::unique_ptr<ReferenceRunner> ref;
-  if (opt.check_reference) {
+  if (opt.check_reference && !opt.kernel.quantized()) {
     CLM_ASSIGN_OR_RETURN(ref, ReferenceRunner::create(store, ro.max_context, ro.max_window));
   }
   FatherExecutor& ex = rig->executor();
@@ -273,6 +275,11 @@ AnalyticInputs analytic_for(const std::string& preset, std::uint32_t q) {
 
 Status run_simulation(const SimulationOptions& opt, bench::BenchmarkResult& r) {
   if (opt.q_values.empty() || opt.presets.empty()) return make_error(ErrorCode::kInvalidArgument, "need q values and presets");
+  if (!opt.peers.empty())
+    for (const auto& p : opt.presets)
+      if (p != "unlimited")
+        return make_error(ErrorCode::kInvalidArgument,
+                          "peer mode runs over the real link: use --presets unlimited (impairment presets are simulations)");
   for (std::uint32_t q : opt.q_values)
     if (q == 0 || q > 8) return make_error(ErrorCode::kInvalidArgument, "q must be in 1..8");
   std::error_code ec;
@@ -283,11 +290,23 @@ Status run_simulation(const SimulationOptions& opt, bench::BenchmarkResult& r) {
   const objects::ModelGeometry& g = manifest.geometry;
 
   r.mark_simulated("fixture_model", true);
-  r.mark_simulated("localhost_cluster", true);
+  {
+    bool all_loopback = true;
+    for (const auto& p : opt.peers) all_loopback = all_loopback && p.endpoint.is_loopback();
+    r.mark_simulated("localhost_cluster", all_loopback);  // false: the domains ran on other machines (still a fixture model)
+  }
   r.config("topology", "grouped expert-domain (experimental) vs layer-domain pipeline");
   r.config("fixture", {{"layers", g.n_layers}, {"hidden", g.hidden_size}, {"experts", g.n_experts}, {"active", g.n_active_experts},
                        {"expert_ff", g.expert_ff}, {"shared_expert_ff", g.shared_expert_ff}});
-  r.config("remote_domains", opt.remote_domains);
+  r.config("remote_domains", opt.peers.empty() ? opt.remote_domains : static_cast<std::uint32_t>(opt.peers.size()));
+  r.config("peer_mode", !opt.peers.empty());
+  if (!opt.peers.empty()) {
+    nlohmann::json names = nlohmann::json::array();
+    for (const auto& p : opt.peers) names.push_back(p.name + "@" + p.endpoint.str());
+    r.config("peers", names);
+    r.config("peer_transport", opt.peer_security.mode == transport::SecurityConfig::Mode::kMutualTls ? "mutual-tls" : "insecure-loopback");
+  }
+  r.config("expert_kernel", opt.kernel.quantized() ? "strata-" + opt.kernel.representation + " (synthetic blobs)" : std::string("fixture-fp32"));
   r.config("ownership", opt.strided ? "strided" : "ranges");
   r.config("overlap_local", opt.overlap_local);
   r.config("windows_per_cell", opt.windows);
@@ -410,8 +429,11 @@ Status run_simulation(const SimulationOptions& opt, bench::BenchmarkResult& r) {
                 "max relative logit difference %.3e (tolerance %.1e); float sums associate differently across owners, see "
                 "docs/experimental/expert-domains.md",
                 worst_diff, opt.reference_tolerance);
-  r.check("grouped_matches_unsplit_reference_within_tolerance", !opt.check_reference || all_reference_ok, detail);
-  r.check("grouped_argmax_identical_to_reference", !opt.check_reference || all_argmax_ok);
+  r.check("grouped_matches_unsplit_reference_within_tolerance", !opt.check_reference || opt.kernel.quantized() || all_reference_ok, detail);
+  r.check("grouped_argmax_identical_to_reference", !opt.check_reference || opt.kernel.quantized() || all_argmax_ok);
+  if (opt.kernel.quantized())
+    r.check("quantized_kernel_reference_comparison_not_applicable", true,
+            "synthetic IQ expert blobs: logits are not comparable with the FP32 reference; this mode measures cost, not accuracy");
   for (const char* id : {"HQ-P0C-01", "HQ-NET-02", "HQ-PERF-01"}) r.pending(id);
 #undef SAY
   return Status::ok();

@@ -115,6 +115,19 @@ A window is `q` consecutive positions starting at the session's committed positi
   distributed session is invalidated: `AbortSession` goes everywhere and the epoch advances. Father keeps the
   conversation and the caller retries or downgrades.
 
+## Extending messages
+
+A new field may be added to the END of a message body when an absent field has a safe default. The decoder reads the
+field only if bytes remain (`r.remaining() > 0`) and otherwise leaves the default; the encoder always writes it, and a
+partial extension is malformed. This keeps a newer Father decoding an older Node's message. The reverse direction (an old
+decoder receiving the longer body) is not tolerated by `ByteReader::finish`, so such an extension is only used where
+Father and Node ship together (the installer pairs them and `Hello` carries the backend build). Every extension is
+reflected in the privacy schema registry (`tests/privacy/test_message_schema.cpp`) and the samples.
+
+`PlanReady` uses this for its prepare-time breakdown (HQ-PROV-01): after `prepare_ns`, three u64 durations in
+nanoseconds: `chunk_write_ns` (chunk digest verification and write, summed), `seal_hash_ns` (whole-object hash at seal,
+summed) and `build_ns` (domain build: map, allocate, synthetic execution check). They carry no object names or content.
+
 ## Decode limits (bounded before allocation)
 
 | Field | Default limit |

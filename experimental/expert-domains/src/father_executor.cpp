@@ -33,7 +33,7 @@ struct LayerWeights {
   objects::DenseLayout lay;
   std::vector<float> dense;
   ExpertWeights shared;               // gate/up/down of the shared expert (ff = shared_expert_ff)
-  std::vector<ExpertWeights> own;     // Father-owned routed experts, by local index
+  std::vector<ExpertWeights> own;     // Father-owned routed experts, by local index (fixture FP32 mode)
 };
 
 struct Session {
@@ -65,6 +65,7 @@ struct FatherExecutor::Impl {
   // Scratch for the mixer path (per position, reused).
   std::vector<float> u, x, t, m, h, q, k, v, attn_o, scores, router, head_s;
   ExpertScratch esc;
+  std::unique_ptr<QuantExperts> quant;  // Father-owned experts in the quantized-kernel mode
   std::vector<std::uint32_t> sel;
   std::vector<char> used;
   std::vector<float> wts;
@@ -110,12 +111,18 @@ struct FatherExecutor::Impl {
         CLM_RETURN_IF_ERROR(decode_f32(sh, 2 * sff * H, H * sff, lw.shared.down));
       }
       for (std::uint32_t e : cfg.assignment.owned[kFatherOwner]) {
+        if (cfg.kernel.quantized()) break;  // synthetic quantized experts are built once below
         CLM_ASSIGN_OR_RETURN(auto ex, fetch(objects::expert_object_name(L, e)));
         ExpertWeights w;
         CLM_RETURN_IF_ERROR(load_expert_weights(ex, H, ff, w));
         lw.own.push_back(std::move(w));
       }
       layers.push_back(std::move(lw));
+    }
+    if (cfg.kernel.quantized() && !cfg.assignment.owned[kFatherOwner].empty()) {
+      CLM_ASSIGN_OR_RETURN(quant, QuantExperts::create(cfg.kernel, g.hidden_size, g.expert_ff, 0, g.n_layers,
+                                                       static_cast<std::uint32_t>(cfg.assignment.owned[kFatherOwner].size()),
+                                                       cfg.assignment.owned[kFatherOwner].front()));
     }
     CLM_ASSIGN_OR_RETURN(auto head, fetch(std::string(objects::kHeadObjectName)));
     if (head.bytes.size() != (H + std::size_t{g.vocab_size} * H) * 4)
@@ -343,6 +350,7 @@ struct FatherExecutor::Impl {
     // ---- Father's own experts + the shared expert (overlapped with the remote work) -------------
     ls.partial.assign(as.n_owners, {});
     ls.shared_out.assign(std::size_t{qn} * H, 0.0f);
+    Status local_error;
     auto local_work = [&] {
       const std::uint64_t t0 = monotonic_ns();
       const LayerWeights& lw = layers[L];
@@ -350,8 +358,13 @@ struct FatherExecutor::Impl {
       for (std::uint32_t i = 0; i < qn; ++i) {
         float* y = ls.partial[kFatherOwner].data() + std::size_t{i} * H;
         const float* hin = ls.h_in.data() + std::size_t{i} * H;
-        for (const ExpertRoute& r : ls.routes[kFatherOwner][i])
-          accumulate_expert(lw.own[r.local_expert], H, g.expert_ff, hin, r.weight, esc, y);
+        for (const ExpertRoute& r : ls.routes[kFatherOwner][i]) {
+          if (quant) {
+            if (const Status qs = quant->accumulate(L, r.local_expert, hin, r.weight, y); !qs.is_ok()) local_error = qs;
+          } else {
+            accumulate_expert(lw.own[r.local_expert], H, g.expert_ff, hin, r.weight, esc, y);
+          }
+        }
         if (sff > 0) {
           swiglu(lw.shared.gate.data(), lw.shared.up.data(), lw.shared.down.data(), H, sff, hin, esc);
           std::copy_n(esc.d.begin(), H, ls.shared_out.begin() + static_cast<std::ptrdiff_t>(std::size_t{i} * H));
@@ -360,6 +373,7 @@ struct FatherExecutor::Impl {
       lx.local_expert_ns = monotonic_ns() - t0;
     };
     if (cfg.overlap_local) local_work();
+    if (!local_error.is_ok()) return fail(local_error);
 
     // ---- the barrier: one result per participating domain ----------------------------------------
     for (std::size_t r = 0; r < n_remote; ++r) {
@@ -392,6 +406,7 @@ struct FatherExecutor::Impl {
     const std::uint64_t t_recv_done = monotonic_ns();
     lx.exchange_ns = lx.domains_participating > 0 ? t_recv_done - t_send0 : 0;
     if (!cfg.overlap_local) local_work();
+    if (!local_error.is_ok()) return fail(local_error);
 
     // ---- deterministic combine + finalize ---------------------------------------------------------
     std::vector<std::uint32_t> order;
