@@ -70,6 +70,10 @@ ServiceInstallSpec node_service_install_spec();
 // service SID type) / remove it. Needs elevation.
 Status install_service(const ServiceInstallSpec& spec, const std::wstring& executable_path);
 Status uninstall_service(const std::string& name);
+// Changes only the start type of an installed service. Needs elevation: the service account (LocalService) is
+// deliberately not granted SERVICE_CHANGE_CONFIG on itself, since that right would also let it rewrite its own
+// binary path and account.
+Status set_service_start_type(const std::string& name, ServiceStartType type);
 #endif
 
 }  // namespace clusterlm::platform

@@ -153,7 +153,6 @@ Status ServiceCore::apply_settings(const ipc::NodeSettingsView& v) {
   if (last_settings_apply_ != std::chrono::steady_clock::time_point{} &&
       now - last_settings_apply_ < cfg_.settings_min_interval)
     return make_error(ErrorCode::kResourceExhausted, "settings were just changed; try again in a moment");
-  const bool was_allowed = cfg_.settings->get().allow_when_idle;
   // Only the user-safe fields are copied; the name, the paired Father and every other field keep their values.
   CLM_RETURN_IF_ERROR(cfg_.settings->update([&](config::NodeSettings& s) {
     s.allow_when_idle = v.allow_when_idle;
@@ -176,8 +175,8 @@ Status ServiceCore::apply_settings(const ipc::NodeSettingsView& v) {
   caps.vram_gib = v.vram_gib;
   caps.disk_gib = v.temp_storage_limit_gib;
   caps.threads = v.threads;
-  if (!v.allow_when_idle) activity_.pause(std::nullopt);
-  else if (!was_allowed) activity_.resume();
+  // The policy flag is separate from the user's tray pause: allowing participation again never ends a pause.
+  activity_.set_participation_allowed(v.allow_when_idle);
   auto r = supervisor_.reconfigure(with_worker_caps(supervisor_.worker_args(), caps), policy);
   if (!r.is_ok()) {
     log::warn("settings_apply_failed", {{"status", r.status().to_string()}});
@@ -275,7 +274,7 @@ ipc::NodeState ServiceCore::state() const {
   if (!started_.load()) return ipc::NodeState::kStarting;
   std::lock_guard lock(mu_);
   if (supervisor_.suspended()) return ipc::NodeState::kSuspended;
-  if (activity_.paused()) return ipc::NodeState::kPaused;
+  if (activity_.paused() || !activity_.participation_allowed()) return ipc::NodeState::kPaused;
   return supervisor_.eligible() ? ipc::NodeState::kOffering : ipc::NodeState::kBusy;
 }
 

@@ -39,6 +39,10 @@ class HelperActivityMonitor final : public ActivityMonitor {
   void pause(std::optional<std::chrono::seconds> duration);
   void resume();
   bool paused() const;
+  // Settings policy "do not offer this PC even when idle". Independent of the user's tray pause: changing one never
+  // clears the other. While disallowed the machine reports in use, like a pause.
+  void set_participation_allowed(bool allowed);
+  bool participation_allowed() const;
   // True when at least one session is tracked and none is stale.
   bool reports_fresh() const;
 
@@ -58,6 +62,7 @@ class HelperActivityMonitor final : public ActivityMonitor {
   bool headless_ = false;
   bool paused_ = false;
   std::optional<SteadyClock::time_point> pause_until_;
+  bool participation_allowed_ = true;
 };
 
 }  // namespace clusterlm::platform

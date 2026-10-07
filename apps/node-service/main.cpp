@@ -15,6 +15,7 @@
 // While running, the service also answers the helper pipe's settings and pairing-mode messages (the Node UI: docs/ui.md)
 // and honours an UnpairNotice from its paired Father (docs/pairing.md): lease released, trust dropped, setting cleared.
 //   [--settings FILE]   Node settings document (default: <node_root>/node-settings.json)
+//   clusterlm-node-service --apply-startup [--settings FILE]   (Windows, elevated: apply "start with Windows")
 //   [--helper-pipe NAME] helper pipe name for side-by-side dev/test instances (default: the product name)
 //
 // Pairing (docs/pairing.md): pairing mode opens a time-boxed listener, prints one line
@@ -124,13 +125,14 @@ class NodeServiceApp final : public platform::ServiceApp {
  public:
   NodeServiceApp(node::ServiceCoreConfig cfg, std::unique_ptr<platform::PowerMonitor> power,
                  std::unique_ptr<platform::ProcessJob> job, bool simulate, std::uint32_t idle_required,
-                 PairingSetup pairing, bool start_paused)
+                 PairingSetup pairing, bool start_paused, bool participation_allowed)
       : power_(std::move(power)),
         core_(std::move(cfg), *power_, std::move(job)),
         simulate_(simulate),
         idle_required_(idle_required),
         pairing_(std::move(pairing)),
-        start_paused_(start_paused) {}
+        start_paused_(start_paused),
+        participation_allowed_(participation_allowed) {}
 
   Status on_start() override {
     core_.set_event_sink([](const node::SupervisorEvent& e) {
@@ -143,7 +145,8 @@ class NodeServiceApp final : public platform::ServiceApp {
     std::printf("CLUSTERLM_NODE_SERVICE worker_endpoint=%s device_id=%s\n", core_.worker_endpoint().c_str(),
                 core_.worker_device_id().c_str());
     std::fflush(stdout);
-    if (start_paused_) core_.helper_activity().pause(std::nullopt);  // settings: paused / not allowed when idle
+    if (start_paused_) core_.helper_activity().pause(std::nullopt);  // settings: paused by the user
+    core_.helper_activity().set_participation_allowed(participation_allowed_);  // settings: allowed when idle
     core_.set_pairing_starter([this] { return start_pairing(); });
     if (simulate_) {
       core_.helper_activity().submit({0, false, 0});  // starts in use; stdin drives the rest
@@ -268,6 +271,7 @@ class NodeServiceApp final : public platform::ServiceApp {
   std::uint32_t idle_required_;
   PairingSetup pairing_;
   bool start_paused_;
+  bool participation_allowed_;
   std::thread input_;
   std::mutex pair_mu_;
   std::unique_ptr<pairing::PairingResponder> responder_;
@@ -305,6 +309,21 @@ int main(int argc, char** argv) {
   }
 
 #ifdef _WIN32
+  if (args.has("apply-startup")) {
+    // Elevated: apply the Node settings' "start with Windows" choice to the service's start type.
+    auto paths = platform::default_paths();
+    if (!paths.is_ok()) return fail(paths.status());
+    auto store = config::NodeSettingsStore::open(args.get("settings", config::node_settings_path(paths.value()).string()));
+    if (!store.is_ok()) return fail(store.status());
+    const bool start = store.value()->get().start_with_system;
+    const auto spec = platform::node_service_install_spec();
+    if (auto st = platform::set_service_start_type(spec.name, start ? platform::ServiceStartType::kAutoDelayed
+                                                                    : platform::ServiceStartType::kDemand);
+        !st.is_ok())
+      return fail(st);
+    std::printf("CLUSTERLM_NODE_STARTUP start_with_system=%d\n", start ? 1 : 0);
+    return 0;
+  }
   if (args.has("install") || args.has("uninstall")) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     auto spec = platform::node_service_install_spec();
@@ -449,10 +468,10 @@ int main(int argc, char** argv) {
   pairing_setup.listen = {"0.0.0.0", static_cast<std::uint16_t>(args.integer("pair-port", port + 1u))};
   pairing_setup.window = std::chrono::seconds(static_cast<std::int64_t>(args.integer("pair-window-seconds", 300)));
   pairing_setup.start_now = args.has("pair");
-  const bool start_paused = settings.paused || !settings.allow_when_idle;
+  const bool start_paused = settings.paused;
 
   NodeServiceApp app(std::move(cfg), std::move(power), std::move(job), simulate, idle_seconds,
-                     std::move(pairing_setup), start_paused);
+                     std::move(pairing_setup), start_paused, settings.allow_when_idle);
   platform::ServiceHostOptions options;
   Result<int> rc = console ? platform::run_in_console(app, options) : platform::run_as_service(app, options);
   if (!rc.is_ok()) return fail(rc.status());

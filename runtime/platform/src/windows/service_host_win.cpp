@@ -179,6 +179,24 @@ Status install_service(const ServiceInstallSpec& spec, const std::wstring& execu
   return Status::ok();
 }
 
+Status set_service_start_type(const std::string& name, ServiceStartType type) {
+  ScHandle scm{::OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT)};
+  if (scm.h == nullptr) return win_status("OpenSCManagerW");
+  ScHandle svc{::OpenServiceW(scm.h, widen(name).c_str(), SERVICE_CHANGE_CONFIG)};
+  if (svc.h == nullptr) return win_status("OpenServiceW");
+  const DWORD start = type == ServiceStartType::kDemand     ? SERVICE_DEMAND_START
+                      : type == ServiceStartType::kDisabled ? SERVICE_DISABLED
+                                                            : SERVICE_AUTO_START;
+  // Only the start type changes: binary path, account and everything else are left as installed.
+  if (!::ChangeServiceConfigW(svc.h, SERVICE_NO_CHANGE, start, SERVICE_NO_CHANGE, nullptr, nullptr, nullptr, nullptr,
+                              nullptr, nullptr, nullptr))
+    return win_status("ChangeServiceConfigW");
+  SERVICE_DELAYED_AUTO_START_INFO delayed{type == ServiceStartType::kAutoDelayed ? TRUE : FALSE};
+  if (start == SERVICE_AUTO_START && !::ChangeServiceConfig2W(svc.h, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, &delayed))
+    return win_status("SERVICE_CONFIG_DELAYED_AUTO_START_INFO");
+  return Status::ok();
+}
+
 Status uninstall_service(const std::string& name) {
   ScHandle scm{::OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT)};
   if (scm.h == nullptr) return win_status("OpenSCManagerW");

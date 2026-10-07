@@ -56,6 +56,16 @@ bool HelperActivityMonitor::paused() const {
   return paused_locked(clock_());
 }
 
+void HelperActivityMonitor::set_participation_allowed(bool allowed) {
+  std::lock_guard lock(mu_);
+  participation_allowed_ = allowed;
+}
+
+bool HelperActivityMonitor::participation_allowed() const {
+  std::lock_guard lock(mu_);
+  return participation_allowed_;
+}
+
 bool HelperActivityMonitor::reports_fresh() const {
   std::lock_guard lock(mu_);
   if (sessions_.empty()) return false;
@@ -68,7 +78,7 @@ Result<ActivitySample> HelperActivityMonitor::sample() {
   std::lock_guard lock(mu_);
   const auto now = clock_();
   const ActivitySample in_use{0, false};
-  if (paused_locked(now)) return in_use;
+  if (paused_locked(now) || !participation_allowed_) return in_use;
   if (sessions_.empty()) {
     if (headless_) return ActivitySample{kHeadlessIdleSeconds, true};
     return in_use;  // no report yet: fail closed

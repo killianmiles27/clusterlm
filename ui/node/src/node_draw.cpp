@@ -82,6 +82,8 @@ void draw_node_ui(NodeViewModel& vm, NodeDrawState& ui, float display_w, float d
   ImGui::Checkbox("Help only when this PC is idle", &ui.edit.allow_when_idle);
   ImGui::Checkbox("Only on AC power", &ui.edit.ac_power_only);
   ImGui::Checkbox("Start with Windows", &ui.edit.start_with_windows);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Saved now; an administrator applies it with \"clusterlm-node-service --apply-startup\".");
   input_u32("Temporary storage limit (GB, 0 = no limit)", &ui.edit.temp_storage_limit_gb, 1);
   if (ui.force_sections_open) ImGui::SetNextItemOpen(true);
   if (ImGui::CollapsingHeader("Advanced resource limits")) {

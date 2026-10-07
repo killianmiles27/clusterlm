@@ -117,3 +117,19 @@ TEST_CASE("pause (timed and indefinite) forces in-use until it expires or is res
   f.mon.resume();
   CHECK(f.sample().idle_seconds == 900);
 }
+
+TEST_CASE("the participation policy and the user's pause are independent") {
+  platform::HelperActivityMonitor m(std::chrono::milliseconds(5000));
+  m.set_no_interactive_sessions(true);  // nobody logged on: idle
+  REQUIRE(m.sample().value().session_locked);
+  m.pause(std::nullopt);                // user pauses from the tray
+  m.set_participation_allowed(false);   // settings: do not offer this PC
+  m.set_participation_allowed(true);    // settings: offer it again
+  CHECK(m.paused());                    // ... the user's pause is still in force
+  CHECK_FALSE(m.sample().value().session_locked);
+  m.resume();
+  CHECK(m.sample().value().session_locked);
+  m.set_participation_allowed(false);   // the policy alone also keeps the PC in use
+  CHECK_FALSE(m.paused());
+  CHECK_FALSE(m.sample().value().session_locked);
+}
