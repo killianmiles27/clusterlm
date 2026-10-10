@@ -80,7 +80,21 @@ Status add_norm(GgufWriter& w, const std::string& name, std::uint64_t n, std::ui
   return w.add_tensor(name, {n}, GgmlType::kF32, std::move(bytes));
 }
 
+const char* arch_name(TinyArch a) {
+  switch (a) {
+    case TinyArch::kLlama: return "llama";
+    case TinyArch::kLlamaMoe: return "llama";  // Mixtral-style: the llama architecture with expert tensors
+    case TinyArch::kQwen2: return "qwen2";
+    case TinyArch::kQwen3: return "qwen3";
+    case TinyArch::kGemma: return "gemma";
+    case TinyArch::kPhi3: return "phi3";
+  }
+  return "llama";
+}
+
 }  // namespace
+
+const char* tiny_arch_name(TinyArch a) { return arch_name(a); }
 
 Status write_tiny_llama_gguf(const std::filesystem::path& path, const TinyLlamaSpec& sp) {
   if (sp.layers == 0 || sp.hidden == 0 || sp.heads == 0 || sp.kv_heads == 0 || sp.heads % sp.kv_heads != 0 ||
@@ -88,19 +102,33 @@ Status write_tiny_llama_gguf(const std::filesystem::path& path, const TinyLlamaS
     return make_error(ErrorCode::kInvalidArgument, "tiny llama spec: inconsistent dimensions");
   const std::uint64_t H = sp.hidden, hd = sp.hidden / sp.heads, kvd = hd * sp.kv_heads;
   if (hd % 2 != 0) return make_error(ErrorCode::kInvalidArgument, "tiny llama spec: head dim must be even for RoPE");
+  const TinyArch arch = sp.arch;
+  const bool moe = arch == TinyArch::kLlamaMoe;
+  if (moe && (sp.experts < 2 || sp.experts_used == 0 || sp.experts_used > sp.experts))
+    return make_error(ErrorCode::kInvalidArgument, "tiny llama spec: MoE needs experts >= 2 and 1 <= used <= experts");
+  const std::string a = arch_name(arch);
+  const bool tied = sp.tied_embeddings || arch == TinyArch::kGemma;  // gemma never stores an output matrix
   GgufWriter w;
-  w.add_string("general.architecture", "llama");
-  w.add_string("general.name", "clusterlm-tiny-llama");
-  w.add_u32("llama.context_length", sp.context);
-  w.add_u32("llama.embedding_length", sp.hidden);
-  w.add_u32("llama.block_count", sp.layers);
-  w.add_u32("llama.feed_forward_length", sp.ff);
-  w.add_u32("llama.attention.head_count", sp.heads);
-  w.add_u32("llama.attention.head_count_kv", sp.kv_heads);
-  w.add_f32("llama.attention.layer_norm_rms_epsilon", 1e-5f);
-  w.add_u32("llama.rope.dimension_count", static_cast<std::uint32_t>(hd));
-  w.add_f32("llama.rope.freq_base", 10000.0f);
-  w.add_u32("llama.vocab_size", sp.vocab);
+  w.add_string("general.architecture", a);
+  w.add_string("general.name", std::string("clusterlm-tiny-") + a);
+  w.add_u32(a + ".context_length", sp.context);
+  w.add_u32(a + ".embedding_length", sp.hidden);
+  w.add_u32(a + ".block_count", sp.layers);
+  w.add_u32(a + ".feed_forward_length", sp.ff);
+  w.add_u32(a + ".attention.head_count", sp.heads);
+  w.add_u32(a + ".attention.head_count_kv", sp.kv_heads);
+  w.add_f32(a + ".attention.layer_norm_rms_epsilon", 1e-5f);
+  w.add_u32(a + ".rope.dimension_count", static_cast<std::uint32_t>(hd));
+  w.add_f32(a + ".rope.freq_base", 10000.0f);
+  if (arch == TinyArch::kGemma) {
+    w.add_u32(a + ".attention.key_length", static_cast<std::uint32_t>(hd));
+    w.add_u32(a + ".attention.value_length", static_cast<std::uint32_t>(hd));
+  }
+  if (moe) {
+    w.add_u32(a + ".expert_count", sp.experts);
+    w.add_u32(a + ".expert_used_count", sp.experts_used);
+  }
+  w.add_u32(a + ".vocab_size", sp.vocab);
   w.add_string("tokenizer.ggml.model", "no_vocab");
 
   std::uint64_t seed = sp.seed * 1000003ull;
@@ -108,20 +136,44 @@ Status write_tiny_llama_gguf(const std::filesystem::path& path, const TinyLlamaS
   const float inv_sqrt_h = 1.0f / std::sqrt(static_cast<float>(sp.hidden));
   CLM_RETURN_IF_ERROR(add_matrix(w, "token_embd.weight", {H, sp.vocab}, 1.0f, false, next()));
   CLM_RETURN_IF_ERROR(add_norm(w, "output_norm.weight", H, next()));
-  CLM_RETURN_IF_ERROR(add_matrix(w, "output.weight", {H, sp.vocab}, 3.0f * inv_sqrt_h, false, next()));
+  if (!tied) CLM_RETURN_IF_ERROR(add_matrix(w, "output.weight", {H, sp.vocab}, 3.0f * inv_sqrt_h, false, next()));
+  const float wq = 2.0f * inv_sqrt_h;
   for (std::uint32_t L = 0; L < sp.layers; ++L) {
     const std::string p = "blk." + std::to_string(L) + ".";
     const bool h = sp.f16_matrices;
     CLM_RETURN_IF_ERROR(add_norm(w, p + "attn_norm.weight", H, next()));
-    CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_q.weight", {H, H}, 2.0f * inv_sqrt_h, h, next()));
-    CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_k.weight", {H, kvd}, 2.0f * inv_sqrt_h, h, next()));
-    CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_v.weight", {H, kvd}, 2.0f * inv_sqrt_h, h, next()));
-    CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_output.weight", {H, H}, 2.0f * inv_sqrt_h, h, next()));
+    if (arch == TinyArch::kPhi3) {
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_qkv.weight", {H, H + 2 * kvd}, wq, h, next()));
+    } else {
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_q.weight", {H, H}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_k.weight", {H, kvd}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_v.weight", {H, kvd}, wq, h, next()));
+    }
+    if (arch == TinyArch::kQwen2) {  // Qwen2 carries biases on the Q/K/V projections
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_q.bias", {H}, 0.1f, false, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_k.bias", {kvd}, 0.1f, false, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_v.bias", {kvd}, 0.1f, false, next()));
+    }
+    if (arch == TinyArch::kQwen3) {  // Qwen3 normalises Q and K per head
+      CLM_RETURN_IF_ERROR(add_norm(w, p + "attn_q_norm.weight", hd, next()));
+      CLM_RETURN_IF_ERROR(add_norm(w, p + "attn_k_norm.weight", hd, next()));
+    }
+    CLM_RETURN_IF_ERROR(add_matrix(w, p + "attn_output.weight", {H, H}, wq, h, next()));
     CLM_RETURN_IF_ERROR(add_norm(w, p + "ffn_norm.weight", H, next()));
-    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_gate.weight", {H, sp.ff}, 2.0f * inv_sqrt_h, h, next()));
-    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_up.weight", {H, sp.ff}, 2.0f * inv_sqrt_h, h, next()));
-    CLM_RETURN_IF_ERROR(
-        add_matrix(w, p + "ffn_down.weight", {sp.ff, H}, 2.0f / std::sqrt(static_cast<float>(sp.ff)), h, next()));
+    const float wd = 2.0f / std::sqrt(static_cast<float>(sp.ff));
+    if (moe) {
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_gate_inp.weight", {H, sp.experts}, wq, false, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_gate_exps.weight", {H, sp.ff, sp.experts}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_up_exps.weight", {H, sp.ff, sp.experts}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_down_exps.weight", {sp.ff, H, sp.experts}, wd, h, next()));
+    } else if (arch == TinyArch::kPhi3) {  // fused gate+up
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_up.weight", {H, 2ull * sp.ff}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_down.weight", {sp.ff, H}, wd, h, next()));
+    } else {
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_gate.weight", {H, sp.ff}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_up.weight", {H, sp.ff}, wq, h, next()));
+      CLM_RETURN_IF_ERROR(add_matrix(w, p + "ffn_down.weight", {sp.ff, H}, wd, h, next()));
+    }
   }
   return w.write(path);
 }
