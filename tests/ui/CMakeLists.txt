@@ -14,3 +14,7 @@ target_compile_definitions(test_ui_ipc_father PRIVATE
   CLUSTERLM_FATHER_AGENT_BINARY="$<TARGET_FILE:clusterlm-father-agent>")
 add_dependencies(test_ui_ipc_father clusterlm-father-agent)
 set_tests_properties(test_ui_ipc_father PROPERTIES LABELS "integration;slow" TIMEOUT 300)
+
+# Host management views (workstream E)
+clusterlm_test(test_ui_host_viewmodels SOURCES test_host_viewmodels.cpp DEPS clusterlm_ui_host)
+clusterlm_test(test_ui_host_draw_smoke SOURCES test_host_draw_smoke.cpp DEPS clusterlm_ui_host_draw)

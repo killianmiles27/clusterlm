@@ -13,4 +13,5 @@ target_compile_definitions(clusterlm_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIO
 
 add_subdirectory(common)
 add_subdirectory(father)
+add_subdirectory(host)
 add_subdirectory(node)
