@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "clusterlm/common/log.hpp"
+#include "clusterlm/migration/migration.hpp"
 #include "clusterlm/platform/durable_file.hpp"
 
 namespace clusterlm::config {
@@ -23,12 +24,21 @@ template <> struct Traits<FatherSettings> {
   static Result<FatherSettings> parse(std::string_view t) { return father_settings_from_json(t); }
   static std::string dump(const FatherSettings& s) { return to_json(s); }
   static Status check(const FatherSettings& s) { return validate(s); }
+  // Version 1 documents (tiers) are migrated to the profile layout without any caller wiring: an upgrade must never move a
+  // working installation's settings aside.
+  static MigrationHook default_migration() {
+    return [](std::string_view doc, int from) -> Result<std::string> {
+      if (from != 1) return make_error(ErrorCode::kVersionMismatch, "no migration from settings version " + std::to_string(from));
+      return migration::migrate_father_settings_v1_to_v2(doc);
+    };
+  }
 };
 template <> struct Traits<NodeSettings> {
   static constexpr int kVersion = kNodeSettingsVersion;
   static Result<NodeSettings> parse(std::string_view t) { return node_settings_from_json(t); }
   static std::string dump(const NodeSettings& s) { return to_json(s); }
   static Status check(const NodeSettings& s) { return validate(s); }
+  static MigrationHook default_migration() { return {}; }
 };
 
 Status io_error(const std::string& what, const std::error_code& ec) {
@@ -106,14 +116,15 @@ Result<std::unique_ptr<SettingsStore<T>>> SettingsStore<T>::open(fs::path file, 
                       "settings file was written by a newer ClusterLM (version " + std::to_string(version) + ")");
 
   if (version < Tr::kVersion) {
-    if (!migrate || version < 0) return recover("unsupported old version");
+    const MigrationHook hook = migrate ? migrate : Tr::default_migration();
+    if (!hook || version < 0) return recover("unsupported old version");
     fs::path backup = unique_sibling(f, "v" + std::to_string(version) + ".bak");
     fs::copy_file(f, backup, fs::copy_options::none, ec);
     if (ec) return io_error("could not back up the settings file before migration", ec);
     (void)platform::restrict_to_owner(backup);
     std::string current = text;
     for (int v = version; v < Tr::kVersion; ++v) {
-      auto next = migrate(current, v);
+      auto next = hook(current, v);
       if (!next.is_ok()) return recover("migration failed");
       current = std::move(next).value();
     }

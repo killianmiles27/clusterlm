@@ -56,6 +56,8 @@ class ModelLibrary {
   std::string to_json() const;
   static Result<ModelLibrary> from_json(std::string_view json);
 
+  friend bool operator==(const ModelLibrary&, const ModelLibrary&) = default;
+
  private:
   std::vector<ModelRecord> records_;
   std::vector<std::string> scan_roots_;
