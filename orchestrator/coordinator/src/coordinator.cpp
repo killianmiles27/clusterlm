@@ -189,6 +189,9 @@ class Inbox {
     discarded_.push_back(corr);
     if (discarded_.size() > 64) discarded_.erase(discarded_.begin());
   }
+  // Waits return kAborted while `flag` is set (Coordinator::interrupt()).
+  void set_interrupt(const std::atomic<bool>* flag) { interrupt_ = flag; }
+  static constexpr std::chrono::milliseconds kInterruptSlice{50};
   // Drop everything queued (results and loss notices of a previous plan's streams).
   void clear() {
     std::lock_guard lock(mu_);
@@ -208,7 +211,11 @@ class Inbox {
         }
       }
       if (closed_) return *closed_;
-      if (cv_.wait_until(lock, deadline) == std::cv_status::timeout)
+      if (interrupt_ && interrupt_->load()) return make_error(ErrorCode::kAborted, "interrupted");
+      // Wait in slices so an interrupt() from another thread is noticed within kInterruptSlice without a registry of
+      // every inbox; the overall timeout is unchanged.
+      const auto slice = std::min(deadline, SteadyClock::now() + kInterruptSlice);
+      if (cv_.wait_until(lock, slice) == std::cv_status::timeout && SteadyClock::now() >= deadline)
         return make_error(ErrorCode::kDeadlineExceeded, "timed out waiting for reply");
     }
   }
@@ -219,6 +226,7 @@ class Inbox {
   std::deque<ReceivedMessage> items_;
   std::vector<std::uint64_t> discarded_;
   std::optional<Status> closed_;
+  const std::atomic<bool>* interrupt_ = nullptr;
 };
 
 // Correlation id marking a synthetic "this stream failed" message pushed into a shared inbox.
@@ -415,6 +423,7 @@ struct Coordinator::Impl {
     n.device_id = ack.device_id;
     n.lease = ack.lease;
     s->sink = sink;
+    s->inbox.set_interrupt(&interrupted);
     s->name = n.endpoint.name;
     if (start_reader) s->start();
     return s;
@@ -693,6 +702,8 @@ struct Coordinator::Impl {
   // (bounded); decode has exactly one window in flight.
 
   std::atomic<bool> cancel_prepare{false};
+  // Set by Coordinator::interrupt() from any thread; every wait for a Node then fails with kAborted. Cleared by release().
+  std::atomic<bool> interrupted{false};
   ProgressTracker progress;
 
   struct Flight {
@@ -969,6 +980,7 @@ Coordinator::~Coordinator() {
 
 Result<std::unique_ptr<Coordinator>> Coordinator::create(CoordinatorConfig config) {
   auto impl = std::make_unique<Impl>();
+  impl->results.set_interrupt(&impl->interrupted);
   impl->cfg = std::move(config);
   CLM_ASSIGN_OR_RETURN(impl->store, objects::CanonicalModelStore::open(impl->cfg.model_dir));
   impl->backend = impl->cfg.backend ? impl->cfg.backend : std::shared_ptr<domain::BackendAdapter>(domain::make_reference_backend());
@@ -1343,6 +1355,9 @@ Result<GenerationResult> Coordinator::generate(const GenerationRequest& request)
 
 void Coordinator::cancel_prepare() { impl_->cancel_prepare.store(true); }
 
+void Coordinator::interrupt() { impl_->interrupted.store(true); }
+bool Coordinator::interrupted() const { return impl_->interrupted.load(); }
+
 Status Coordinator::enable_routing_aggregation(bool on) {
   if (!impl_->prepared) return make_error(ErrorCode::kFailedPrecondition, "no prepared plan");
   for (auto& [id, d] : impl_->local) CLM_RETURN_IF_ERROR(d->enable_routing_aggregation(on));
@@ -1360,6 +1375,7 @@ Result<std::vector<domain::RoutingAggregate>> Coordinator::routing_aggregates() 
 
 Result<ReleaseReport> Coordinator::release() {
   auto& im = *impl_;
+  im.interrupted.store(false);   // release must be able to wait for the Nodes' replies
   ReleaseReport report;
   for (auto& n : im.nodes) {
     if (!n->control || !n->stage) continue;

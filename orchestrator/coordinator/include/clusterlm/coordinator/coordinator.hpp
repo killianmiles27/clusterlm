@@ -304,6 +304,13 @@ class Coordinator {
   Result<GenerationResult> generate(const GenerationRequest& request);
   // Cancel an in-progress prepare() (provisioning stops; the partial lease is released).
   void cancel_prepare();
+  // Thread-safe, callable from any thread: every wait for a Node (replies, StageResults, commit acknowledgements) fails
+  // with kAborted within ~50 ms instead of running to its timeout (window_timeout is 30 s by default), so a blocked
+  // generate()/prepare() returns promptly and invalidates its session as for any stage failure. The scheduler uses it
+  // for plan invalidation (cancel_timeout). Sticky until release(), which clears it and must then run on the thread
+  // that owns the Coordinator. It cannot interrupt Father's own domain compute already in progress.
+  void interrupt();
+  bool interrupted() const;
   // Calibration: aggregate routed-expert selection counts in Father's local domains (counts only). Routing is a
   // property of model and data, so calibration runs use a Father-only plan where every layer is local.
   Status enable_routing_aggregation(bool on);
