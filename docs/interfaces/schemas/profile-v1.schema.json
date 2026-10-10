@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://clusterlm.invalid/schemas/profile-v1.schema.json",
-  "title": "ClusterLM execution profile, schema v1",
-  "description": "Frozen by Thread 0 (ADR 0400). Unknown top-level fields are rejected on import and ignored on local load (forward compatible within a version). See docs/interfaces/profile-schema-v1.md.",
+  "title": "ClusterLM execution profile, schema v1 (contract revision v1.1)",
+  "description": "Frozen by Thread 0 (ADR 0400), revised by ADR 0407. Unknown fields are rejected at every level, on import AND on local load (no silent drops, typo-safe); a document that fails is quarantined individually, never the whole settings file (profile-schema-v1.md section 1a). Writers omit optional fields that equal their default, so documents that do not use a later optional addition stay readable by older readers. See docs/interfaces/profile-schema-v1.md.",
   "type": "object",
   "required": [
     "schema",
@@ -37,12 +37,22 @@
     },
     "revision": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
     "example_of": {
       "type": "string",
-      "maxLength": 64,
-      "description": "Set on profiles shipped in the example set / produced by migration, e.g. 'tier:fast'."
+      "pattern": "^[a-z0-9][a-z0-9:_-]{0,63}$",
+      "description": "Set on profiles shipped in the example set / produced by migration, e.g. 'tier:fast'. A label only: it grants nothing."
+    },
+    "qualification_experiments": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/hq_id"
+      },
+      "description": "Hardware-qualification experiment ids (bench/qualification/experiments.json) whose results would qualify THIS profile's model+topology. A reference, never a claim; carried over from the tier catalog so migration is lossless (ADR 0407)."
     },
     "model": {
       "type": "object",
@@ -70,8 +80,8 @@
             },
             "quant": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 32
+              "pattern": "^[A-Za-z0-9_+.-]{1,32}$",
+              "description": "Dominant tensor type by bytes, canonical ggml name (library ModelRecord.quant); compared case-insensitively. Never rewritten or approximated."
             },
             "artifact_id": {
               "type": [
@@ -86,14 +96,47 @@
                 "null"
               ],
               "pattern": "^[0-9a-f]{64}$",
-              "description": "Manifest root (hex SHA-256). null = unpinned: readiness refuses it until the Host user confirms the inspected manifest."
+              "description": "Manifest root (hex SHA-256). null = unpinned: readiness refuses it until the Host user confirms the inspected manifest (library pinned_root)."
+            },
+            "expected_files": {
+              "type": "array",
+              "maxItems": 64,
+              "description": "Published file roles/names/approximate sizes (catalog ExpectedFile). Names are bare file names, never paths. Used for size estimates before import; never a trust input.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "role"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,31}$"
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[^/\\\\:*?\"<>|]{1,255}$"
+                  },
+                  "approx_bytes": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                }
+              }
             }
           }
         },
         "library_id": {
           "type": "string",
-          "pattern": "^mdl_[a-z0-9][a-z0-9_]{2,47}$",
-          "description": "Local only; removed on export."
+          "pattern": "^mdl_[0-9a-f]{24}$",
+          "description": "Local only; removed on export. Disambiguates between library records; it never bypasses the identity or pin check (profile-schema-v1.md section 3)."
         }
       }
     },
@@ -105,21 +148,31 @@
       "additionalProperties": false,
       "properties": {
         "id": {
-          "enum": [
-            "llama-local",
-            "strata-hybrid",
-            "reference"
-          ],
-          "description": "Descriptor id. Extended by ADR when a backend is added."
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,31}$",
+          "description": "Backend descriptor id (llama-local, strata-hybrid, reference today). An id this build has no descriptor for is NOT a schema error: the profile loads and reports readiness 'unavailable' (backend not available in this build)."
         },
         "min_contract_version": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 1000,
           "default": 1
         },
         "options": {
           "type": "object",
-          "description": "Backend-specific, validated by the backend descriptor's options schema; unknown keys rejected."
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "additionalProperties": {
+            "type": [
+              "integer",
+              "boolean",
+              "string"
+            ],
+            "maxLength": 64
+          },
+          "description": "Backend-specific scalar options, validated against the descriptor's options_schema (restricted subset); unknown keys rejected. Options never override placement decisions or memory admission."
         }
       }
     },
@@ -145,11 +198,12 @@
           "type": "array",
           "items": {
             "type": "integer",
-            "minimum": 256
+            "minimum": 256,
+            "maximum": 4194304
           },
           "maxItems": 16,
           "uniqueItems": true,
-          "description": "Context sizes placement is searched for. Defaults to the placement workload's 4K..128K list clipped to max_tokens. Qualification is NOT stored here (it is computed from evidence)."
+          "description": "Context sizes placement is searched for, ascending. Defaults to the placement workload's 4K..128K list clipped to max_tokens. max_tokens must be one of them when present. Qualification is NOT stored here (it is computed from evidence)."
         }
       }
     },
@@ -163,8 +217,8 @@
         "slots": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 8,
-          "description": "Pipeline order: slots[0] must be the host slot. Order of worker slots is stage order unless placement.mode is 'auto' and the backend allows reordering.",
+          "maxItems": 9,
+          "description": "Pipeline order: slots[0] must be the host slot; at most 8 worker slots. Order of worker slots is stage order unless placement.mode is 'auto' and the backend allows reordering.",
           "items": {
             "$ref": "#/$defs/slot"
           }
@@ -172,12 +226,14 @@
         "min_workers": {
           "type": "integer",
           "minimum": 0,
-          "default": 0
+          "maximum": 8,
+          "description": "Default: number of non-optional worker slots. Must be >= that number."
         },
         "max_workers": {
           "type": "integer",
           "minimum": 0,
-          "default": 0
+          "maximum": 8,
+          "description": "Default: number of worker slots. Must be <= that number and <= the backend's CompatReport.max_workers."
         }
       }
     },
@@ -195,30 +251,45 @@
           "default": "auto"
         },
         "host_vram_margin_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         },
         "host_ram_margin_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         },
         "worker_vram_margin_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         },
         "worker_ram_margin_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         },
         "max_worker_temp_storage_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         }
       }
     },
     "placement": {
       "type": "object",
       "additionalProperties": false,
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "manual"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "manual"
+        ]
+      },
+      "else": {
+        "properties": {
+          "manual": false
+        }
+      },
       "properties": {
         "mode": {
           "enum": [
@@ -241,29 +312,33 @@
           "required": [
             "stages"
           ],
-          "description": "Advanced. Honoured only if backend.capabilities.manual_layer_ranges is true; validated by the same plan admission as automatic plans.",
+          "description": "Advanced. Required iff mode is 'manual'. Honoured only if the backend descriptor's execution.manual_layer_ranges is true; stage slots must exist, ranges must be ascending, non-empty, contiguous and cover the model; validated by the same plan admission as automatic plans.",
           "properties": {
             "stages": {
               "type": "array",
               "minItems": 1,
-              "maxItems": 8,
+              "maxItems": 9,
               "items": {
                 "type": "object",
                 "required": [
-                  "slot"
+                  "slot",
+                  "first_layer",
+                  "end_layer"
                 ],
                 "additionalProperties": false,
                 "properties": {
                   "slot": {
-                    "type": "string"
+                    "$ref": "#/$defs/slot_name"
                   },
                   "first_layer": {
                     "type": "integer",
-                    "minimum": 0
+                    "minimum": 0,
+                    "maximum": 65535
                   },
                   "end_layer": {
                     "type": "integer",
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 65536
                   }
                 }
               }
@@ -284,7 +359,8 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 16,
-          "default": 1
+          "default": 1,
+          "description": "Effective verification width is max_q when enabled, else 1. Must be <= descriptor speculation.max_q; max_q > 1 requires descriptor speculation.window_commit_abort."
         }
       }
     },
@@ -310,18 +386,19 @@
             "manual"
           ],
           "default": "on-demand",
-          "description": "on-demand: first API/chat request triggers an async prepare job; keep-ready: prepare when the required slots are available and keep until idle timeout; manual: only an explicit prepare call."
+          "description": "on-demand: a request (or explicit call) starts an async prepare job; idle release after release_after_idle_seconds. keep-ready: as on-demand (settings v1 keep_ready.enabled) - the difference is only the idle default users expect; it does NOT prepare by itself. manual: only an explicit prepare call. Automatic preparation is prepare_when_available, never implied."
         },
-        "release_after_idle_minutes": {
+        "release_after_idle_seconds": {
           "type": "integer",
           "minimum": 0,
-          "default": 30,
-          "description": "0 = never (only while the user keeps the lease policy permitting it)."
+          "maximum": 604800,
+          "default": 60,
+          "description": "Release the plan/leases after this much inactivity. 0 = no idle release (released still on local-user return, policy, swap, shutdown). Replaces v1.0 release_after_idle_minutes (could not express the v1 settings' 60 s default; ADR 0407)."
         },
         "prepare_when_available": {
           "type": "boolean",
           "default": false,
-          "description": "Opt-in automatic preparation of this profile when its workers become available. Never default; never applies to profiles with preparation=manual."
+          "description": "Opt-in automatic preparation of this profile when its workers become available. Never default; not allowed with preparation=manual."
         }
       }
     },
@@ -352,6 +429,21 @@
           "default": true,
           "description": "Host-side chat only; API clients receive a structured error and decide."
         }
+      },
+      "if": {
+        "properties": {
+          "then": {
+            "const": "fallback-profile"
+          }
+        },
+        "required": [
+          "then"
+        ]
+      },
+      "then": {
+        "required": [
+          "fallback_profile_id"
+        ]
       }
     },
     "exposure": {
@@ -364,15 +456,29 @@
           "description": "List this profile in /v1/models and accept it as a model id."
         },
         "api_model_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
-          "description": "The id API clients send. Independent of name; set at creation, changing it is an explicit breaking action."
+          "$ref": "#/$defs/api_model_id",
+          "description": "The id API clients send. Required when api is true. Independent of name; set at creation, changing it is an explicit breaking action."
         },
         "allow_lan": {
           "type": "boolean",
           "default": false,
           "description": "Visible to LAN-authenticated keys. Ignored while the server itself is localhost-only."
         }
+      },
+      "if": {
+        "properties": {
+          "api": {
+            "const": true
+          }
+        },
+        "required": [
+          "api"
+        ]
+      },
+      "then": {
+        "required": [
+          "api_model_id"
+        ]
       }
     },
     "goals": {
@@ -390,7 +496,7 @@
         "properties": {
           "metric": {
             "type": "string",
-            "maxLength": 48
+            "pattern": "^[a-z0-9_.<>-]{1,48}$"
           },
           "value": {
             "type": "number"
@@ -401,8 +507,7 @@
             ]
           },
           "experiment": {
-            "type": "string",
-            "maxLength": 32
+            "$ref": "#/$defs/hq_id"
           }
         }
       }
@@ -413,6 +518,24 @@
       "type": "string",
       "pattern": "^prof_[a-z0-9][a-z0-9_]{2,47}$"
     },
+    "api_model_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "hq_id": {
+      "type": "string",
+      "pattern": "^HQ-[A-Z0-9]+-[0-9]+$",
+      "maxLength": 32
+    },
+    "mib": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16777216
+    },
+    "slot_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+    },
     "slot": {
       "type": "object",
       "required": [
@@ -422,8 +545,7 @@
       "additionalProperties": false,
       "properties": {
         "slot": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+          "$ref": "#/$defs/slot_name"
         },
         "kind": {
           "enum": [
@@ -454,10 +576,9 @@
             }
           },
           "then": {
-            "not": {
-              "required": [
-                "select"
-              ]
+            "properties": {
+              "select": false,
+              "optional": false
             }
           }
         },
@@ -483,6 +604,7 @@
         "mode"
       ],
       "additionalProperties": false,
+      "description": "Exactly the fields of its mode: binding {binding, requirements?}; machine {machine}; requirements {requirements}.",
       "properties": {
         "mode": {
           "enum": [
@@ -499,7 +621,7 @@
         "machine": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "Device fingerprint. Local only; removed on export."
+          "description": "Device fingerprint. Local only; converted to a binding on export."
         },
         "requirements": {
           "$ref": "#/$defs/requirements"
@@ -517,7 +639,10 @@
           "then": {
             "required": [
               "binding"
-            ]
+            ],
+            "properties": {
+              "machine": false
+            }
           }
         },
         {
@@ -531,7 +656,11 @@
           "then": {
             "required": [
               "machine"
-            ]
+            ],
+            "properties": {
+              "binding": false,
+              "requirements": false
+            }
           }
         },
         {
@@ -545,7 +674,11 @@
           "then": {
             "required": [
               "requirements"
-            ]
+            ],
+            "properties": {
+              "binding": false,
+              "machine": false
+            }
           }
         }
       ]
@@ -553,38 +686,41 @@
     "requirements": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Resource-based worker requirement, matched against measured/declared Worker capability. Hints on a binding slot are optional extras: when present on a 'binding' selector they are checked against the bound machine.",
+      "description": "Resource-based worker requirement, matched against the Worker's last advertised capability (measured/declared). On a 'binding' selector these are optional extra checks against the bound machine.",
       "properties": {
         "gpu_vendor": {
           "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
           "items": {
             "enum": [
               "nvidia",
               "amd",
-              "intel",
-              "any"
+              "intel"
             ]
-          }
+          },
+          "description": "Absent = any vendor. ('any' of v1.0 removed: it made ['nvidia','any'] ambiguous.)"
         },
         "min_vram_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         },
         "min_ram_mib": {
-          "type": "integer",
-          "minimum": 0
+          "$ref": "#/$defs/mib"
         },
         "min_compute_capability": {
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+$"
+          "pattern": "^[0-9]{1,2}\\.[0-9]{1,2}$"
         },
         "min_link_mbit": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 1000000
         },
         "cpu_only_ok": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "true: a Worker without a usable GPU satisfies the selector (gpu_vendor and min_vram_mib then apply only if it has a GPU)."
         }
       }
     }

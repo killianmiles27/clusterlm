@@ -6,13 +6,31 @@
   "description": "Host plus laptop-class and designated-3060 Workers (migrated from tier 'ultra').",
   "revision": 1,
   "example_of": "tier:ultra",
+  "qualification_experiments": [
+    "HQ-PERF-01",
+    "HQ-PERF-02",
+    "HQ-PERF-03",
+    "HQ-PERF-04"
+  ],
   "model": {
     "identity": {
       "family": "Qwen3.8-Flash-Next",
       "display_name": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
       "quant": "IQ3_S",
       "artifact_id": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
-      "expected_root_hash": null
+      "expected_root_hash": null,
+      "expected_files": [
+        {
+          "role": "transformer-shard",
+          "name": null,
+          "approx_bytes": 54800000000
+        },
+        {
+          "role": "lookup-shard",
+          "name": null,
+          "approx_bytes": 28800000000
+        }
+      ]
     }
   },
   "backend": {
@@ -70,7 +88,7 @@
   },
   "lifecycle": {
     "preparation": "on-demand",
-    "release_after_idle_minutes": 30,
+    "release_after_idle_seconds": 60,
     "prepare_when_available": false
   },
   "on_worker_loss": {

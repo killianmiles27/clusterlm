@@ -9,7 +9,7 @@ build or test run.
 |---|---|
 | Spec reference copy (+ Part 2 knowledge split) | `docs/spec/` (`clusterlm-project-spec.md` = unmodified original; `00`–`07` cut from it by line range, no wording changes); copy at `/mnt/project-files/spec/clusterlm-project-spec.md` |
 | Dependency map, workstream plan, file ownership, A sequencing, risks | `docs/plan.md` |
-| Frozen interface v1 | `docs/interfaces/README.md`, `profile-schema-v1.md`, `backend-capability-v1.md`, `scheduler-admission-v1.md`, `auth-scopes-v1.md`, `readiness-state-machine-v1.md` |
+| Frozen interface v1 (revised to v1.1 by ADR 0407, Opus-reviewed in A) | `docs/interfaces/README.md`, `profile-schema-v1.md`, `backend-capability-v1.md`, `scheduler-admission-v1.md`, `auth-scopes-v1.md`, `readiness-state-machine-v1.md` |
 | Machine-readable contracts | `docs/interfaces/schemas/{profile-v1,routing-alias-v1,backend-descriptor-v1}.schema.json` |
 | Examples (Fast/Strong/Ultra migrated + generic + alias + 3 descriptors) | `docs/interfaces/examples/*.json` |
 | Example/schema guard | `docs/interfaces/validate_examples.py` |

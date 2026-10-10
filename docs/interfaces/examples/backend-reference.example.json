@@ -7,14 +7,17 @@
   "role_in_product": "development-only",
   "model_support": {
     "containers": [
+      "gguf",
       "manifest-native"
     ],
     "tensor_formats": [
-      "fixture-fp32"
+      "F32",
+      "Q8_0"
     ],
     "families": [
       {
-        "family_match": "fixture-*",
+        "family_match": "*",
+        "architecture": "clusterlm-fixture",
         "status": "Supported and qualified",
         "evidence": [
           "tests/domain",
@@ -26,7 +29,8 @@
   },
   "devices": {
     "cpu": true,
-    "gpu_vendors": []
+    "gpu_vendors": [],
+    "requires_runtime": []
   },
   "execution": {
     "single_host": true,
@@ -49,6 +53,7 @@
       "recurrent"
     ],
     "supports_rollback": "native",
+    "max_sessions_per_domain": 1,
     "per_client_isolation": true
   },
   "speculation": {
@@ -66,6 +71,7 @@
   ],
   "qualification": {
     "label": "Supported and qualified",
-    "notes": "Qualified only for what it is: the deterministic test backend. This label must never be shown beside a real model."
+    "notes": "Qualified only for what it is: the deterministic test backend. This label must never be shown beside a real model.",
+    "hardware_experiments": []
   }
 }

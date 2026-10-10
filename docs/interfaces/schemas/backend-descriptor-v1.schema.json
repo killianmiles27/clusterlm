@@ -1,84 +1,85 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://clusterlm.invalid/schemas/backend-descriptor-v1.schema.json",
-  "title": "ClusterLM backend capability descriptor, contract v1 (ADR 0401)",
+  "title": "ClusterLM backend capability descriptor, contract v1 (ADR 0401; contract revision v1.1, ADR 0407)",
+  "description": "Every capability is explicit: no optional capability fields (a missing capability is false/0/none, written out). Unknown fields are rejected.",
   "type": "object",
-  "required": ["schema", "contract_version", "id", "display_name", "factory_name", "model_support", "devices", "execution", "state", "speculation", "limitations", "qualification"],
+  "required": ["schema", "contract_version", "id", "display_name", "factory_name", "role_in_product", "model_support", "devices", "execution", "state", "speculation", "serving", "limitations", "qualification"],
   "additionalProperties": false,
   "properties": {
     "schema": { "const": "clusterlm.backend-descriptor" },
     "contract_version": { "const": 1 },
-    "id": { "enum": ["llama-local", "strata-hybrid", "reference"] },
-    "display_name": { "type": "string", "maxLength": 80 },
-    "factory_name": { "enum": ["llama", "strata", "reference"], "description": "Name accepted by backends::make_backend (backend_factory.hpp)." },
-    "role_in_product": { "enum": ["production", "development-only"], "default": "production" },
+    "id": { "enum": ["llama-local", "strata-hybrid", "reference"], "description": "Extended only by ADR together with factory_name." },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "factory_name": { "enum": ["llama", "strata", "reference"], "description": "Name accepted by backends::make_backend (backend_factory.hpp). Pairing with id is fixed (allOf below)." },
+    "role_in_product": { "enum": ["production", "development-only"], "description": "development-only backends are never offered for product profiles, never listed in /v1/models, and their labels are never shown beside a real model." },
     "model_support": {
       "type": "object",
-      "required": ["tensor_formats", "families", "unlisted_family_status"],
+      "required": ["containers", "tensor_formats", "families", "unlisted_family_status"],
       "additionalProperties": false,
       "properties": {
-        "containers": { "type": "array", "items": { "enum": ["gguf", "gguf-split", "manifest-native"] } },
-        "tensor_formats": { "type": "array", "items": { "type": "string", "maxLength": 32 }, "description": "Quantization/tensor type names the backend can execute (GGUF type names). A model with a tensor type not listed here is rejected before provisioning." },
+        "containers": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "enum": ["gguf", "gguf-split", "manifest-native"] } },
+        "tensor_formats": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_.+-]{1,32}$" }, "description": "Canonical ggml type names (as in library TensorTypeStat.type, compared case-insensitively) the backend can execute. EVERY type in a model's tensor_types (not only its dominant quant) must be listed, else the model is Unsupported before provisioning. No wildcard or placeholder values." },
         "families": {
-          "type": "array",
+          "type": "array", "maxItems": 64,
           "items": {
             "type": "object", "required": ["family_match", "status"], "additionalProperties": false,
             "properties": {
-              "family_match": { "type": "string", "maxLength": 120, "description": "Exact family id or a glob over the library's family field." },
-              "architecture": { "type": "string", "maxLength": 64 },
+              "family_match": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Exact family or a '*'-glob over the library record's family label." },
+              "architecture": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$", "description": "GGUF general.architecture the record must have (exact). Immutable, unlike the family label; F adds it to every entry whose status is above Experimental (ADR 0407)." },
               "status": { "$ref": "#/$defs/label" },
-              "evidence": { "type": "array", "items": { "type": "string", "maxLength": 120 }, "description": "CI job / test names / HQ ids that justify the label." }
+              "evidence": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 120 }, "description": "CI job / test names / HQ ids that justify the label." }
             }
           }
         },
-        "unlisted_family_status": { "$ref": "#/$defs/label", "description": "Status for a model whose family is not listed. 'Experimental' means: parses and a Host-only load is attempted on explicit user opt-in; it is never offered as distributable." }
+        "unlisted_family_status": { "enum": ["Experimental", "Unsupported"], "description": "Status for a model whose family is not listed. Never a Supported label. 'Experimental' means: a Host-only load is attempted only after an explicit per-model user opt-in; it is never distributable." }
       }
     },
     "devices": {
-      "type": "object", "required": ["cpu", "gpu_vendors"], "additionalProperties": false,
+      "type": "object", "required": ["cpu", "gpu_vendors", "requires_runtime"], "additionalProperties": false,
       "properties": {
         "cpu": { "type": "boolean" },
-        "gpu_vendors": { "type": "array", "items": { "enum": ["nvidia", "amd", "intel"] } },
-        "min_compute_capability": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
-        "requires_runtime": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "description": "e.g. 'cuda>=12.0'. Detected at runtime; absent => backend not offered (never advertised)." }
+        "gpu_vendors": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "enum": ["nvidia", "amd", "intel"] } },
+        "min_compute_capability": { "type": "string", "pattern": "^[0-9]{1,2}\\.[0-9]{1,2}$", "description": "Required when gpu_vendors contains nvidia." },
+        "requires_runtime": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 64 }, "description": "e.g. 'cuda>=12.0'. Detected at runtime; absent => backend not offered (never advertised). Empty list = nothing beyond the binary." }
       }
     },
     "execution": {
       "type": "object",
-      "required": ["single_host", "cross_machine", "validated_max_workers", "layer_partitioning", "cpu_gpu_hybrid", "token_free_middle_stages", "manual_layer_ranges", "worker_roles"],
+      "required": ["single_host", "cross_machine", "validated_max_workers", "validated_topologies", "layer_partitioning", "cpu_gpu_hybrid", "token_free_middle_stages", "manual_layer_ranges", "worker_roles"],
       "additionalProperties": false,
       "properties": {
         "single_host": { "type": "boolean" },
         "cross_machine": { "type": "boolean" },
-        "validated_max_workers": { "type": "integer", "minimum": 0, "description": "Largest Worker count that has an automated test (real or fixture) behind it. Profile validation rejects max_workers above this. Raising it needs evidence recorded in `evidence`." },
-        "validated_topologies": { "type": "array", "items": { "type": "string", "maxLength": 120 }, "description": "Human-readable shapes covered by tests, e.g. 'host-prefix → worker → worker → host-tail'." },
+        "validated_max_workers": { "type": "integer", "minimum": 0, "maximum": 8, "description": "Largest Worker count that has an automated test (real or fixture) behind it. 0 when cross_machine is false. Profile validation rejects max_workers above the CompatReport's max_workers (which is 0 for a non-distributable model). Raising it needs evidence recorded in `evidence`." },
+        "validated_topologies": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "type": "string", "maxLength": 160 }, "description": "Human-readable shapes covered by tests, e.g. 'host-prefix -> worker -> worker -> host-tail'." },
         "layer_partitioning": { "enum": ["none", "contiguous-layers"] },
         "cpu_gpu_hybrid": { "type": "boolean", "description": "Weights/experts split across CPU RAM and GPU VRAM within one machine." },
         "token_free_middle_stages": { "type": "boolean" },
         "manual_layer_ranges": { "type": "boolean" },
-        "worker_roles": { "type": "array", "items": { "enum": ["middle"] }, "description": "Stage roles a Worker may play. Prefix and tail are always Host (ExecutionDomain contract)." },
-        "evidence": { "type": "array", "items": { "type": "string", "maxLength": 120 } }
+        "worker_roles": { "type": "array", "maxItems": 1, "uniqueItems": true, "items": { "enum": ["middle"] }, "description": "Stage roles a Worker may play. Prefix and tail are always Host (ExecutionDomain contract). Empty when cross_machine is false." },
+        "evidence": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 120 } }
       }
     },
     "state": {
-      "type": "object", "required": ["kinds", "supports_rollback"], "additionalProperties": false,
+      "type": "object", "required": ["kinds", "supports_rollback", "max_sessions_per_domain", "per_client_isolation"], "additionalProperties": false,
       "properties": {
-        "kinds": { "type": "array", "items": { "enum": ["kv", "recurrent", "indexer", "ple-history"] } },
+        "kinds": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "enum": ["kv", "recurrent", "indexer", "ple-history"] } },
         "supports_rollback": { "enum": ["native", "recompute", "none"], "description": "How an aborted/partially accepted speculative window is undone (llama.cpp recurrent state without seq_rm falls back to recompute)." },
-        "max_sessions_per_domain": { "type": "integer", "minimum": 1 },
-        "per_client_isolation": { "type": "boolean", "description": "True when a session's state can be held and released independently of other sessions on the same domain." }
+        "max_sessions_per_domain": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Upper bound for DomainSpec.max_sessions and therefore for concurrent generations per prepared plan." },
+        "per_client_isolation": { "type": "boolean", "description": "True when a session's state can be held and released independently of other sessions on the same domain. Required true for max_sessions_per_domain > 1 to be used by the scheduler." }
       }
     },
     "speculation": {
-      "type": "object", "required": ["window_commit_abort", "mtp"], "additionalProperties": false,
+      "type": "object", "required": ["window_commit_abort", "mtp", "max_q"], "additionalProperties": false,
       "properties": {
         "window_commit_abort": { "type": "boolean" },
         "mtp": { "enum": ["none", "one-hot-proposals", "full-distribution"] },
-        "max_q": { "type": "integer", "minimum": 1 }
+        "max_q": { "type": "integer", "minimum": 1, "maximum": 64, "description": "1 when window_commit_abort is false." }
       }
     },
     "serving": {
-      "type": "object", "additionalProperties": false,
+      "type": "object", "required": ["full_logits_for_sampling", "constrained_decoding", "logprobs"], "additionalProperties": false,
       "description": "What the serving layer may rely on. Tool calling itself is a property of the model's chat template + parser, not of the backend; these are the backend-side prerequisites.",
       "properties": {
         "full_logits_for_sampling": { "type": "boolean" },
@@ -86,17 +87,39 @@
         "logprobs": { "type": "boolean" }
       }
     },
-    "limitations": { "type": "array", "items": { "type": "string", "maxLength": 300 } },
-    "options_schema": { "type": "object", "description": "JSON Schema for profile.backend.options." },
+    "limitations": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 300 } },
+    "options_schema": {
+      "type": "object", "maxProperties": 16, "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,31}$" },
+      "description": "Declares profile.backend.options. A restricted declarative subset (not general JSON Schema; the C++ side has no JSON Schema engine). Absent = no options accepted. Options never decide placement-owned quantities (layer split, GPU offload) and never bypass memory admission.",
+      "additionalProperties": {
+        "type": "object", "required": ["type"], "additionalProperties": false,
+        "properties": {
+          "type": { "enum": ["integer", "boolean", "string"] },
+          "minimum": { "type": "integer" },
+          "maximum": { "type": "integer" },
+          "enum": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "maxLength": 64 } },
+          "description": { "type": "string", "maxLength": 200 }
+        }
+      }
+    },
     "qualification": {
-      "type": "object", "required": ["label"], "additionalProperties": false,
+      "type": "object", "required": ["label", "hardware_experiments"], "additionalProperties": false,
       "properties": {
         "label": { "$ref": "#/$defs/label" },
-        "hardware_experiments": { "type": "array", "items": { "type": "string", "pattern": "^HQ-[A-Z0-9]+-[0-9]+$" }, "description": "Ids in HARDWARE-QUALIFICATION.md that must pass to move the label to 'Supported and qualified'." },
+        "hardware_experiments": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "pattern": "^HQ-[A-Z0-9]+-[0-9]+$" }, "description": "Ids in HARDWARE-QUALIFICATION.md that must pass to move the label to 'Supported and qualified'. Empty only for development-only backends." },
         "notes": { "type": "string", "maxLength": 500 }
       }
     }
   },
+  "allOf": [
+    { "if": { "properties": { "id": { "const": "llama-local" } } }, "then": { "properties": { "factory_name": { "const": "llama" } } } },
+    { "if": { "properties": { "id": { "const": "strata-hybrid" } } }, "then": { "properties": { "factory_name": { "const": "strata" } } } },
+    { "if": { "properties": { "id": { "const": "reference" } } }, "then": { "properties": { "factory_name": { "const": "reference" } } } },
+    { "if": { "properties": { "execution": { "properties": { "cross_machine": { "const": false } } } } },
+      "then": { "properties": { "execution": { "properties": { "validated_max_workers": { "const": 0 }, "worker_roles": { "maxItems": 0 } } } } } },
+    { "if": { "properties": { "speculation": { "properties": { "window_commit_abort": { "const": false } } } } },
+      "then": { "properties": { "speculation": { "properties": { "max_q": { "const": 1 } } } } } }
+  ],
   "$defs": {
     "label": { "enum": ["Supported and qualified", "Supported, awaiting hardware qualification", "Experimental", "Unsupported"] }
   }

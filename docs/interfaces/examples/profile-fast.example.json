@@ -6,13 +6,23 @@
   "description": "Whole model on the Host (migrated from tier 'fast').",
   "revision": 1,
   "example_of": "tier:fast",
+  "qualification_experiments": [
+    "HQ-FAST-01"
+  ],
   "model": {
     "identity": {
       "family": "Swift-1.5-Qwen3.8-27B",
       "display_name": "Swift-1.5-Qwen3.8-27B GSQ-RCO IQ3_S",
       "quant": "IQ3_S",
       "artifact_id": null,
-      "expected_root_hash": null
+      "expected_root_hash": null,
+      "expected_files": [
+        {
+          "role": "model",
+          "name": null,
+          "approx_bytes": null
+        }
+      ]
     }
   },
   "backend": {
@@ -50,7 +60,7 @@
   },
   "lifecycle": {
     "preparation": "on-demand",
-    "release_after_idle_minutes": 30,
+    "release_after_idle_seconds": 60,
     "prepare_when_available": false
   },
   "on_worker_loss": {

@@ -113,7 +113,7 @@ machines; every hardware item stays pending ([HARDWARE-QUALIFICATION.md](../HARD
 | WS | Name | State | Latest handoff |
 |---|---|---|---|
 | 0 | Architecture & Interfaces | Done 2026-10-10 (docs only) | [handoff/0-architecture-2026-10-10.md](handoff/0-architecture-2026-10-10.md) |
-| A | Foundation | Ready to start | |
+| A | Foundation | In progress: interfaces reviewed by Opus and frozen v1.1 (ADR 0407); library module landed; profiles, descriptors, topology, migration next | |
 | B | Serving API | Blocked on A (schema impl + capability types merged) | |
 | C | Cluster management | Blocked on A | |
 | D | MCP | Blocked on B, C status APIs | |

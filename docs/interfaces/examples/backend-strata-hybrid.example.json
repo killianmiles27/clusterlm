@@ -11,13 +11,34 @@
       "gguf-split"
     ],
     "tensor_formats": [
+      "F32",
+      "F16",
+      "BF16",
+      "Q4_0",
+      "Q4_1",
+      "Q5_0",
+      "Q5_1",
+      "Q8_0",
+      "Q2_K",
+      "Q3_K",
+      "Q4_K",
+      "Q5_K",
+      "Q6_K",
+      "IQ2_XXS",
       "IQ2_XS",
-      "IQ3_S"
+      "IQ2_S",
+      "IQ3_XXS",
+      "IQ3_S",
+      "IQ1_S",
+      "IQ1_M",
+      "IQ4_NL",
+      "IQ4_XS",
+      "Q2_0"
     ],
     "families": [
       {
         "family_match": "*Flash-Next*",
-        "architecture": "qwen3.8-flash-next",
+        "architecture": "qwen4exp",
         "status": "Supported, awaiting hardware qualification",
         "evidence": [
           "linux-strata-cuda-build (compile only)",
@@ -86,16 +107,14 @@
     "MTP drafts verified as one-hot proposals; lower acceptance than optimal (ADR 0203).",
     "Prefill goes through the verifier in sub-batches of at most 8 positions (known issue 2).",
     "Worker count above 2 is not covered by any test; do not raise validated_max_workers without one.",
-    "Only the tensor types of the two shipped artifacts have been exercised."
+    "tensor_formats is the type table the Strata pin can map (strata-core object_map.cpp); only the tensor types of the two shipped artifacts have been exercised. F narrows it to what is executed."
   ],
   "options_schema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "local_micro_batch": {
-        "type": "integer",
-        "minimum": 1
-      }
+    "local_micro_batch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "Upper bound on the local sub-batch; the effective value is still min(this, VRAM-headroom choice, engine window 8) (ADR 0250)."
     }
   },
   "qualification": {

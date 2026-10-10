@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://clusterlm.invalid/schemas/routing-alias-v1.schema.json",
-  "title": "ClusterLM routing alias, schema v1 (ADR 0402)",
+  "title": "ClusterLM routing alias, schema v1 (ADR 0402; contract revision v1.1, ADR 0407)",
+  "description": "Unknown fields are rejected at every level (same policy as profile-v1). Selection semantics: profile-schema-v1.md section 6.",
   "type": "object",
   "required": ["schema", "schema_version", "id", "api_model_id", "candidates"],
   "additionalProperties": false,
@@ -9,12 +10,13 @@
     "schema": { "const": "clusterlm.routing-alias" },
     "schema_version": { "const": 1 },
     "id": { "type": "string", "pattern": "^alias_[a-z0-9][a-z0-9_]{2,47}$" },
-    "name": { "type": "string", "maxLength": 80 },
-    "api_model_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "description": "Must not collide with any profile api_model_id." },
-    "policy": { "enum": ["first-viable", "best-ready"], "default": "first-viable" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "api_model_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "description": "Must not collide with any profile or alias api_model_id. 'auto' and 'default' are reserved for aliases." },
+    "allow_lan": { "type": "boolean", "default": false, "description": "Visible to LAN-authenticated keys. A candidate is still considered only if the candidate profile itself is visible to the calling key (exposure.api, exposure.allow_lan for LAN keys, key allowed_models): an alias never widens access." },
+    "policy": { "enum": ["first-viable", "best-ready"], "default": "first-viable", "description": "first-viable: the first candidate (list order) that is viable. best-ready: the first candidate that is already prepared (ready/busy); if none, the first viable one. Both are deterministic for the same inputs." },
     "candidates": {
       "type": "array", "minItems": 1, "maxItems": 8,
-      "description": "Evaluated in order. A candidate is viable when its profile is exposed, its `when` holds, and its readiness is ready or (policy permitting) loadable.",
+      "description": "Evaluated in order; profile_ids are unique. A candidate is viable when its profile is visible to the calling key (see allow_lan), its `when` holds, and its readiness is ready/busy, or loadable when allow_prepare is true and require_ready is false.",
       "items": {
         "type": "object", "required": ["profile_id"], "additionalProperties": false,
         "properties": {
@@ -22,10 +24,10 @@
           "when": {
             "type": "object", "additionalProperties": false,
             "properties": {
-              "workers_available": { "type": "array", "items": { "type": "string" }, "description": "Slot names of the candidate that must be satisfiable right now." },
-              "min_workers_available": { "type": "integer", "minimum": 0 },
+              "workers_available": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" }, "description": "Worker slot names of the candidate profile that must be satisfiable right now (validated: each names a worker slot of that profile)." },
+              "min_workers_available": { "type": "integer", "minimum": 0, "maximum": 8 },
               "require_ready": { "type": "boolean", "default": false, "description": "true: only if already prepared (never trigger a prepare job)." },
-              "avoid_on_battery": { "type": "boolean", "default": true }
+              "avoid_on_battery": { "type": "boolean", "default": true, "description": "Not viable if any machine the candidate's plan would use (Host included) is on battery." }
             }
           }
         }

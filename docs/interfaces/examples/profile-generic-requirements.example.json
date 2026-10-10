@@ -3,14 +3,14 @@
   "schema_version": 1,
   "id": "prof_coding_any_worker",
   "name": "Coding (any NVIDIA Worker)",
-  "description": "Illustrative generic profile: Host plus any one NVIDIA Worker with at least 8 GiB VRAM. Not shipped.",
+  "description": "Illustrative generic profile: Host plus, when available, any one NVIDIA Worker with at least 8 GiB VRAM. Not shipped.",
   "revision": 1,
   "example_of": "illustrative",
   "model": {
     "identity": {
-      "family": "Example-Family",
-      "display_name": "Example model",
-      "quant": "Q4_K_M",
+      "family": "Example-Flash-Next-Finetune",
+      "display_name": "Example Flash-Next fine-tune IQ3_S",
+      "quant": "IQ3_S",
       "artifact_id": null,
       "expected_root_hash": null
     }
@@ -46,7 +46,7 @@
               "nvidia"
             ],
             "min_vram_mib": 8192,
-            "min_compute_capability": "8.0"
+            "min_compute_capability": "8.6"
           }
         }
       }
@@ -64,7 +64,7 @@
   },
   "lifecycle": {
     "preparation": "on-demand",
-    "release_after_idle_minutes": 30,
+    "release_after_idle_seconds": 60,
     "prepare_when_available": false
   },
   "on_worker_loss": {

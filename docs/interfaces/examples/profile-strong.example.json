@@ -6,13 +6,28 @@
   "description": "Host plus one laptop-class Worker (migrated from tier 'strong').",
   "revision": 1,
   "example_of": "tier:strong",
+  "qualification_experiments": [
+    "HQ-STRONG-01"
+  ],
   "model": {
     "identity": {
       "family": "Swift-1.5-Qwen3.8-Flash-Next",
       "display_name": "Swift-1.5-Qwen3.8-Flash-Next GSQ-RCO IQ2_XS",
       "quant": "IQ2_XS",
       "artifact_id": null,
-      "expected_root_hash": null
+      "expected_root_hash": null,
+      "expected_files": [
+        {
+          "role": "transformer-shard",
+          "name": null,
+          "approx_bytes": null
+        },
+        {
+          "role": "lookup-shard",
+          "name": null,
+          "approx_bytes": null
+        }
+      ]
     }
   },
   "backend": {
@@ -61,7 +76,7 @@
   },
   "lifecycle": {
     "preparation": "on-demand",
-    "release_after_idle_minutes": 30,
+    "release_after_idle_seconds": 60,
     "prepare_when_available": false
   },
   "on_worker_loss": {
