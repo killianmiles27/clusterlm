@@ -1,0 +1,113 @@
+{
+  "schema": "clusterlm.profile",
+  "schema_version": 1,
+  "id": "prof_example_ultra",
+  "name": "Ultra",
+  "description": "Host plus laptop-class and designated-3060 Workers (migrated from tier 'ultra').",
+  "revision": 1,
+  "example_of": "tier:ultra",
+  "qualification_experiments": [
+    "HQ-PERF-01",
+    "HQ-PERF-02",
+    "HQ-PERF-03",
+    "HQ-PERF-04"
+  ],
+  "model": {
+    "identity": {
+      "family": "Qwen3.8-Flash-Next",
+      "display_name": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+      "quant": "IQ3_S",
+      "artifact_id": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "expected_root_hash": null,
+      "expected_files": [
+        {
+          "role": "transformer-shard",
+          "name": null,
+          "approx_bytes": 54800000000
+        },
+        {
+          "role": "lookup-shard",
+          "name": null,
+          "approx_bytes": 28800000000
+        }
+      ]
+    }
+  },
+  "backend": {
+    "id": "strata-hybrid",
+    "min_contract_version": 1
+  },
+  "context": {
+    "default_tokens": 4096,
+    "max_tokens": 131072,
+    "offered_profiles": [
+      4096,
+      8192,
+      16384,
+      32768,
+      65536,
+      131072
+    ]
+  },
+  "topology": {
+    "slots": [
+      {
+        "slot": "host",
+        "kind": "host",
+        "label": "Host"
+      },
+      {
+        "slot": "w1",
+        "kind": "worker",
+        "label": "Laptop-class Worker",
+        "select": {
+          "mode": "binding",
+          "binding": "node:laptop-class"
+        }
+      },
+      {
+        "slot": "w2",
+        "kind": "worker",
+        "label": "Designated 3060 Worker",
+        "select": {
+          "mode": "binding",
+          "binding": "node:designated-3060"
+        }
+      }
+    ],
+    "min_workers": 2,
+    "max_workers": 2
+  },
+  "placement": {
+    "mode": "auto",
+    "objective": "balanced"
+  },
+  "speculation": {
+    "enabled": true,
+    "max_q": 4
+  },
+  "lifecycle": {
+    "preparation": "on-demand",
+    "release_after_idle_seconds": 60,
+    "prepare_when_available": false
+  },
+  "on_worker_loss": {
+    "max_retries": 1,
+    "then": "fallback-profile",
+    "fallback_profile_id": "prof_example_strong",
+    "preserve_conversation": true
+  },
+  "exposure": {
+    "api": false,
+    "api_model_id": "example-ultra",
+    "allow_lan": false
+  },
+  "goals": [
+    {
+      "metric": "decode_tok_s_median",
+      "value": 20,
+      "status": "pending_qualification",
+      "experiment": "HQ-PERF-01"
+    }
+  ]
+}

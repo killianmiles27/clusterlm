@@ -1,0 +1,80 @@
+{
+  "schema": "clusterlm.profile",
+  "schema_version": 1,
+  "id": "prof_coding_any_worker",
+  "name": "Coding (any NVIDIA Worker)",
+  "description": "Illustrative generic profile: Host plus, when available, any one NVIDIA Worker with at least 8 GiB VRAM. Not shipped.",
+  "revision": 1,
+  "example_of": "illustrative",
+  "model": {
+    "identity": {
+      "family": "Example-Flash-Next-Finetune",
+      "display_name": "Example Flash-Next fine-tune IQ3_S",
+      "quant": "IQ3_S",
+      "artifact_id": null,
+      "expected_root_hash": null
+    }
+  },
+  "backend": {
+    "id": "strata-hybrid",
+    "min_contract_version": 1
+  },
+  "context": {
+    "default_tokens": 4096,
+    "max_tokens": 16384,
+    "offered_profiles": [
+      4096,
+      8192,
+      16384
+    ]
+  },
+  "topology": {
+    "slots": [
+      {
+        "slot": "host",
+        "kind": "host",
+        "label": "Host"
+      },
+      {
+        "slot": "w1",
+        "kind": "worker",
+        "optional": true,
+        "select": {
+          "mode": "requirements",
+          "requirements": {
+            "gpu_vendor": [
+              "nvidia"
+            ],
+            "min_vram_mib": 8192,
+            "min_compute_capability": "8.6"
+          }
+        }
+      }
+    ],
+    "min_workers": 0,
+    "max_workers": 1
+  },
+  "placement": {
+    "mode": "auto",
+    "objective": "balanced"
+  },
+  "speculation": {
+    "enabled": true,
+    "max_q": 1
+  },
+  "lifecycle": {
+    "preparation": "on-demand",
+    "release_after_idle_seconds": 60,
+    "prepare_when_available": false
+  },
+  "on_worker_loss": {
+    "max_retries": 1,
+    "then": "replan",
+    "preserve_conversation": true
+  },
+  "exposure": {
+    "api": false,
+    "api_model_id": "coding",
+    "allow_lan": false
+  }
+}

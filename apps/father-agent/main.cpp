@@ -84,6 +84,10 @@ int main(int argc, char** argv) {
   if (settings.value()->report().outcome == config::LoadReport::Outcome::kRecoveredCorrupt)
     std::fprintf(stderr, "warning: %s\n", settings.value()->report().note.c_str());
   std::shared_ptr<config::FatherSettingsStore> settings_shared(std::move(settings).value());
+  // A fresh install gets the Fast/Strong/Ultra example set; a migrated one already has it (idempotent, never re-added).
+  if (!settings_shared->get().examples_seeded)
+    if (auto st = settings_shared->update([](config::FatherSettings& s) { config::ensure_example_set(s); return Status::ok(); }); !st.is_ok())
+      std::fprintf(stderr, "warning: could not seed the example profiles: %s\n", st.message().c_str());
 
   const std::filesystem::path identity_dir = args.get("identity", paths->father_identity.string());
   auto ident = transport::DeviceIdentity::load_or_generate(identity_dir, "clusterlm-father");

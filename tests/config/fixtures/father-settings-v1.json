@@ -1,0 +1,45 @@
+{
+  "advanced": {
+    "bench_results_dir": "D:\\bench",
+    "default_q": 3,
+    "direct_peer": false,
+    "log_level": "debug",
+    "prefill_chunk": 256
+  },
+  "assignments": {
+    "node:designated-3060": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "node:laptop-class": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "confirmed_model_roots": {
+    "ultra": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "context_tokens": 16384,
+  "keep_ready": {
+    "enabled": true,
+    "release_after_idle_minutes": 45
+  },
+  "kind": "clusterlm-father-settings",
+  "model_dirs": {
+    "fast": "D:\\models\\fast",
+    "strong": "D:\\models\\strong",
+    "ultra": "D:\\models\\ultra"
+  },
+  "paired_nodes": [
+    {
+      "address": "10.0.0.2:47600",
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "G14",
+      "paired_at_unix": 1700000000,
+      "role": "node"
+    },
+    {
+      "address": "10.0.0.3:47600",
+      "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "name": "Desktop 3060",
+      "paired_at_unix": 1700000500,
+      "role": "node"
+    }
+  ],
+  "selected_tier": "ultra",
+  "version": 1
+}

@@ -1,6 +1,7 @@
 clusterlm_module(clusterlm_domain_api
-  SOURCES src/boundary.cpp
-  DEPS clusterlm_objects)
+  SOURCES src/boundary.cpp src/backend_descriptor.cpp src/builtin_descriptors.cpp
+  DEPS clusterlm_objects
+  PRIVATE_DEPS clusterlm_third_party)
 
 clusterlm_module(clusterlm_domain
   SOURCES src/reference_domain.cpp src/reference_backend.cpp src/drafter.cpp src/sampling.cpp src/reference_kernels.cpp

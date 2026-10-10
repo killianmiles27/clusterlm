@@ -1,0 +1,32 @@
+{
+  "schema": "clusterlm.routing-alias",
+  "schema_version": 1,
+  "id": "alias_auto",
+  "name": "Auto (best available)",
+  "api_model_id": "auto",
+  "policy": "first-viable",
+  "candidates": [
+    {
+      "profile_id": "prof_example_ultra",
+      "when": {
+        "workers_available": [
+          "w1",
+          "w2"
+        ],
+        "avoid_on_battery": true
+      }
+    },
+    {
+      "profile_id": "prof_example_strong",
+      "when": {
+        "workers_available": [
+          "w1"
+        ]
+      }
+    },
+    {
+      "profile_id": "prof_example_fast"
+    }
+  ],
+  "allow_prepare": false
+}

@@ -1,1 +1,3 @@
-clusterlm_test(test_config SOURCES test_settings_store.cpp DEPS clusterlm_config clusterlm_platform)
+clusterlm_test(test_config SOURCES test_settings_store.cpp test_settings_v2_migration.cpp
+  DEPS clusterlm_config clusterlm_platform clusterlm_catalog clusterlm_migration clusterlm_profiles)
+target_compile_definitions(test_config PRIVATE CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

@@ -1,0 +1,125 @@
+{
+  "schema": "clusterlm.backend-descriptor",
+  "contract_version": 1,
+  "id": "llama-local",
+  "display_name": "llama.cpp (Host-local)",
+  "factory_name": "llama",
+  "role_in_product": "production",
+  "model_support": {
+    "containers": [
+      "gguf",
+      "gguf-split"
+    ],
+    "tensor_formats": [
+      "F32",
+      "F16",
+      "BF16",
+      "Q4_0",
+      "Q4_1",
+      "Q5_0",
+      "Q5_1",
+      "Q8_0",
+      "Q2_K",
+      "Q3_K",
+      "Q4_K",
+      "Q5_K",
+      "Q6_K",
+      "IQ1_S",
+      "IQ1_M",
+      "IQ2_XXS",
+      "IQ2_XS",
+      "IQ2_S",
+      "IQ3_XXS",
+      "IQ3_S",
+      "IQ4_NL",
+      "IQ4_XS",
+      "TQ1_0",
+      "TQ2_0",
+      "MXFP4"
+    ],
+    "families": [
+      {
+        "family_match": "Swift-1.5-Qwen3.8-27B",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "linux-llama-cpu: decode equals llama.cpp on fixture",
+          "HQ-FAST-01"
+        ]
+      }
+    ],
+    "unlisted_family_status": "Experimental"
+  },
+  "devices": {
+    "cpu": true,
+    "gpu_vendors": [
+      "nvidia"
+    ],
+    "min_compute_capability": "8.6",
+    "requires_runtime": [
+      "cuda>=12.0 (CLUSTERLM_LLAMA_CUDA build only)"
+    ]
+  },
+  "execution": {
+    "single_host": true,
+    "cross_machine": false,
+    "validated_max_workers": 0,
+    "validated_topologies": [
+      "host-only"
+    ],
+    "layer_partitioning": "none",
+    "cpu_gpu_hybrid": true,
+    "token_free_middle_stages": false,
+    "manual_layer_ranges": false,
+    "worker_roles": [],
+    "evidence": [
+      "tests/backends_llama"
+    ]
+  },
+  "state": {
+    "kinds": [
+      "kv",
+      "recurrent"
+    ],
+    "supports_rollback": "recompute",
+    "per_client_isolation": true,
+    "max_sessions_per_domain": 1
+  },
+  "speculation": {
+    "window_commit_abort": true,
+    "mtp": "none",
+    "max_q": 32
+  },
+  "serving": {
+    "full_logits_for_sampling": true,
+    "constrained_decoding": false,
+    "logprobs": false
+  },
+  "limitations": [
+    "Host only; middle stages are refused (docs/backends/llama-local.md).",
+    "Prefill windows longer than 32 positions return only the last position's logits (ADR 0300).",
+    "tensor_formats lists the ggml types of the pinned llama.cpp (runtime/objects/ggml_types.cpp) minus non-weight types; F confirms which ones the pinned CPU/CUDA builds actually execute.",
+    "Descriptor is provisional: workstream F reviews family list, per-client isolation and rollback mode against the pinned llama.cpp.",
+    "Distributed llama.cpp (RPC) is a baseline harness only, not an advertised mode.",
+    "Family entries match the user-editable family label until F adds the GGUF architecture to each entry (ADR 0407 residual risk)."
+  ],
+  "options_schema": {
+    "n_threads": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1024,
+      "description": "0 = automatic; still capped by the Host resource policy."
+    },
+    "use_mmap": {
+      "type": "boolean",
+      "description": "Map the GGUF instead of reading it; memory admission is unchanged."
+    }
+  },
+  "qualification": {
+    "label": "Supported, awaiting hardware qualification",
+    "hardware_experiments": [
+      "HQ-FAST-01",
+      "HQ-TIER-01"
+    ],
+    "notes": "CPU mechanics verified in CI on a fixture model; the real model on the target GPU is unmeasured."
+  }
+}

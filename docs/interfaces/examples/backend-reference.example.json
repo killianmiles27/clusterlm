@@ -1,0 +1,77 @@
+{
+  "schema": "clusterlm.backend-descriptor",
+  "contract_version": 1,
+  "id": "reference",
+  "display_name": "Reference CPU (development)",
+  "factory_name": "reference",
+  "role_in_product": "development-only",
+  "model_support": {
+    "containers": [
+      "gguf",
+      "manifest-native"
+    ],
+    "tensor_formats": [
+      "F32",
+      "Q8_0"
+    ],
+    "families": [
+      {
+        "family_match": "*",
+        "architecture": "clusterlm-fixture",
+        "status": "Supported and qualified",
+        "evidence": [
+          "tests/domain",
+          "tests/integration"
+        ]
+      }
+    ],
+    "unlisted_family_status": "Unsupported"
+  },
+  "devices": {
+    "cpu": true,
+    "gpu_vendors": [],
+    "requires_runtime": []
+  },
+  "execution": {
+    "single_host": true,
+    "cross_machine": true,
+    "validated_max_workers": 2,
+    "validated_topologies": [
+      "any split of the layer range; bitwise-identical logits"
+    ],
+    "layer_partitioning": "contiguous-layers",
+    "cpu_gpu_hybrid": false,
+    "token_free_middle_stages": true,
+    "manual_layer_ranges": true,
+    "worker_roles": [
+      "middle"
+    ]
+  },
+  "state": {
+    "kinds": [
+      "kv",
+      "recurrent"
+    ],
+    "supports_rollback": "native",
+    "max_sessions_per_domain": 1,
+    "per_client_isolation": true
+  },
+  "speculation": {
+    "window_commit_abort": true,
+    "mtp": "full-distribution",
+    "max_q": 4
+  },
+  "serving": {
+    "full_logits_for_sampling": true,
+    "constrained_decoding": false,
+    "logprobs": false
+  },
+  "limitations": [
+    "Deterministic FP32 fixture math. Never offered as a product profile; never evidence of real-model or CUDA behaviour."
+  ],
+  "qualification": {
+    "label": "Supported and qualified",
+    "notes": "Qualified only for what it is: the deterministic test backend. This label must never be shown beside a real model.",
+    "hardware_experiments": []
+  }
+}

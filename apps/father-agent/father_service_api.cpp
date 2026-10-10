@@ -282,7 +282,7 @@ Result<ipc::Envelope> FatherServiceApi::handle(const ipc::Envelope& request, con
     if (auto st = need_string(req, "tier_id", tier); !st.is_ok()) { fail(st); }
     else if (auto s2 = svc->select_tier(tier); !s2.is_ok()) fail(s2);
     else {
-      (void)cfg_.settings->update([&](config::FatherSettings& s) { s.selected_tier = tier; return Status::ok(); });
+      (void)cfg_.settings->update([&](config::FatherSettings& s) { s.select_tier(tier); return Status::ok(); });
       succeed({{"selected", tier}});
     }
   } else if (op == "tiers.prepare") {
@@ -461,22 +461,29 @@ Result<ipc::Envelope> FatherServiceApi::handle(const ipc::Envelope& request, con
       static const char* kAllowed[] = {"selected_tier", "context_tokens", "keep_ready", "model_dirs", "advanced"};
       auto st = cfg_.settings->update([&](config::FatherSettings& s) -> Status {
         json doc = json::parse(config::to_json(s));
+        std::optional<std::string> new_tier;
         for (auto it = req["patch"].begin(); it != req["patch"].end(); ++it) {
           bool allowed = false;
           for (const char* k : kAllowed) allowed = allowed || it.key() == k;
           if (!allowed) return make_error(ErrorCode::kInvalidArgument, "setting '" + it.key() + "' cannot be set here");
-          if (it.value().is_object() && doc[it.key()].is_object()) {
+          // The tier-era settings live in the settings document's "legacy_v1" section since version 2 (the IPC keys are
+          // unchanged for the UI); everything else is top level.
+          const bool legacy = it.key() == "selected_tier" || it.key() == "keep_ready" || it.key() == "model_dirs";
+          json& target = legacy ? doc["legacy_v1"] : doc;
+          if (it.key() == "selected_tier" && it.value().is_string()) new_tier = it.value().get<std::string>();
+          if (it.value().is_object() && target[it.key()].is_object()) {
             for (auto sub = it.value().begin(); sub != it.value().end(); ++sub) {
-              if (sub.value().is_null()) doc[it.key()].erase(sub.key());
-              else doc[it.key()][sub.key()] = sub.value();
+              if (sub.value().is_null()) target[it.key()].erase(sub.key());
+              else target[it.key()][sub.key()] = sub.value();
             }
           } else {
-            doc[it.key()] = it.value();
+            target[it.key()] = it.value();
           }
         }
         auto parsed = config::father_settings_from_json(doc.dump());
         if (!parsed.is_ok()) return parsed.status();
         s = std::move(parsed).value();
+        if (new_tier) s.select_tier(*new_tier);  // keep the profile view in step with the tier the UI chose
         return Status::ok();
       });
       if (!st.is_ok()) fail(st);

@@ -1,0 +1,76 @@
+{
+  "schema": "clusterlm.profile",
+  "schema_version": 1,
+  "id": "prof_example_fast",
+  "name": "Fast",
+  "description": "Whole model on the Host (migrated from tier 'fast').",
+  "revision": 1,
+  "example_of": "tier:fast",
+  "qualification_experiments": [
+    "HQ-FAST-01"
+  ],
+  "model": {
+    "identity": {
+      "family": "Swift-1.5-Qwen3.8-27B",
+      "display_name": "Swift-1.5-Qwen3.8-27B GSQ-RCO IQ3_S",
+      "quant": "IQ3_S",
+      "artifact_id": null,
+      "expected_root_hash": null,
+      "expected_files": [
+        {
+          "role": "model",
+          "name": null,
+          "approx_bytes": null
+        }
+      ]
+    }
+  },
+  "backend": {
+    "id": "llama-local",
+    "min_contract_version": 1
+  },
+  "context": {
+    "default_tokens": 4096,
+    "max_tokens": 32768,
+    "offered_profiles": [
+      4096,
+      8192,
+      16384,
+      32768
+    ]
+  },
+  "topology": {
+    "slots": [
+      {
+        "slot": "host",
+        "kind": "host",
+        "label": "Host"
+      }
+    ],
+    "min_workers": 0,
+    "max_workers": 0
+  },
+  "placement": {
+    "mode": "auto",
+    "objective": "balanced"
+  },
+  "speculation": {
+    "enabled": false,
+    "max_q": 1
+  },
+  "lifecycle": {
+    "preparation": "on-demand",
+    "release_after_idle_seconds": 60,
+    "prepare_when_available": false
+  },
+  "on_worker_loss": {
+    "max_retries": 0,
+    "then": "stop",
+    "preserve_conversation": true
+  },
+  "exposure": {
+    "api": false,
+    "api_model_id": "example-fast",
+    "allow_lan": false
+  }
+}
