@@ -66,6 +66,9 @@ struct ExpertFormat {
   std::uint64_t gate_bytes = 0, up_bytes = 0, down_bytes = 0;  // gate/up: ff rows of H; down: H rows of ff
   std::uint64_t total() const { return gate_bytes + up_bytes + down_bytes; }
 };
+// The shipped declarative descriptor (backend-capability-v1 JSON), embedded at build time from
+// runtime/backends/strata/descriptor/strata-hybrid.descriptor.json.
+std::string_view strata_hybrid_descriptor_json();
 std::string expert_quant_type(const GgmlType& gate_up, const GgmlType& down);
 // Parses an expert Representation against the geometry. Refuses a conversion_version other than 0 and a
 // quant_type whose blocks do not tile the expert's rows.

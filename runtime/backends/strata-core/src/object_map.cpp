@@ -164,6 +164,16 @@ std::string expert_quant_type(const GgmlType& gate_up, const GgmlType& down) {
   return gate_up.id == down.id ? std::string(gate_up.name) : std::string(gate_up.name) + "+" + std::string(down.name);
 }
 
+namespace {
+// Types the pinned Strata VRAM-tier expert kernels accept (upstream src/kernels/cuda/iq_kernels.cu native_expert_grouped:
+// gate/up list at :611-613, down list at :615). Any other type reaches std::exit(1) inside the engine, which would
+// kill a Node mid-run, so it is refused here as a Status instead (workstream F review, ADR 0408).
+constexpr std::string_view kGpuGateUp[] = {"iq2_xxs", "iq2_xs", "iq3_xxs", "iq3_s", "iq2_s", "iq4_xs", "iq1_m",
+                                           "q2_0",    "q4_k",   "q5_k",    "q5_0",  "q4_0",  "q4_1",   "q8_0"};
+constexpr std::string_view kGpuDown[] = {"iq4_nl", "q2_0", "q5_1", "q5_0", "q4_0", "q4_1", "q8_0"};
+bool in_list(std::string_view n, const std::string_view* b, const std::string_view* e) { return std::find(b, e, n) != e; }
+}  // namespace
+
 Result<ExpertFormat> expert_format(const objects::Representation& rep, const objects::ModelGeometry& g) {
   if (rep.conversion_version != kExpertConversionVersion)
     return invalid("routed expert representation version " + std::to_string(rep.conversion_version) +
@@ -179,6 +189,12 @@ Result<ExpertFormat> expert_format(const objects::Representation& rep, const obj
   if (gu_row == 0 || d_row == 0)
     return invalid("routed expert quant_type '" + rep.quant_type + "' does not tile the expert rows (H " +
                    std::to_string(H) + ", ff " + std::to_string(ff) + ")");
+  if (!in_list(f.gate_up->name, std::begin(kGpuGateUp), std::end(kGpuGateUp)))
+    return make_error(ErrorCode::kVersionMismatch, "routed expert gate/up type '" + std::string(f.gate_up->name) +
+                                                       "' has no Strata GPU expert kernel");
+  if (!in_list(f.down->name, std::begin(kGpuDown), std::end(kGpuDown)))
+    return make_error(ErrorCode::kVersionMismatch, "routed expert down type '" + std::string(f.down->name) +
+                                                       "' has no Strata GPU expert kernel");
   f.gate_bytes = gu_row * ff;
   f.up_bytes = gu_row * ff;
   f.down_bytes = d_row * H;

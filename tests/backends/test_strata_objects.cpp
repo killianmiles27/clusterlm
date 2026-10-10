@@ -131,6 +131,11 @@ TEST_CASE("routed experts are the GGUF slices unchanged: [gate | up | down]") {
   CHECK(bs::expert_format({"iq3_s", 256, 0, true}, g).status().code() == ErrorCode::kInvalidArgument);  // down at ff 640
   CHECK(bs::expert_format({"iq3_s+iq4_nl", 256, 1, true}, g).status().code() == ErrorCode::kInvalidArgument);  // no transform
   CHECK(bs::expert_format({"iq9+iq4_nl", 256, 0, true}, g).status().code() == ErrorCode::kInvalidArgument);
+  // Types without a Strata GPU expert kernel are refused (the engine would std::exit).
+  CHECK(bs::expert_format({"q6_k+q2_0", 256, 0, true}, g).status().code() == ErrorCode::kVersionMismatch);
+  CHECK(bs::expert_format({"iq3_s+q3_k", 256, 0, true}, g).status().code() == ErrorCode::kInvalidArgument);  // q3_k doesn't tile ff 640
+  CHECK(bs::expert_format({"iq4_nl+iq4_nl", 256, 0, true}, g).status().code() == ErrorCode::kVersionMismatch);  // gate/up
+  CHECK(bs::expert_format({"iq3_s+q4_0", 256, 0, true}, g).is_ok());
   auto x = bs::expert_format({"iq2_xs+iq4_nl", 256, 0, true}, g);
   REQUIRE(x.is_ok());
   CHECK(x->gate_bytes == 640ull * 740);
@@ -289,4 +294,17 @@ TEST_CASE("required objects: a partial domain binds only its own layers") {
   CHECK(t.front() == "token_embd");  // the MTP drafter embeds its draft tokens (Father-local)
   CHECK(t.back() == "output_head");
   CHECK(bs::required_objects(g, tail).front() == "blk.36.dense");
+}
+
+#include <nlohmann/json.hpp>
+
+TEST_CASE("the embedded strata-hybrid descriptor parses and agrees with the code's hard limits") {
+  const auto d = nlohmann::json::parse(bs::strata_hybrid_descriptor_json());
+  CHECK(d.at("id") == "strata-hybrid");
+  CHECK(d.at("factory_name") == "strata");
+  CHECK(d.at("execution").at("validated_max_workers") == 2);
+  CHECK(d.at("model_support").at("unlisted_family_status") == "Unsupported");
+  CHECK(d.at("devices").at("cpu") == false);
+  // no label above 'awaiting hardware qualification': nothing has run on a GPU
+  CHECK(d.at("qualification").at("label") == "Supported, awaiting hardware qualification");
 }
