@@ -13,7 +13,7 @@ namespace clusterlm::backends {
 
 // Architectures the generator can write. Each mirrors the tensor layout and metadata keys the pinned llama.cpp loader
 // requires for that architecture (see third_party/upstream/llama.cpp/src/models/<arch>.cpp); the weights are random.
-enum class TinyArch { kLlama, kLlamaMoe, kQwen2, kQwen3, kGemma, kPhi3 };
+enum class TinyArch { kLlama, kLlamaMoe, kQwen2, kQwen3, kGemma, kPhi3, kMamba };
 const char* tiny_arch_name(TinyArch a);  // the GGUF general.architecture string
 
 struct TinyLlamaSpec {

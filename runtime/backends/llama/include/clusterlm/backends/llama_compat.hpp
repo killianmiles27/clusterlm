@@ -30,4 +30,9 @@ LlamaArchSupport llama_architecture_support(std::string_view architecture);
 // (unknown architecture, missing or inconsistent keys). Success is necessary, not sufficient: tensors are not checked.
 Status probe_llama_hparams(const std::filesystem::path& gguf);
 
+// The shipped declarative descriptor of this backend (backend-capability-v1 JSON), embedded at build time from
+// runtime/backends/llama/descriptor/llama-local.descriptor.json. Embedded, so a missing file can never change what
+// is advertised. Parsing and the BackendRegistry belong to the descriptor type owned by workstream A (CMR-0001).
+std::string_view llama_local_descriptor_json();
+
 }  // namespace clusterlm::backends

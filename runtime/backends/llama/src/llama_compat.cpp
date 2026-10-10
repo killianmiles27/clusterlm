@@ -13,7 +13,7 @@ const std::vector<std::string_view> kPinned = {
 };
 
 // Keep in step with TinyArch in llama_tiny_model.hpp; the architecture test enforces it both ways.
-const std::vector<std::string_view> kExercised = {"gemma", "llama", "phi3", "qwen2", "qwen3"};
+const std::vector<std::string_view> kExercised = {"gemma", "llama", "mamba", "phi3", "qwen2", "qwen3"};
 
 }  // namespace
 

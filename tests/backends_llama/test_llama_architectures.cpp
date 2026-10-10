@@ -43,6 +43,8 @@ std::vector<ArchCase> cases() {
   add("qwen3", TinyArch::kQwen3, [](auto&) {}, 1);
   add("gemma", TinyArch::kGemma, [](auto&) {}, 1);
   add("phi3", TinyArch::kPhi3, [](auto&) {}, 1);
+  add("mamba", TinyArch::kMamba, [](auto&) {}, 1);
+  add("mamba-f16", TinyArch::kMamba, [](auto& s) { s.f16_matrices = true; }, 1);
   add("qwen2-f16", TinyArch::kQwen2, [](auto& s) { s.f16_matrices = true; }, 1);
   return v;
 }
@@ -138,7 +140,7 @@ TEST_CASE("architecture breadth: the exercised list is exactly the architectures
 TEST_CASE("architecture breadth: unknown and merely-known architectures are told apart") {
   using backends::LlamaArchSupport;
   CHECK(backends::llama_architecture_support("llama") == LlamaArchSupport::kExercised);
-  CHECK(backends::llama_architecture_support("mamba") == LlamaArchSupport::kKnown);
+  CHECK(backends::llama_architecture_support("rwkv6") == LlamaArchSupport::kKnown);
   CHECK(backends::llama_architecture_support("not-an-architecture") == LlamaArchSupport::kUnknown);
   CHECK(backends::llama_architecture_support("clip") == LlamaArchSupport::kUnknown);  // not a model architecture
   CHECK(backends::llama_architecture_support("") == LlamaArchSupport::kUnknown);
@@ -187,4 +189,45 @@ TEST_CASE("architecture breadth: the hyper-parameter probe accepts fixtures and 
   CHECK_FALSE(backends::probe_llama_hparams(dir / "missing.gguf").is_ok());
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("recurrent architecture: layers are classified recurrent and rollback after a partial accept stays exact") {
+  backends::TinyLlamaSpec spec;
+  spec.arch = backends::TinyArch::kMamba;
+  spec.layers = 3;
+  TinyModel m("arch-recurrent", spec);
+  for (auto k : m.manifest.geometry.layer_kinds) CHECK(k == objects::LayerKind::kRecurrent);
+  // A long run with a drafter that is wrong at a different position every round: every round commits a partial window
+  // (llama.cpp cannot remove the tail of a recurrent state in place, so the backend must recompute) and the result must
+  // still equal plain q=1 decoding and llama.cpp's own decode.
+  RefLlama ref(m.gguf, 256);
+  const auto prompt = prompt_of(14, m.vocab());
+  const auto expect = ref.greedy(prompt, 30);
+  auto father = make_father(m);
+  coordinator::GenerationRequest base;
+  base.prompt = prompt;
+  base.max_new_tokens = 36;
+  auto plain = father->generate(base);
+  REQUIRE(plain.is_ok());
+  CHECK(std::vector<std::int32_t>(plain->tokens.begin(), plain->tokens.begin() + 30) == expect);
+  std::vector<std::int32_t> sequence = prompt;
+  sequence.insert(sequence.end(), plain->tokens.begin(), plain->tokens.end());
+  for (std::uint32_t q : {2u, 4u}) {
+    for (std::uint32_t j = 1; j <= q - 1; ++j) {
+      CAPTURE(q);
+      CAPTURE(j);
+      domain::ScriptedDrafter::Config dc;
+      dc.vocab = m.vocab();
+      dc.corrupt_draft_index = j;
+      coordinator::GenerationRequest r;
+      r.prompt = prompt;
+      r.max_new_tokens = 30;
+      r.q = q;
+      r.drafter = std::make_shared<domain::ScriptedDrafter>(sequence, dc);
+      auto out = father->generate(r);
+      REQUIRE_MESSAGE(out.is_ok(), out.status().to_string());
+      CHECK(out->tokens == expect);
+    }
+  }
+  REQUIRE(father->release().is_ok());
 }

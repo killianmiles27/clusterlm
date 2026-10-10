@@ -70,6 +70,20 @@ Status add_matrix(GgufWriter& w, const std::string& name, std::vector<std::uint6
   return w.add_tensor(name, std::move(dims), GgmlType::kF32, std::move(bytes));
 }
 
+// Constant-plus-noise vector (used for the SSM decay "A" and skip "D", which must keep a recurrent state stable).
+Status add_vec(GgufWriter& w, const std::string& name, std::vector<std::uint64_t> dims, float base, float spread,
+               std::uint64_t seed) {
+  std::uint64_t n = 1;
+  for (auto d : dims) n *= d;
+  std::uint64_t s = seed;
+  Bytes bytes(n * 4);
+  for (std::uint64_t i = 0; i < n; ++i) {
+    const float v = base + spread * uniform(s);
+    std::memcpy(bytes.data() + i * 4, &v, 4);
+  }
+  return w.add_tensor(name, std::move(dims), GgmlType::kF32, std::move(bytes));
+}
+
 Status add_norm(GgufWriter& w, const std::string& name, std::uint64_t n, std::uint64_t seed) {
   std::uint64_t s = seed;
   Bytes bytes(n * 4);
@@ -88,6 +102,7 @@ const char* arch_name(TinyArch a) {
     case TinyArch::kQwen3: return "qwen3";
     case TinyArch::kGemma: return "gemma";
     case TinyArch::kPhi3: return "phi3";
+    case TinyArch::kMamba: return "mamba";
   }
   return "llama";
 }
@@ -95,6 +110,53 @@ const char* arch_name(TinyArch a) {
 }  // namespace
 
 const char* tiny_arch_name(TinyArch a) { return arch_name(a); }
+
+namespace {
+
+// Mamba (selective state space, no attention): a recurrent architecture. Expansion factor 2, conv kernel 4, state 8,
+// time-step rank 4 -- the only shape family the pinned loader accepts ("only an expansion factor of 2").
+Status write_tiny_mamba(const std::filesystem::path& path, const TinyLlamaSpec& sp) {
+  const std::uint64_t H = sp.hidden, inner = 2 * H, d_conv = 4, d_state = 8, dt_rank = 4;
+  GgufWriter w;
+  w.add_string("general.architecture", "mamba");
+  w.add_string("general.name", "clusterlm-tiny-mamba");
+  w.add_u32("mamba.context_length", sp.context);
+  w.add_u32("mamba.embedding_length", sp.hidden);
+  w.add_u32("mamba.block_count", sp.layers);
+  w.add_u32("mamba.feed_forward_length", 0);
+  w.add_u32("mamba.attention.head_count", 0);
+  w.add_f32("mamba.attention.layer_norm_rms_epsilon", 1e-5f);
+  w.add_u32("mamba.ssm.conv_kernel", static_cast<std::uint32_t>(d_conv));
+  w.add_u32("mamba.ssm.inner_size", static_cast<std::uint32_t>(inner));
+  w.add_u32("mamba.ssm.state_size", static_cast<std::uint32_t>(d_state));
+  w.add_u32("mamba.ssm.time_step_rank", static_cast<std::uint32_t>(dt_rank));
+  w.add_u32("mamba.vocab_size", sp.vocab);
+  w.add_string("tokenizer.ggml.model", "no_vocab");
+  std::uint64_t seed = sp.seed * 1000003ull;
+  auto next = [&] { return ++seed * 0x9E3779B97F4A7C15ull; };
+  const float inv_h = 1.0f / std::sqrt(static_cast<float>(sp.hidden));
+  const float inv_i = 1.0f / std::sqrt(static_cast<float>(inner));
+  const bool f = sp.f16_matrices;
+  CLM_RETURN_IF_ERROR(add_matrix(w, "token_embd.weight", {H, sp.vocab}, 1.0f, false, next()));
+  CLM_RETURN_IF_ERROR(add_norm(w, "output_norm.weight", H, next()));
+  CLM_RETURN_IF_ERROR(add_matrix(w, "output.weight", {H, sp.vocab}, 3.0f * inv_h, false, next()));
+  for (std::uint32_t L = 0; L < sp.layers; ++L) {
+    const std::string p = "blk." + std::to_string(L) + ".";
+    CLM_RETURN_IF_ERROR(add_norm(w, p + "attn_norm.weight", H, next()));
+    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ssm_in.weight", {H, 2 * inner}, 2.0f * inv_h, f, next()));
+    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ssm_conv1d.weight", {d_conv, inner}, 0.5f, false, next()));
+    CLM_RETURN_IF_ERROR(add_vec(w, p + "ssm_conv1d.bias", {inner}, 0.0f, 0.05f, next()));
+    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ssm_x.weight", {inner, dt_rank + 2 * d_state}, 2.0f * inv_i, f, next()));
+    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ssm_dt.weight", {dt_rank, inner}, 0.5f, false, next()));
+    CLM_RETURN_IF_ERROR(add_vec(w, p + "ssm_dt.bias", {inner}, -1.0f, 0.2f, next()));
+    CLM_RETURN_IF_ERROR(add_vec(w, p + "ssm_a", {d_state, inner}, -1.0f, 0.5f, next()));  // negative decay: stable
+    CLM_RETURN_IF_ERROR(add_vec(w, p + "ssm_d", {inner}, 1.0f, 0.1f, next()));
+    CLM_RETURN_IF_ERROR(add_matrix(w, p + "ssm_out.weight", {inner, H}, 2.0f * inv_i, f, next()));
+  }
+  return w.write(path);
+}
+
+}  // namespace
 
 Status write_tiny_llama_gguf(const std::filesystem::path& path, const TinyLlamaSpec& sp) {
   if (sp.layers == 0 || sp.hidden == 0 || sp.heads == 0 || sp.kv_heads == 0 || sp.heads % sp.kv_heads != 0 ||
@@ -107,6 +169,7 @@ Status write_tiny_llama_gguf(const std::filesystem::path& path, const TinyLlamaS
   if (moe && (sp.experts < 2 || sp.experts_used == 0 || sp.experts_used > sp.experts))
     return make_error(ErrorCode::kInvalidArgument, "tiny llama spec: MoE needs experts >= 2 and 1 <= used <= experts");
   const std::string a = arch_name(arch);
+  if (arch == TinyArch::kMamba) return write_tiny_mamba(path, sp);
   const bool tied = sp.tied_embeddings || arch == TinyArch::kGemma;  // gemma never stores an output matrix
   GgufWriter w;
   w.add_string("general.architecture", a);

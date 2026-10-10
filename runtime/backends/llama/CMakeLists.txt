@@ -71,8 +71,11 @@ clusterlm_module(clusterlm_llama_tiny_model
   SOURCES src/llama_tiny_model.cpp
   DEPS clusterlm_common clusterlm_objects)
 
+clusterlm_embed_text(_llama_descriptor_cpp ${CMAKE_CURRENT_SOURCE_DIR}/descriptor/llama-local.descriptor.json
+  clusterlm::backends llama_local_descriptor_json)
+
 clusterlm_module(clusterlm_backend_llama
-  SOURCES src/llama_backend.cpp src/llama_engine.cpp src/llama_manifest.cpp src/llama_compat.cpp
+  SOURCES src/llama_backend.cpp src/llama_engine.cpp src/llama_manifest.cpp src/llama_compat.cpp ${_llama_descriptor_cpp}
   DEPS clusterlm_common clusterlm_domain clusterlm_objects clusterlm_windows
   PRIVATE_DEPS llama ggml)
 target_compile_definitions(clusterlm_backend_llama PRIVATE CLUSTERLM_LLAMA_PIN="${_llama_pin}")
