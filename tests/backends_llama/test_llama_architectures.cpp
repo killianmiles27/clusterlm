@@ -231,3 +231,53 @@ TEST_CASE("recurrent architecture: layers are classified recurrent and rollback 
   }
   REQUIRE(father->release().is_ok());
 }
+
+TEST_CASE("recurrent architecture: a partially committed window is rolled back by recompute and aborts restore state") {
+  backends::TinyLlamaSpec spec;
+  spec.arch = backends::TinyArch::kMamba;
+  TinyModel m("arch-recurrent-window", spec);
+  Pair p(m);
+  RefLlama ref(m.gguf, 256);
+  const auto toks = prompt_of(24, m.vocab());
+  const std::size_t V = m.vocab();
+  const auto all = ref.logits_all(toks);
+  auto* local = dynamic_cast<backends::LlamaLocalDomain*>(p.prefix.get());
+  REQUIRE(local != nullptr);
+
+  auto prefill = p.run(std::vector<std::int32_t>(toks.begin(), toks.begin() + 8));
+  REQUIRE(prefill.is_ok());
+  CHECK(max_abs_diff(prefill->data.data(), all.data(), 8 * V) <= 1e-4f);
+  REQUIRE(p.commit(8).is_ok());
+  const auto before = local->llama_stats().recompute_fallbacks;
+
+  // q=4 window, only 2 accepted: the recurrent state already advanced through all 4 positions and cannot be
+  // trimmed in place, so the backend must rebuild it from the committed prefix.
+  auto w = p.run(std::vector<std::int32_t>(toks.begin() + 8, toks.begin() + 12));
+  REQUIRE(w.is_ok());
+  CHECK(max_abs_diff(w->data.data(), all.data() + 8 * V, 4 * V) <= 1e-4f);
+  REQUIRE(p.commit(2).is_ok());
+  CHECK(p.pos == 10);
+
+  const std::vector<std::int32_t> hist(toks.begin(), toks.begin() + 10);
+  const std::vector<std::int32_t> cont = {toks[10], toks[11], toks[12]};
+  auto next = p.run(cont);
+  REQUIRE(next.is_ok());
+  std::vector<std::int32_t> full = hist;
+  full.insert(full.end(), cont.begin(), cont.end());
+  const auto ref_full = ref.logits_all(full);
+  CHECK(max_abs_diff(next->data.data(), ref_full.data() + 10 * V, 3 * V) <= 1e-4f);
+  CHECK(local->llama_stats().recompute_fallbacks > before);  // the path under test really ran
+
+  // Abort the window and run a different continuation at the same base.
+  const domain::WindowRequest aborted = p.last;
+  REQUIRE(p.prefix->abort_window(aborted.epoch, aborted.session, aborted.window).is_ok());
+  REQUIRE(p.tail->abort_window(aborted.epoch, aborted.session, aborted.window).is_ok());
+  const std::vector<std::int32_t> other = {toks[20], toks[21]};
+  auto alt = p.run(other);
+  REQUIRE(alt.is_ok());
+  std::vector<std::int32_t> alt_full = hist;
+  alt_full.insert(alt_full.end(), other.begin(), other.end());
+  const auto ref_alt = ref.logits_all(alt_full);
+  CHECK(max_abs_diff(alt->data.data(), ref_alt.data() + 10 * V, 2 * V) <= 1e-4f);
+  REQUIRE(p.commit(2).is_ok());
+}

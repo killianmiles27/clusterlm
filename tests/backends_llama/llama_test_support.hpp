@@ -3,7 +3,9 @@
 // straightforward decode (the reference the backend's logits and tokens are compared against).
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -13,6 +15,7 @@
 #include "clusterlm/backends/llama_manifest.hpp"
 #include "clusterlm/backends/llama_tiny_model.hpp"
 #include "clusterlm/coordinator/coordinator.hpp"
+#include "clusterlm/objects/canonical_store.hpp"
 #include "llama.h"
 
 namespace clusterlm::llamatest {
@@ -177,5 +180,78 @@ class RefLlama {
   llama_context* ctx_ = nullptr;
   std::uint32_t vocab_ = 0;
 };
+
+// Two Father domains driven directly, the way the Coordinator drives them.
+struct Pair {
+  std::unique_ptr<domain::ExecutionDomain> prefix, tail;
+  std::unique_ptr<objects::CanonicalModelStore> store;
+  Epoch epoch{1};
+  SessionId session{1};
+  std::uint64_t window = 0;
+  std::uint64_t pos = 0;
+  StateVersion state{0};
+  domain::WindowRequest last;
+
+  Pair(const TinyModel& m, std::uint32_t max_context = 256, std::uint32_t max_window = 64, std::uint32_t sessions = 1,
+       backends::LlamaBackendOptions opts = {}) {
+    if (opts.model_dir.empty()) opts = options_for(m);
+    auto backend = backends::make_llama_backend(opts);
+    const std::uint32_t L = m.layers();
+    domain::DomainSpec ps{StageId{0}, domain::StageRole::kPrefix, {0, L}, max_context, max_window, sessions};
+    domain::DomainSpec ts{StageId{1}, domain::StageRole::kTail, {L, L}, max_context, max_window, sessions};
+    auto p = backend->create_domain(m.manifest, ps);
+    REQUIRE_MESSAGE(p.is_ok(), p.status().to_string());
+    auto t = backend->create_domain(m.manifest, ts);
+    REQUIRE_MESSAGE(t.is_ok(), t.status().to_string());
+    prefix = std::move(p).value();
+    tail = std::move(t).value();
+    auto s = objects::CanonicalModelStore::open(m.dir);
+    REQUIRE_MESSAGE(s.is_ok(), s.status().to_string());
+    store = std::move(s).value();
+    REQUIRE(prefix->prepare(*store).is_ok());
+    REQUIRE(tail->prepare(*store).is_ok());
+    REQUIRE(prefix->open_session(epoch, session).is_ok());
+    REQUIRE(tail->open_session(epoch, session).is_ok());
+  }
+
+  domain::WindowRequest next_request(std::uint32_t positions) {
+    domain::WindowRequest r;
+    r.epoch = epoch;
+    r.session = session;
+    r.window = WindowId{++window};
+    r.base_position = pos;
+    r.expected_state = state;
+    r.positions = positions;
+    last = r;
+    return r;
+  }
+
+  // Runs a window; the caller commits or aborts it.
+  Result<domain::Logits> run(const std::vector<std::int32_t>& tokens) {
+    const auto req = next_request(static_cast<std::uint32_t>(tokens.size()));
+    auto acts = prefix->run_prefix(req, tokens);
+    if (!acts.is_ok()) return acts.status();
+    return tail->run_tail(req, acts.value());
+  }
+
+  Status commit(std::uint32_t accepted) {
+    domain::CommitRequest c{last.epoch, last.session, last.window, accepted, last.expected_state};
+    auto a = prefix->commit_window(c);
+    if (!a.is_ok()) return a.status();
+    auto b = tail->commit_window(c);
+    if (!b.is_ok()) return b.status();
+    REQUIRE(a.value() == b.value());
+    pos = a->committed_position;
+    state = a->state;
+    return Status::ok();
+  }
+};
+
+inline float max_abs_diff(const float* a, const float* b, std::size_t n) {
+  float d = 0;
+  for (std::size_t i = 0; i < n; ++i) d = std::max(d, std::fabs(a[i] - b[i]));
+  return d;
+}
+
 
 }  // namespace clusterlm::llamatest
