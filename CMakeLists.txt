@@ -66,6 +66,8 @@ foreach(module
     orchestrator/placement
     orchestrator/coordinator
     orchestrator/planning
+    orchestrator/library
+    orchestrator/profiles
     orchestrator/catalog
     orchestrator/config
     orchestrator/pairing
