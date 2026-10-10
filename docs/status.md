@@ -28,7 +28,7 @@ machines; every hardware item stays pending ([HARDWARE-QUALIFICATION.md](../HARD
 | G-09 | Token-free middle-stage communication where supported | F | Implemented but hardware-unqualified | reference backend tested; privacy/traffic tests; Strata on GPU pending |
 | G-10 | No silent model or quantization substitution | A,B,C | Partially implemented | tiers: FallbackEvent names both models; no requantization (manifest refuses conversion). API-level exact-model rule and response metadata not implemented (ADR 0402) |
 | G-11 | measured/synthetic/qualified provenance on every result | A,C,E,G | Partially implemented | placement/bench carry `Provenance`; must extend to dry-run, API metadata, UI, MCP |
-| G-12 | Offline operation | G | Partially implemented | no network dependency known in product code; no explicit offline test yet |
+| G-12 | Offline operation | G | Partially implemented | static guard `tests/conformance/check_offline.py` (CI `contracts-and-docs`): no URL literals or internet-client includes in product sources, with self-tests that it can fail. Dynamic proof (suite with no network beyond loopback) not yet added |
 | G-13 | Bounded allocations | all | Implemented and tested | ADR 0233; 13 fuzz targets replayed in CI; every new parser must state limits (interfaces/README) |
 | G-14 | Windows process isolation, services, installer | E,F,G | Implemented but hardware-unqualified | Job Objects, LocalService, MSIs smoke-tested on Windows runner (DEVELOPMENT-STATUS); HQ-WIN-*, HQ-INSTALL-01 pending |
 
@@ -80,8 +80,8 @@ machines; every hardware item stays pending ([HARDWARE-QUALIFICATION.md](../HARD
 | R-42 | API observability without leaking prompts/tool args | B,G | Not implemented | |
 | R-43 | Packaging: CPU / CUDA / dev variants, runtime detection, never advertise an absent backend | F | Partially implemented | two MSIs, static runtime, honest signing; no CUDA runtime bundled, no variants, backend-presence gating via descriptors not implemented |
 | R-44 | Portable core, Windows primary | all | Implemented and tested | Linux gcc/clang + Windows MSVC CI jobs (per DEVELOPMENT-STATUS) |
-| R-45 | Open-source readiness docs (README, install, matrices, architecture, contributing, issue templates, security policy, changelog, release procedure, CI, attribution, provenance) | G | Partially implemented | README, architecture, threat model, CI, packaging licenses folder exist; others absent |
-| R-46 | License comparison (MIT vs Apache-2.0) **without choosing**; no "open source" claim | G | Not implemented | owner decision; do not add a LICENSE file |
+| R-45 | Release-readiness docs (README, install, matrices, architecture, contributing, issue templates, security policy, changelog, release procedure, CI, attribution, provenance) | G | Partially implemented | all present as of 2026-10-10: README, docs/install.md, docs/matrices.md, docs/testing.md, docs/provenance.md, CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, docs/release-procedure.md, docs/licensing/third-party.md, `.github/` templates. Matrices are hand-maintained until backend descriptors exist; API docs, client configs and MCP setup wait on B/D |
+| R-46 | License comparison (MIT vs Apache-2.0) **without choosing**; no license claim | G | Implemented and tested | docs/licensing/license-comparison.md + third-party.md; CI `check_docs.py` fails on a root LICENSE/COPYING file or a license-claim phrase in user-facing docs (self-tested). Choosing remains the owner's decision. Dependency inventory read from license file names/pins, not legally reviewed |
 | R-47 | Strata: layer-domain exec, domain-local CPU expert pools, hybrid expert residency, distributed MTP, token-free stages, ephemeral selected-tensor provisioning, instrumentation | F | Implemented but hardware-unqualified | per DEVELOPMENT-STATUS; GPU pending |
 | R-48 | Strata investigations: draft distribution/acceptance, batched prefill, exact on-device accounting, real GGUF/quant compat, CUDA correctness, WDDM | F | Not implemented | all need GPU/real artifacts (HQ-GPU-*, HQ-NUM-01, HQ-MTP-*) |
 | R-49 | Original three-PC Ultra setup remains a supported example and performance goal | A,F | Implemented but hardware-unqualified | the 20 tok/s target stays `pending_qualification` (HQ-PERF-01) |
@@ -119,5 +119,5 @@ machines; every hardware item stays pending ([HARDWARE-QUALIFICATION.md](../HARD
 | D | MCP | Blocked on B, C status APIs | |
 | E | Desktop UX | Blocked on A | |
 | F | Runtime & compatibility | Blocked on A (capability types) | |
-| G | Verification & docs | May start CI/doc scaffolding now on files it owns; full suites follow A | |
+| G | Verification & docs | In progress: CI job, conformance guards and docs landed (first slice); feature suites follow A-F | [handoff/G-2026-10-10.md](handoff/G-2026-10-10.md) |
 | Z | Final review | Last | |
