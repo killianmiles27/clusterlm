@@ -69,6 +69,7 @@ foreach(module
     orchestrator/library
     orchestrator/profiles
     orchestrator/catalog
+    orchestrator/migration
     orchestrator/config
     orchestrator/pairing
     orchestrator/father-service

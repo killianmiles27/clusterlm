@@ -198,42 +198,83 @@ Status validate(const RoutingAlias& a) {
   return Status::ok();
 }
 
-Status validate_set(const std::vector<Profile>& profiles, const std::vector<RoutingAlias>& aliases) {
-  if (profiles.size() > kMaxProfiles || aliases.size() > kMaxAliases) return bad("too many profiles or aliases");
-  std::map<std::string, const Profile*> by_id;
+std::vector<SetProblem> find_set_problems(const std::vector<Profile>& profiles, const std::vector<RoutingAlias>& aliases) {
+  std::vector<SetProblem> out;
+  auto add = [&](SetProblem::Kind k, std::size_t i, std::string m, bool dangling = false) { out.push_back({k, i, std::move(m), dangling}); };
+  using K = SetProblem::Kind;
+  if (profiles.size() > kMaxProfiles) add(K::kProfile, kMaxProfiles, "too many profiles");
+  if (aliases.size() > kMaxAliases) add(K::kAlias, kMaxAliases, "too many aliases");
+  std::map<std::string, std::size_t> by_id;
   std::set<std::string> api_ids;
-  for (const auto& p : profiles) {
-    CLM_RETURN_IF_ERROR(validate(p));
-    if (!by_id.emplace(p.id, &p).second) return bad("duplicate profile id");
-    if (p.exposure.api_model_id && !api_ids.insert(*p.exposure.api_model_id).second) return bad("api_model_id is used twice");
+  for (std::size_t i = 0; i < profiles.size(); ++i) {
+    const auto& p = profiles[i];
+    if (auto st = validate(p); !st.is_ok()) {
+      add(K::kProfile, i, st.message());
+      continue;
+    }
+    if (!by_id.emplace(p.id, i).second) {
+      add(K::kProfile, i, "duplicate profile id");
+      continue;
+    }
+    if (p.exposure.api_model_id && !api_ids.insert(*p.exposure.api_model_id).second) add(K::kProfile, i, "api_model_id is used twice");
   }
   std::set<std::string> alias_ids;
-  for (const auto& a : aliases) {
-    CLM_RETURN_IF_ERROR(validate(a));
-    if (!alias_ids.insert(a.id).second) return bad("duplicate alias id");
-    if (!api_ids.insert(a.api_model_id).second) return bad("api_model_id is used twice");
+  for (std::size_t i = 0; i < aliases.size(); ++i) {
+    const auto& a = aliases[i];
+    if (auto st = validate(a); !st.is_ok()) {
+      add(K::kAlias, i, st.message());
+      continue;
+    }
+    if (!alias_ids.insert(a.id).second) {
+      add(K::kAlias, i, "duplicate alias id");
+      continue;
+    }
+    if (!api_ids.insert(a.api_model_id).second) {
+      add(K::kAlias, i, "api_model_id is used twice");
+      continue;
+    }
     for (const auto& c : a.candidates) {
       auto it = by_id.find(c.profile_id);
-      if (it == by_id.end()) return bad("alias candidate names a profile that does not exist");
-      for (const auto& w : c.workers_available) {
-        const bool ok = std::any_of(it->second->topology.slots.begin(), it->second->topology.slots.end(),
-                                    [&](const Slot& s) { return s.kind == Slot::Kind::kWorker && s.slot == w; });
-        if (!ok) return bad("workers_available names a slot the candidate profile does not have");
+      if (it == by_id.end()) {
+        add(K::kAlias, i, "alias candidate names a profile that does not exist", true);
+        break;
+      }
+      const Profile& cand = profiles[it->second];
+      bool bad_slot = false;
+      for (const auto& w : c.workers_available)
+        bad_slot |= !std::any_of(cand.topology.slots.begin(), cand.topology.slots.end(),
+                                 [&](const Slot& s) { return s.kind == Slot::Kind::kWorker && s.slot == w; });
+      if (bad_slot) {
+        add(K::kAlias, i, "workers_available names a slot the candidate profile does not have");
+        break;
       }
     }
   }
-  for (const auto& p : profiles) {
-    if (!p.on_worker_loss.fallback_profile_id) continue;
+  for (std::size_t i = 0; i < profiles.size(); ++i) {
+    const auto& p = profiles[i];
+    if (!p.on_worker_loss.fallback_profile_id || by_id.count(p.id) == 0 || by_id[p.id] != i) continue;
     std::set<std::string> visited{p.id};
     const Profile* cur = &p;
     while (cur->on_worker_loss.fallback_profile_id) {
       auto it = by_id.find(*cur->on_worker_loss.fallback_profile_id);
-      if (it == by_id.end()) return bad("fallback_profile_id names a profile that does not exist");
-      if (!visited.insert(it->first).second) return bad("fallback profiles form a cycle");
-      cur = it->second;
+      if (it == by_id.end()) {
+        add(K::kProfile, i, "fallback_profile_id names a profile that does not exist", true);
+        break;
+      }
+      if (!visited.insert(it->first).second) {
+        add(K::kProfile, i, "fallback profiles form a cycle");
+        break;
+      }
+      cur = &profiles[it->second];
     }
   }
-  return Status::ok();
+  return out;
+}
+
+Status validate_set(const std::vector<Profile>& profiles, const std::vector<RoutingAlias>& aliases) {
+  auto problems = find_set_problems(profiles, aliases);
+  if (problems.empty()) return Status::ok();
+  return bad(problems.front().message);
 }
 
 std::vector<std::string> fallback_chain(const std::vector<Profile>& profiles, const std::string& id) {
