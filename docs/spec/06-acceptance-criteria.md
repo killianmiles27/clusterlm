@@ -1,0 +1,4 @@
+## `06-acceptance-criteria.md`
+
+Successful when: no hard-coded three profiles; users create named profiles and define the Workers/hardware conditions that enable them; the Host runs a broader set of genuinely supported GGUFs; distributed support is advertised only for validated backends; the UI can configure and manage a cluster; an OpenAI-compatible endpoint exists; Pi and OpenCode work through documented, tested configs; tool-calling semantics are implemented and tested; optional permissioned MCP exists; multi-client scheduling is safe and predictable; idle/cleanup/privacy guarantees are intact; capabilities are discoverable and errors understandable; installation needs no repo knowledge; Fast/Strong/Ultra configs migrate; all feasible tests and CI pass; hardware-dependent features stay unqualified until measured. A complete real Strata CUDA cluster needs the physical GPUs and artifacts. That dependency is no excuse to leave the rest unfinished.
+

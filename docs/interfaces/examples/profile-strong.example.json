@@ -1,0 +1,78 @@
+{
+  "schema": "clusterlm.profile",
+  "schema_version": 1,
+  "id": "prof_example_strong",
+  "name": "Strong",
+  "description": "Host plus one laptop-class Worker (migrated from tier 'strong').",
+  "revision": 1,
+  "example_of": "tier:strong",
+  "model": {
+    "identity": {
+      "family": "Swift-1.5-Qwen3.8-Flash-Next",
+      "display_name": "Swift-1.5-Qwen3.8-Flash-Next GSQ-RCO IQ2_XS",
+      "quant": "IQ2_XS",
+      "artifact_id": null,
+      "expected_root_hash": null
+    }
+  },
+  "backend": {
+    "id": "strata-hybrid",
+    "min_contract_version": 1
+  },
+  "context": {
+    "default_tokens": 4096,
+    "max_tokens": 131072,
+    "offered_profiles": [
+      4096,
+      8192,
+      16384,
+      32768,
+      65536,
+      131072
+    ]
+  },
+  "topology": {
+    "slots": [
+      {
+        "slot": "host",
+        "kind": "host",
+        "label": "Host"
+      },
+      {
+        "slot": "w1",
+        "kind": "worker",
+        "label": "Laptop-class Worker",
+        "select": {
+          "mode": "binding",
+          "binding": "node:laptop-class"
+        }
+      }
+    ],
+    "min_workers": 1,
+    "max_workers": 1
+  },
+  "placement": {
+    "mode": "auto",
+    "objective": "balanced"
+  },
+  "speculation": {
+    "enabled": true,
+    "max_q": 4
+  },
+  "lifecycle": {
+    "preparation": "on-demand",
+    "release_after_idle_minutes": 30,
+    "prepare_when_available": false
+  },
+  "on_worker_loss": {
+    "max_retries": 1,
+    "then": "fallback-profile",
+    "fallback_profile_id": "prof_example_fast",
+    "preserve_conversation": true
+  },
+  "exposure": {
+    "api": false,
+    "api_model_id": "example-strong",
+    "allow_lan": false
+  }
+}

@@ -1,0 +1,15 @@
+# Cross-module requests
+
+A thread that needs a change in files owned by another workstream (ownership: [plan.md](plan.md) §3) records it here instead
+of making it. The **to** workstream picks it up at its next start, sets the status and notes the commit. Statuses: `open`,
+`accepted`, `done`, `declined` (with reason). Append only; don't rewrite others' rows.
+
+| ID | From → To | Status | Request |
+|---|---|---|---|
+| CMR-0001 | A → F | open (permission pre-granted by Thread 0 for the type/registry header only) | A adds `runtime/domain/include/clusterlm/domain/backend_descriptor.hpp` (+ registry, `check_model`) and provisional descriptors for `reference`, `llama-local`, `strata-hybrid`. F reviews/replaces the real descriptors and defines the descriptor loader + qualification-evidence record (backend-capability-v1 §6). |
+| CMR-0002 | A → C | open (pre-granted) | A makes one bounded edit of `orchestrator/father-service` headers: `DeploymentProvider`/`ReadinessSource`/`FatherService` take a profile (resolved topology) instead of `catalog::TierEntry`, keeping behavior. Ownership of the directory passes to C when A merges; A touches nothing else there. |
+| CMR-0003 | E → A | open | When the UI has moved to profile ops, remove the deprecated `tiers.*` IPC aliases and update `docs/father-ipc.md` (A owns `father_service_api.*` until then; after the alias removal E may request further ops through this file). |
+| CMR-0004 | C → A | open | After A merges settings v2, C adds Node-side policy fields to `config/settings.hpp` (battery thresholds, temperature/power limits when supported, schedules, enforced thread cap, continuous-idle retention). A must leave the NodeSettings section untouched until then. |
+| CMR-0005 | 0 → G | open | (1) Add a CI step running `pip install jsonschema && python3 -I docs/interfaces/validate_examples.py`. (2) Link `docs/plan.md`, `docs/status.md`, `docs/spec/` and `docs/interfaces/` from the root `README.md` and fold the stale status paragraph into the new ledger. (3) Do not add a `LICENSE` file or the words "open source" (owner decision, spec 02). |
+| CMR-0006 | 0 → B | open (heads-up) | Chat template: the tokenizer supports ChatML + qwen2/qwen35 pre-tokenizers only (known issue 5). Tool-call parsing needs the model's real template; B decides (in an ADR) whether to implement a bounded Jinja subset or per-family native templates. Whichever is chosen must stay offline and bounded, and B must not claim tool calling for a family without a template+parser test. |
+| CMR-0007 | 0 → A | open (heads-up) | `placement::search_placements` and `profile.hpp` take machines/stages shaped for the 3-node case; verify with a test that N=0,1,2 Workers and a requirements-selected Worker go through the same code path before declaring dynamic topology done. Descriptor `validated_max_workers` for `strata-hybrid` is 2 because no test covers more. |
