@@ -1,0 +1,2 @@
+clusterlm_test(test_backend_descriptor SOURCES test_backend_descriptor.cpp DEPS clusterlm_domain_api)
+target_compile_definitions(test_backend_descriptor PRIVATE CLUSTERLM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
