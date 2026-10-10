@@ -16,12 +16,23 @@ Distributed heterogeneous local LLM inference for Windows.
 - Product: [docs/ui.md](docs/ui.md), [docs/pairing.md](docs/pairing.md), [docs/father-ipc.md](docs/father-ipc.md), [docs/windows-architecture.md](docs/windows-architecture.md), [docs/packaging.md](docs/packaging.md), [docs/tiers.md](docs/tiers.md)
 - Runtime: [docs/protocol.md](docs/protocol.md), [docs/provisioning-lifecycle.md](docs/provisioning-lifecycle.md), [docs/model-manifest.md](docs/model-manifest.md), [docs/placement.md](docs/placement.md), [docs/benchmark-methodology.md](docs/benchmark-methodology.md), [docs/security/threat-model.md](docs/security/threat-model.md)
 
-> **Status:** pre-hardware. Everything that can be built and verified without the three target PCs is implemented
-> and tested on Linux (and type-checked or tested on Windows in CI): the distributed runtime, the Strata-derived
-> backend (CPU kernels verified, CUDA path compiled but never run on a GPU), the llama.cpp Fast backend, the
-> Windows service/helper/UI/installer, pairing, provisioning and the qualification tooling. **No performance number
-> in this repository is a measurement of the target machines.** Fast/Strong/Ultra are not performance-qualified
-> until the experiments in HARDWARE-QUALIFICATION.md run on the real hardware.
+> **Status:** pre-hardware, and mid-generalization. The distributed runtime, the Strata-derived backend (CPU kernels
+> verified, CUDA path compiled but never run on a GPU), the llama.cpp Host backend, the Windows service/helper/UI/installers,
+> pairing, provisioning and the qualification tooling are implemented and tested on Linux, with Windows type-checked and
+> installer-smoke-tested in CI. **No performance number in this repository is a measurement of the target machines.**
+> Fast/Strong/Ultra are not performance-qualified until the experiments in HARDWARE-QUALIFICATION.md run on the real hardware.
+> The effort to turn the three fixed tiers into configurable execution profiles, a model library, an OpenAI-compatible API,
+> a scheduler and MCP is in progress; its plan, frozen contracts and per-requirement ledger are linked below. Features in the
+> ledger marked *Not implemented* do not exist yet. The project has no license and no release.
+
+Project planning and verification:
+
+- Plan and file ownership: [docs/plan.md](docs/plan.md); requirement ledger (single source of truth for what is done): [docs/status.md](docs/status.md)
+- Requirements: [docs/spec/](docs/spec/README.md); frozen interface contracts: [docs/interfaces/](docs/interfaces/README.md); decisions: [docs/adr/](docs/adr/)
+- Install: [docs/install.md](docs/install.md); user walkthrough: [docs/walkthrough.md](docs/walkthrough.md)
+- Platform / model / backend matrices: [docs/matrices.md](docs/matrices.md); testing: [docs/testing.md](docs/testing.md); result provenance: [docs/provenance.md](docs/provenance.md)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md); security policy: [SECURITY.md](SECURITY.md); changelog: [CHANGELOG.md](CHANGELOG.md); release procedure: [docs/release-procedure.md](docs/release-procedure.md)
+- Third-party components and the (undecided) license question: [docs/licensing/third-party.md](docs/licensing/third-party.md), [docs/licensing/license-comparison.md](docs/licensing/license-comparison.md)
 
 ## Build
 
