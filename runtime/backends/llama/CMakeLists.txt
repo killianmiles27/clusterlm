@@ -63,7 +63,7 @@ set_target_properties(clusterlm-llama-rpc-server PROPERTIES OUTPUT_NAME ggml-rpc
 add_library(clusterlm_llama_client INTERFACE)
 target_link_libraries(clusterlm_llama_client INTERFACE llama ggml)
 target_include_directories(clusterlm_llama_client SYSTEM INTERFACE ${_llama_src}/include ${_llama_src}/ggml/include)
-target_compile_definitions(clusterlm_llama_client INTERFACE CLUSTERLM_LLAMA_PIN="${_llama_pin}")
+target_compile_definitions(clusterlm_llama_client INTERFACE CLUSTERLM_LLAMA_PIN="${_llama_pin}" CLUSTERLM_LLAMA_SRC_DIR="${_llama_src}")
 
 # Writers for a tiny random-weight llama-architecture GGUF (tests and the bench proof run). Pure GGUF bytes:
 # no llama.cpp dependency.
@@ -71,8 +71,11 @@ clusterlm_module(clusterlm_llama_tiny_model
   SOURCES src/llama_tiny_model.cpp
   DEPS clusterlm_common clusterlm_objects)
 
+clusterlm_embed_text(_llama_descriptor_cpp ${CMAKE_CURRENT_SOURCE_DIR}/descriptor/llama-local.descriptor.json
+  clusterlm::backends llama_local_descriptor_json)
+
 clusterlm_module(clusterlm_backend_llama
-  SOURCES src/llama_backend.cpp src/llama_engine.cpp src/llama_manifest.cpp
+  SOURCES src/llama_backend.cpp src/llama_engine.cpp src/llama_manifest.cpp src/llama_compat.cpp ${_llama_descriptor_cpp}
   DEPS clusterlm_common clusterlm_domain clusterlm_objects clusterlm_windows
   PRIVATE_DEPS llama ggml)
 target_compile_definitions(clusterlm_backend_llama PRIVATE CLUSTERLM_LLAMA_PIN="${_llama_pin}")

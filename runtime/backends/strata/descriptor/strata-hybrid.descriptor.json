@@ -1,0 +1,163 @@
+{
+  "schema": "clusterlm.backend-descriptor",
+  "contract_version": 1,
+  "id": "strata-hybrid",
+  "display_name": "Flash-Next (Strata-derived)",
+  "factory_name": "strata",
+  "role_in_product": "production",
+  "model_support": {
+    "containers": [
+      "gguf",
+      "gguf-split"
+    ],
+    "tensor_formats": [
+      "F32",
+      "F16",
+      "BF16",
+      "Q4_0",
+      "Q4_1",
+      "Q5_0",
+      "Q5_1",
+      "Q8_0",
+      "Q3_K",
+      "Q4_K",
+      "Q5_K",
+      "Q6_K",
+      "IQ2_XXS",
+      "IQ2_XS",
+      "IQ2_S",
+      "IQ3_XXS",
+      "IQ3_S",
+      "IQ1_M",
+      "IQ4_NL",
+      "IQ4_XS",
+      "Q2_0"
+    ],
+    "families": [
+      {
+        "family_match": "Qwen3.8-Flash-Next",
+        "architecture": "qwen4exp",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "linux-strata-cuda-build (compile + link only, sm_86/sm_89, no GPU)",
+          "tests/backends/test_strata_domain.cpp (fake engine)",
+          "tests/backends/test_strata_wiring.cpp (fake engine, 2 Workers)",
+          "tests/backends/test_strata_cpu_kernels.cpp (iq3_s+iq4_nl, iq3_s+q2_0 CPU experts)",
+          "tests/backends/test_strata_objects.cpp, test_strata_convert.cpp (synthetic packs)"
+        ]
+      },
+      {
+        "family_match": "Swift-1.5-Qwen3.8-Flash-Next",
+        "architecture": "qwen4exp",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "linux-strata-cuda-build (compile + link only, sm_86/sm_89, no GPU)",
+          "tests/backends/test_strata_domain.cpp (fake engine)",
+          "tests/backends/test_strata_wiring.cpp (fake engine, 2 Workers)",
+          "tests/backends/test_strata_cpu_kernels.cpp (iq2_xs+iq4_nl, iq2_xs+q2_0 CPU experts)"
+        ]
+      },
+      {
+        "family_match": "*Flash-Next*",
+        "architecture": "qwen4exp",
+        "status": "Experimental",
+        "evidence": [
+          "strata_geometry() refuses any geometry other than Flash-Next's at create_domain (kVersionMismatch)"
+        ]
+      }
+    ],
+    "unlisted_family_status": "Unsupported"
+  },
+  "devices": {
+    "cpu": false,
+    "gpu_vendors": [
+      "nvidia"
+    ],
+    "min_compute_capability": "8.6",
+    "requires_runtime": [
+      "cuda>=12.0"
+    ]
+  },
+  "execution": {
+    "single_host": true,
+    "cross_machine": true,
+    "validated_max_workers": 2,
+    "validated_topologies": [
+      "host-prefix -> worker -> worker -> host-tail (StrataDomain + fake engine, test_strata_wiring; no GPU)"
+    ],
+    "layer_partitioning": "contiguous-layers",
+    "cpu_gpu_hybrid": true,
+    "token_free_middle_stages": true,
+    "manual_layer_ranges": true,
+    "worker_roles": [
+      "middle"
+    ],
+    "evidence": [
+      "tests/backends/test_strata_wiring.cpp (Father + 2 Node workers, fake engine)",
+      "tests/backends/test_strata_domain.cpp (role rules, token-free stages)"
+    ]
+  },
+  "state": {
+    "kinds": [
+      "kv",
+      "recurrent",
+      "indexer",
+      "ple-history"
+    ],
+    "supports_rollback": "native",
+    "per_client_isolation": true,
+    "max_sessions_per_domain": 1
+  },
+  "speculation": {
+    "window_commit_abort": true,
+    "mtp": "one-hot-proposals",
+    "max_q": 4
+  },
+  "serving": {
+    "full_logits_for_sampling": true,
+    "constrained_decoding": false,
+    "logprobs": false
+  },
+  "limitations": [
+    "CUDA engine compiled and linked (Linux, nvcc 12.0, sm_86/sm_89) but never run on a GPU; no Windows/MSVC build of the Strata backend exists in CI.",
+    "Only the Flash-Next geometry runs (H 2560, 4 residual streams, 24/2 heads x 256, expert ff 640, 10 active experts, 3:1 GDN/QSA); anything else fails at create_domain.",
+    "Per-role type limits: routed-expert down projections must be IQ4_NL, Q2_0, Q4_0, Q4_1, Q5_0, Q5_1 or Q8_0; GPU-resident expert gate/up cannot be Q3_K, Q5_1, Q6_K or IQ4_NL; token_embd cannot be F16, F32, Q6_K.",
+    "A routed-expert type outside Strata's GPU expert kernels would exit the process in the engine; ClusterLM now refuses it at expert_format() with a Status (ADR 0408), CUDA path unrun.",
+    "MTP drafts are greedy and verified as one-hot proposals: sampling stays exact, acceptance under sampling is lower than optimal (ADR 0203).",
+    "One session per domain: the MTP drafter is bound to session slot 0 and multi-session Verifiers were never run on a device.",
+    "Prefill goes through the Verifier in engine windows of at most 8 positions, not Strata's batched prompt path; a sub-batched window can only be committed whole.",
+    "A speculative window larger than the stage's local batch cannot be partially committed or aborted: the session is invalidated (placement keeps local_batch >= q).",
+    "The Father prefix must own layers 0..max(1, ple_layer) (PLE needs token ids); middle and tail stages are token-free.",
+    "describe_requirements reports container sizes before prepare and omits the tail's MTP drafter (~0.9 GB VRAM, loaded lazily at the first draft).",
+    "More than 2 Workers, a Host-only Strata plan and a 1-Worker Strata plan have no Strata test (1 Worker is covered by the reference backend only).",
+    "GPUs above compute capability 8.9 would run from PTX JIT; only sm_86 and sm_89 binaries are built and nothing is qualified.",
+    "Reference-backend tests cover 1 Worker (protocol level); no Strata test covers 1 Worker or Host-only."
+  ],
+  "options_schema": {
+    "local_micro_batch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "Upper bound on the local sub-batch; effective value is min(this, VRAM-headroom choice, engine window 8) (ADR 0250). Below the profile's q, placement rejects the domain."
+    }
+  },
+  "qualification": {
+    "label": "Supported, awaiting hardware qualification",
+    "hardware_experiments": [
+      "HQ-MODEL-01",
+      "HQ-P0B-01",
+      "HQ-GPU-01",
+      "HQ-GPU-02",
+      "HQ-GPU-03",
+      "HQ-GPU-05",
+      "HQ-NUM-01",
+      "HQ-CPU-01",
+      "HQ-PCIE-01",
+      "HQ-MTP-01",
+      "HQ-MTP-02",
+      "HQ-P0D-01",
+      "HQ-PERF-01"
+    ],
+    "notes": "All GPU behaviour is pending. Fixture, fake-engine and reference-backend tests prove protocol, ownership and state-machine logic only; none raises a label."
+  }
+}

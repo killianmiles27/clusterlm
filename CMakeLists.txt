@@ -22,6 +22,7 @@ option(CLUSTERLM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(CLUSTERLM_ENABLE_STRATA "Build the Strata backend adapter against the pinned Strata source (requires CUDA)" OFF)
 
 include(cmake/ClusterLMWarnings.cmake)
+include(cmake/ClusterLMEmbed.cmake)
 
 # Fuzzing: every library is instrumented (ASan + UBSan + libFuzzer coverage) so the targets in tests/fuzz see
 # inside the code under test. Declared here because the flags must precede every add_subdirectory.

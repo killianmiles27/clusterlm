@@ -1,0 +1,185 @@
+{
+  "schema": "clusterlm.backend-descriptor",
+  "contract_version": 1,
+  "id": "llama-local",
+  "display_name": "llama.cpp (Host-local)",
+  "factory_name": "llama",
+  "role_in_product": "production",
+  "model_support": {
+    "containers": [
+      "gguf",
+      "gguf-split"
+    ],
+    "tensor_formats": [
+      "F32",
+      "F16",
+      "BF16",
+      "Q4_0",
+      "Q4_1",
+      "Q5_0",
+      "Q5_1",
+      "Q8_0",
+      "Q2_K",
+      "Q3_K",
+      "Q4_K",
+      "Q5_K",
+      "Q6_K",
+      "IQ1_S",
+      "IQ1_M",
+      "IQ2_XXS",
+      "IQ2_XS",
+      "IQ2_S",
+      "IQ3_XXS",
+      "IQ3_S",
+      "IQ4_NL",
+      "IQ4_XS",
+      "TQ1_0",
+      "TQ2_0",
+      "MXFP4",
+      "NVFP4",
+      "Q1_0",
+      "Q2_0"
+    ],
+    "families": [
+      {
+        "family_match": "*",
+        "architecture": "llama",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "test_llama_architectures: CPU fixture llama (Llama 2/3, Mistral, Mixtral-style MoE) layout equals llama.cpp decode",
+          "HQ-FAST-01"
+        ]
+      },
+      {
+        "family_match": "*",
+        "architecture": "qwen2",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "test_llama_architectures: CPU fixture qwen2 layout (Q/K/V biases) equals llama.cpp decode",
+          "HQ-FAST-01"
+        ]
+      },
+      {
+        "family_match": "*",
+        "architecture": "qwen3",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "test_llama_architectures: CPU fixture qwen3 layout (per-head Q/K norm) equals llama.cpp decode",
+          "HQ-FAST-01"
+        ]
+      },
+      {
+        "family_match": "*",
+        "architecture": "gemma",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "test_llama_architectures: CPU fixture gemma layout (tied head) equals llama.cpp decode",
+          "HQ-FAST-01"
+        ]
+      },
+      {
+        "family_match": "*",
+        "architecture": "phi3",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "test_llama_architectures: CPU fixture phi3 layout (fused QKV, fused gate/up) equals llama.cpp decode",
+          "HQ-FAST-01"
+        ]
+      },
+      {
+        "family_match": "*",
+        "architecture": "mamba",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "test_llama_architectures: CPU fixture mamba layout (recurrent state, rollback by recompute) equals llama.cpp decode",
+          "HQ-FAST-01"
+        ]
+      },
+      {
+        "family_match": "Swift-1.5-Qwen3.8-27B",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "tests/backends_llama: decode equals llama.cpp on a llama fixture",
+          "HQ-FAST-01"
+        ]
+      }
+    ],
+    "unlisted_family_status": "Experimental"
+  },
+  "devices": {
+    "cpu": true,
+    "gpu_vendors": [
+      "nvidia"
+    ],
+    "min_compute_capability": "8.6",
+    "requires_runtime": [
+      "cuda>=12.0 (CLUSTERLM_LLAMA_CUDA build only)"
+    ]
+  },
+  "execution": {
+    "single_host": true,
+    "cross_machine": false,
+    "validated_max_workers": 0,
+    "validated_topologies": [
+      "host-only"
+    ],
+    "layer_partitioning": "none",
+    "cpu_gpu_hybrid": true,
+    "token_free_middle_stages": false,
+    "manual_layer_ranges": false,
+    "worker_roles": [],
+    "evidence": [
+      "tests/backends_llama"
+    ]
+  },
+  "state": {
+    "kinds": [
+      "kv",
+      "recurrent"
+    ],
+    "supports_rollback": "recompute",
+    "per_client_isolation": true,
+    "max_sessions_per_domain": 1
+  },
+  "speculation": {
+    "window_commit_abort": true,
+    "mtp": "none",
+    "max_q": 32
+  },
+  "serving": {
+    "full_logits_for_sampling": true,
+    "constrained_decoding": false,
+    "logprobs": false
+  },
+  "limitations": [
+    "Host only; middle stages are refused (docs/backends/llama-local.md). Distributed llama.cpp (RPC) is a baseline harness only, not an advertised mode (docs/backends/llama-rpc.md).",
+    "Listed architectures are exercised on tiny random-weight CPU fixtures only; real checkpoints (rope scaling, sliding-window variants, chat template, tool calling) and every GPU run are unmeasured.",
+    "Every other architecture the pinned llama.cpp names (153 in total) is Experimental: attempted only after an explicit per-model opt-in, never distributable. Names the pinned build does not know are Unsupported.",
+    "tensor_formats are the 28 weight types the pinned CPU build loaded and decoded in test_llama_tensor_types on random weights; that is a mechanics check, not an accuracy statement about any quantization.",
+    "Prefill windows longer than 32 positions return only the last position's logits (ADR 0300).",
+    "Recurrent state rolls back by recompute when llama.cpp refuses partial removal; this path is exercised on a Mamba fixture (test_llama_architectures), not on the Fast-tier model or any hybrid (attention + SSM) architecture.",
+    "Two interleaved sessions are tested (independent state); concurrent execution is not enabled, so max_sessions_per_domain stays 1.",
+    "The Fast-tier family entry (Swift-1.5-Qwen3.8-27B) matches the user-editable family label because the model's GGUF architecture has not been inspected (HQ-FAST-01); no architecture is guessed.",
+    "CUDA build is compile-checked only; behaviour on the RTX 4060 Ti is HQ-TIER-01."
+  ],
+  "options_schema": {
+    "n_threads": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1024,
+      "description": "0 = automatic; still capped by the Host resource policy."
+    },
+    "use_mmap": {
+      "type": "boolean",
+      "description": "Map the GGUF instead of reading it; memory admission is unchanged."
+    }
+  },
+  "qualification": {
+    "label": "Supported, awaiting hardware qualification",
+    "hardware_experiments": [
+      "HQ-FAST-01",
+      "HQ-TIER-01"
+    ],
+    "notes": "CPU mechanics verified in CI on fixtures (architectures, tensor types, windows); no real model or GPU has been run."
+  }
+}
