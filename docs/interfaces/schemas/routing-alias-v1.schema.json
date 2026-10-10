@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clusterlm.invalid/schemas/routing-alias-v1.schema.json",
+  "title": "ClusterLM routing alias, schema v1 (ADR 0402)",
+  "type": "object",
+  "required": ["schema", "schema_version", "id", "api_model_id", "candidates"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "clusterlm.routing-alias" },
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^alias_[a-z0-9][a-z0-9_]{2,47}$" },
+    "name": { "type": "string", "maxLength": 80 },
+    "api_model_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "description": "Must not collide with any profile api_model_id." },
+    "policy": { "enum": ["first-viable", "best-ready"], "default": "first-viable" },
+    "candidates": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "description": "Evaluated in order. A candidate is viable when its profile is exposed, its `when` holds, and its readiness is ready or (policy permitting) loadable.",
+      "items": {
+        "type": "object", "required": ["profile_id"], "additionalProperties": false,
+        "properties": {
+          "profile_id": { "type": "string", "pattern": "^prof_[a-z0-9][a-z0-9_]{2,47}$" },
+          "when": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "workers_available": { "type": "array", "items": { "type": "string" }, "description": "Slot names of the candidate that must be satisfiable right now." },
+              "min_workers_available": { "type": "integer", "minimum": 0 },
+              "require_ready": { "type": "boolean", "default": false, "description": "true: only if already prepared (never trigger a prepare job)." },
+              "avoid_on_battery": { "type": "boolean", "default": true }
+            }
+          }
+        }
+      }
+    },
+    "allow_prepare": { "type": "boolean", "default": false, "description": "May a request to this alias start a prepare job of the chosen candidate? Default false: alias only routes among prepared profiles." }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "schema": "clusterlm.backend-descriptor",
+  "contract_version": 1,
+  "id": "strata-hybrid",
+  "display_name": "Flash-Next (Strata-derived)",
+  "factory_name": "strata",
+  "role_in_product": "production",
+  "model_support": {
+    "containers": [
+      "gguf",
+      "gguf-split"
+    ],
+    "tensor_formats": [
+      "IQ2_XS",
+      "IQ3_S"
+    ],
+    "families": [
+      {
+        "family_match": "*Flash-Next*",
+        "architecture": "qwen3.8-flash-next",
+        "status": "Supported, awaiting hardware qualification",
+        "evidence": [
+          "linux-strata-cuda-build (compile only)",
+          "fake-engine StrataDomain tests",
+          "HQ-GPU-01",
+          "HQ-NUM-01"
+        ]
+      }
+    ],
+    "unlisted_family_status": "Unsupported"
+  },
+  "devices": {
+    "cpu": true,
+    "gpu_vendors": [
+      "nvidia"
+    ],
+    "min_compute_capability": "8.6",
+    "requires_runtime": [
+      "cuda>=12.0"
+    ]
+  },
+  "execution": {
+    "single_host": true,
+    "cross_machine": true,
+    "validated_max_workers": 2,
+    "validated_topologies": [
+      "host-prefix \u2192 worker \u2192 worker \u2192 host-tail (reference backend, bitwise equal to host-only)",
+      "host-prefix \u2192 worker \u2192 host-tail"
+    ],
+    "layer_partitioning": "contiguous-layers",
+    "cpu_gpu_hybrid": true,
+    "token_free_middle_stages": true,
+    "manual_layer_ranges": true,
+    "worker_roles": [
+      "middle"
+    ],
+    "evidence": [
+      "tests/integration (reference backend)",
+      "tests/coordinator",
+      "HQ-P0B-01"
+    ]
+  },
+  "state": {
+    "kinds": [
+      "kv",
+      "recurrent",
+      "indexer",
+      "ple-history"
+    ],
+    "supports_rollback": "native",
+    "per_client_isolation": true,
+    "max_sessions_per_domain": 1
+  },
+  "speculation": {
+    "window_commit_abort": true,
+    "mtp": "one-hot-proposals",
+    "max_q": 4
+  },
+  "serving": {
+    "full_logits_for_sampling": true,
+    "constrained_decoding": false,
+    "logprobs": false
+  },
+  "limitations": [
+    "CUDA engine compiled but never run on a GPU in this repository's CI (DEVELOPMENT-STATUS.md).",
+    "MTP drafts verified as one-hot proposals; lower acceptance than optimal (ADR 0203).",
+    "Prefill goes through the verifier in sub-batches of at most 8 positions (known issue 2).",
+    "Worker count above 2 is not covered by any test; do not raise validated_max_workers without one.",
+    "Only the tensor types of the two shipped artifacts have been exercised."
+  ],
+  "options_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "local_micro_batch": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "qualification": {
+    "label": "Supported, awaiting hardware qualification",
+    "hardware_experiments": [
+      "HQ-GPU-01",
+      "HQ-GPU-02",
+      "HQ-GPU-03",
+      "HQ-NUM-01",
+      "HQ-MTP-01",
+      "HQ-P0B-01",
+      "HQ-PERF-01"
+    ],
+    "notes": "All GPU behaviour is pending; fixture and fake-engine tests prove protocol and ownership logic only."
+  }
+}

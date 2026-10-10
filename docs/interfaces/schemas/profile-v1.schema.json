@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clusterlm.invalid/schemas/profile-v1.schema.json",
+  "title": "ClusterLM execution profile, schema v1",
+  "description": "Frozen by Thread 0 (ADR 0400). Unknown top-level fields are rejected on import and ignored on local load (forward compatible within a version). See docs/interfaces/profile-schema-v1.md.",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "id",
+    "name",
+    "revision",
+    "model",
+    "backend",
+    "context",
+    "topology"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "clusterlm.profile"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "#/$defs/profile_id"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "example_of": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Set on profiles shipped in the example set / produced by migration, e.g. 'tier:fast'."
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "identity"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "type": "object",
+          "required": [
+            "family",
+            "quant"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "family": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "display_name": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "quant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "artifact_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            },
+            "expected_root_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Manifest root (hex SHA-256). null = unpinned: readiness refuses it until the Host user confirms the inspected manifest."
+            }
+          }
+        },
+        "library_id": {
+          "type": "string",
+          "pattern": "^mdl_[a-z0-9][a-z0-9_]{2,47}$",
+          "description": "Local only; removed on export."
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "enum": [
+            "llama-local",
+            "strata-hybrid",
+            "reference"
+          ],
+          "description": "Descriptor id. Extended by ADR when a backend is added."
+        },
+        "min_contract_version": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "options": {
+          "type": "object",
+          "description": "Backend-specific, validated by the backend descriptor's options schema; unknown keys rejected."
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": [
+        "default_tokens",
+        "max_tokens"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "default_tokens": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 4194304
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 4194304
+        },
+        "offered_profiles": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 256
+          },
+          "maxItems": 16,
+          "uniqueItems": true,
+          "description": "Context sizes placement is searched for. Defaults to the placement workload's 4K..128K list clipped to max_tokens. Qualification is NOT stored here (it is computed from evidence)."
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "required": [
+        "slots"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "slots": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "description": "Pipeline order: slots[0] must be the host slot. Order of worker slots is stage order unless placement.mode is 'auto' and the backend allows reordering.",
+          "items": {
+            "$ref": "#/$defs/slot"
+          }
+        },
+        "min_workers": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_workers": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_preference": {
+          "enum": [
+            "gpu-first",
+            "gpu-only",
+            "cpu-only",
+            "auto"
+          ],
+          "default": "auto"
+        },
+        "host_vram_margin_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "host_ram_margin_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "worker_vram_margin_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "worker_ram_margin_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_worker_temp_storage_mib": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "auto",
+            "manual"
+          ],
+          "default": "auto"
+        },
+        "objective": {
+          "enum": [
+            "latency",
+            "balanced",
+            "prep-cost"
+          ],
+          "default": "balanced"
+        },
+        "manual": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stages"
+          ],
+          "description": "Advanced. Honoured only if backend.capabilities.manual_layer_ranges is true; validated by the same plan admission as automatic plans.",
+          "properties": {
+            "stages": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": [
+                  "slot"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "slot": {
+                    "type": "string"
+                  },
+                  "first_layer": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "end_layer": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "speculation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_q": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 1
+        }
+      }
+    },
+    "chat_template": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "pattern": "^(model|builtin:[a-z0-9._-]{1,48})$",
+          "default": "model"
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preparation": {
+          "enum": [
+            "on-demand",
+            "keep-ready",
+            "manual"
+          ],
+          "default": "on-demand",
+          "description": "on-demand: first API/chat request triggers an async prepare job; keep-ready: prepare when the required slots are available and keep until idle timeout; manual: only an explicit prepare call."
+        },
+        "release_after_idle_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "0 = never (only while the user keeps the lease policy permitting it)."
+        },
+        "prepare_when_available": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in automatic preparation of this profile when its workers become available. Never default; never applies to profiles with preparation=manual."
+        }
+      }
+    },
+    "on_worker_loss": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 1
+        },
+        "then": {
+          "enum": [
+            "stop",
+            "replan",
+            "fallback-profile"
+          ],
+          "default": "stop",
+          "description": "fallback-profile is followed along the chain of fallback_profile_id (cycle-checked at validation) to the first profile whose readiness allows it. It applies to the Host's built-in chat, with a visible FallbackEvent naming both models. API requests addressed to this profile's exact model id never fall back (ADR 0402): they get a structured error; routing aliases are the only way an API request may land on a different profile."
+        },
+        "fallback_profile_id": {
+          "$ref": "#/$defs/profile_id"
+        },
+        "preserve_conversation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Host-side chat only; API clients receive a structured error and decide."
+        }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api": {
+          "type": "boolean",
+          "default": false,
+          "description": "List this profile in /v1/models and accept it as a model id."
+        },
+        "api_model_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "description": "The id API clients send. Independent of name; set at creation, changing it is an explicit breaking action."
+        },
+        "allow_lan": {
+          "type": "boolean",
+          "default": false,
+          "description": "Visible to LAN-authenticated keys. Ignored while the server itself is localhost-only."
+        }
+      }
+    },
+    "goals": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Non-binding performance goals carried over from the old tier catalog. Never a promise and never displayed as a result; status stays pending_qualification until a qualification experiment records a measurement.",
+      "items": {
+        "type": "object",
+        "required": [
+          "metric",
+          "value",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "metric": {
+            "type": "string",
+            "maxLength": 48
+          },
+          "value": {
+            "type": "number"
+          },
+          "status": {
+            "enum": [
+              "pending_qualification"
+            ]
+          },
+          "experiment": {
+            "type": "string",
+            "maxLength": 32
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "profile_id": {
+      "type": "string",
+      "pattern": "^prof_[a-z0-9][a-z0-9_]{2,47}$"
+    },
+    "slot": {
+      "type": "object",
+      "required": [
+        "slot",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+        },
+        "kind": {
+          "enum": [
+            "host",
+            "worker"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false,
+          "description": "Worker slot only: profile is usable (with a re-planned, possibly slower or lower-context plan) without it, within min_workers."
+        },
+        "select": {
+          "$ref": "#/$defs/selector"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "select"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "worker"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "select"
+            ]
+          }
+        }
+      ]
+    },
+    "selector": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "binding",
+            "machine",
+            "requirements"
+          ]
+        },
+        "binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9:_-]{0,47}$",
+          "description": "Named binding resolved through the Host's machine bindings (migration keeps the old role string, e.g. 'node:laptop-class')."
+        },
+        "machine": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Device fingerprint. Local only; removed on export."
+        },
+        "requirements": {
+          "$ref": "#/$defs/requirements"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "binding"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "binding"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "machine"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "machine"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "requirements"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "requirements"
+            ]
+          }
+        }
+      ]
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Resource-based worker requirement, matched against measured/declared Worker capability. Hints on a binding slot are optional extras: when present on a 'binding' selector they are checked against the bound machine.",
+      "properties": {
+        "gpu_vendor": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "nvidia",
+              "amd",
+              "intel",
+              "any"
+            ]
+          }
+        },
+        "min_vram_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_ram_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_compute_capability": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$"
+        },
+        "min_link_mbit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_only_ok": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}
