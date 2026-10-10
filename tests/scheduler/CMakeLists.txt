@@ -1,1 +1,1 @@
-clusterlm_test(test_scheduler SOURCES test_resource_policy.cpp test_admission.cpp DEPS clusterlm_scheduler)
+clusterlm_test(test_scheduler SOURCES test_resource_policy.cpp test_admission.cpp test_fair_queue.cpp test_scheduler.cpp DEPS clusterlm_scheduler)

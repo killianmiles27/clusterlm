@@ -83,6 +83,7 @@ struct AvailabilityEntry {
 struct SchedulerCounters {
   std::uint64_t admitted = 0, rejected = 0, completed = 0, cancelled = 0, failed = 0, worker_lost = 0, timed_out = 0;
   std::uint64_t plan_invalidations = 0, swaps = 0, prepares_started = 0;
+  std::uint64_t stale_events = 0, stuck_invalidations = 0;
 };
 
 // Read-only view the serving layer, IPC and MCP depend on. Thread-safe; every call returns a consistent snapshot.
